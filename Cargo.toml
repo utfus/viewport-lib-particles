@@ -21,7 +21,13 @@ wgpu = "27.0"
 
 [dev-dependencies]
 pollster = "0.4"
+# eframe 0.33 pairs with wgpu 27, matching viewport-lib's primary leg.
+eframe = { version = "=0.33.3", default-features = false, features = ["wgpu", "default_fonts", "x11", "wayland"] }
 
 [[example]]
 name = "particles-minimal"
 path = "examples/particles_minimal.rs"
+
+[[example]]
+name = "showcase"
+path = "examples/showcase/main.rs"

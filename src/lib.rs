@@ -14,15 +14,16 @@
 //! particles), and a billboard draw, all sourcing from a persistent per-effect
 //! GPU buffer. No per-particle work happens on the CPU.
 //!
-//! The design target is the authoring power of a modern GPU particle system:
-//! per-attribute logic built from an expression graph ([`Module`], [`Expr`])
-//! that compiles to the emit and simulate kernels. That codegen path is the next
-//! phase; the [`Module`] / [`Expr`] types are present but not yet wired into the
-//! shaders.
+//! For richer effects, an [`EffectAsset`] can instead carry an
+//! [`EffectProgram`]: per-attribute logic built from an expression graph
+//! ([`Module`], [`Expr`]) plus init and update modifiers, which
+//! [`crate::codegen`] lowers to the effect's own emit and simulate WGSL kernels.
+//! Compiled pipelines are cached by the hash of their generated source.
 //!
-//! Status: early. Emit + simulate + draw work (verified by
-//! `tests/simulates.rs`); the expression/modifier codegen does not exist yet.
-//! See `docs/plans/particle-system-plan.md` for the phased build-out.
+//! Status: early. Both paths work -- fixed-function (verified by
+//! `tests/simulates.rs`) and codegen (verified by `tests/expression.rs`).
+//! Gradients/curves, more render routes, sorting, and picking are still ahead;
+//! see `docs/plans/particle-system-plan.md` for the phased build-out.
 //!
 //! Typical setup:
 //!
@@ -46,8 +47,8 @@ mod expr;
 mod plugin;
 
 pub use effect::{
-    EffectAsset, EffectId, Emitter, ForceModifier, ParticleBlend, SpawnRate, SpawnShape,
-    VelocityDist,
+    Attribute, EffectAsset, EffectId, EffectProgram, Emitter, ForceModifier, ParticleBlend,
+    SetAttribute, SpawnRate, SpawnShape, UpdateOp, VelocityDist,
 };
 pub use expr::{Expr, ExprHandle, Module};
 pub use plugin::{ParticleItem, ParticleItems, ParticlePlugin};

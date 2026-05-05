@@ -20,6 +20,8 @@
 //! come later.
 
 use std::any::Any;
+use std::collections::HashMap;
+use std::hash::{Hash, Hasher};
 
 use bytemuck::{Pod, Zeroable};
 use viewport_lib::plugin_api::shared_wgsl::SHARED_BINDINGS_WGSL;
@@ -30,9 +32,10 @@ use viewport_lib::resources::{HDR_COLOR_FORMAT, SCENE_DEPTH_FORMAT};
 use viewport_lib::scene::material::ItemSettings;
 use viewport_lib::wgpu as vwgpu;
 
+use crate::codegen;
 use crate::effect::{
-    EffectAsset, EffectId, Emitter, ForceModifier, ParticleBlend, SpawnRate, SpawnShape,
-    VelocityDist,
+    EffectAsset, EffectId, Emitter, EffectProgram, ForceModifier, ParticleBlend, SpawnRate,
+    SpawnShape, VelocityDist,
 };
 
 /// MSAA sample count the plugin builds its pipelines for. A plugin cannot read
@@ -182,9 +185,41 @@ struct SimParamsGpu {
 }
 
 /// Per-effect GPU state, built lazily the first time an effect is simulated.
-struct EffectGpu {
-    /// The persistent particle buffer. Held to own it for the effect's lifetime;
-    /// the emit/sim/draw bind groups alias it, so it is not read directly.
+/// Generic per-effect params for a generated (codegen) effect. Matches
+/// `GenParams` in the generated WGSL. 48 bytes.
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
+struct GenParams {
+    origin: [f32; 4],
+    dt: f32,
+    time: f32,
+    spawn_count: u32,
+    capacity: u32,
+    rng_seed: u32,
+    _pad: [u32; 3],
+}
+
+/// Per-effect GPU state, built lazily the first time an effect is simulated.
+/// The variant follows the effect's authoring path: fixed-function emitter, or
+/// a generated program with its own compiled emit/simulate pipelines.
+enum EffectGpu {
+    Fixed(FixedGpu),
+    Gen(GenGpu),
+}
+
+impl EffectGpu {
+    fn draw_bg(&self) -> &vwgpu::BindGroup {
+        match self {
+            EffectGpu::Fixed(g) => &g.draw_bg,
+            EffectGpu::Gen(g) => &g.draw_bg,
+        }
+    }
+}
+
+/// Fixed-function effect GPU state (Phase 2 emitter path).
+struct FixedGpu {
+    /// Persistent particle buffer; the bind groups alias it, so it is held but
+    /// not read directly.
     #[allow(dead_code)]
     particle_buf: vwgpu::Buffer,
     emit_buf: vwgpu::Buffer,
@@ -193,6 +228,20 @@ struct EffectGpu {
     emit_bg: vwgpu::BindGroup,
     sim_bg: vwgpu::BindGroup,
     draw_bg: vwgpu::BindGroup,
+}
+
+/// Generated (codegen) effect GPU state: one `GenParams` buffer feeds both the
+/// emit and simulate kernels, which are this effect's own compiled pipelines.
+struct GenGpu {
+    #[allow(dead_code)]
+    particle_buf: vwgpu::Buffer,
+    params_buf: vwgpu::Buffer,
+    budget_buf: vwgpu::Buffer,
+    emit_bg: vwgpu::BindGroup,
+    sim_bg: vwgpu::BindGroup,
+    draw_bg: vwgpu::BindGroup,
+    emit_pipeline: vwgpu::ComputePipeline,
+    sim_pipeline: vwgpu::ComputePipeline,
 }
 
 /// A registered effect plus its CPU-side emission bookkeeping.
@@ -222,6 +271,10 @@ pub struct ParticlePlugin {
     emit_bgl: Option<vwgpu::BindGroupLayout>,
     sim_bgl: Option<vwgpu::BindGroupLayout>,
     draw_bgl: Option<vwgpu::BindGroupLayout>,
+
+    /// Compiled generated emit/simulate pipelines, keyed by the hash of their
+    /// WGSL so effects with identical programs share pipelines.
+    gen_cache: HashMap<u64, (vwgpu::ComputePipeline, vwgpu::ComputePipeline)>,
 
     /// Effects with live simulation this frame, drawn in `paint`.
     draw_list: Vec<usize>,
@@ -256,6 +309,68 @@ impl ParticlePlugin {
     /// Number of registered effects.
     pub fn effect_count(&self) -> usize {
         self.effects.len()
+    }
+
+    /// Build effect `idx`'s GPU state if it does not exist yet. Fixed-function
+    /// effects get the shared Phase 2 pipelines; effects with a program compile
+    /// (or reuse from the cache) their own emit/simulate pipelines.
+    fn ensure_effect_gpu(
+        &mut self,
+        idx: usize,
+        device: &vwgpu::Device,
+        emit_bgl: &vwgpu::BindGroupLayout,
+        sim_bgl: &vwgpu::BindGroupLayout,
+        draw_bgl: &vwgpu::BindGroupLayout,
+    ) {
+        if self.effects[idx].gpu.is_some() {
+            return;
+        }
+        let capacity = self.effects[idx].asset.capacity;
+        // Clone the program out so the `self.effects` borrow ends before we
+        // touch the pipeline cache and assign the new GPU state.
+        let program = self.effects[idx].asset.program.clone();
+        let gpu = match program {
+            None => EffectGpu::Fixed(build_fixed_gpu(
+                device, capacity, emit_bgl, sim_bgl, draw_bgl,
+            )),
+            Some(program) => {
+                let (emit_pipeline, sim_pipeline) =
+                    self.gen_pipelines(device, &program, emit_bgl, sim_bgl);
+                EffectGpu::Gen(build_gen_gpu(
+                    device,
+                    capacity,
+                    emit_bgl,
+                    sim_bgl,
+                    draw_bgl,
+                    emit_pipeline,
+                    sim_pipeline,
+                ))
+            }
+        };
+        self.effects[idx].gpu = Some(gpu);
+    }
+
+    /// Compile (or reuse) the emit/simulate pipelines for a program, keyed by
+    /// the hash of its generated WGSL.
+    fn gen_pipelines(
+        &mut self,
+        device: &vwgpu::Device,
+        program: &EffectProgram,
+        emit_bgl: &vwgpu::BindGroupLayout,
+        sim_bgl: &vwgpu::BindGroupLayout,
+    ) -> (vwgpu::ComputePipeline, vwgpu::ComputePipeline) {
+        let shaders = codegen::generate_program(program);
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        shaders.emit.hash(&mut hasher);
+        shaders.sim.hash(&mut hasher);
+        let key = hasher.finish();
+        if let Some((emit, sim)) = self.gen_cache.get(&key) {
+            return (emit.clone(), sim.clone());
+        }
+        let emit = build_compute_pipeline(device, &shaders.emit, "emit_main", "gen_emit", emit_bgl);
+        let sim = build_compute_pipeline(device, &shaders.sim, "sim_main", "gen_sim", sim_bgl);
+        self.gen_cache.insert(key, (emit.clone(), sim.clone()));
+        (emit, sim)
     }
 }
 
@@ -475,48 +590,55 @@ impl ItemTypePlugin for ParticlePlugin {
         for (idx, origin) in driver.iter().enumerate() {
             let Some(origin) = *origin else { continue };
 
-            // Lazily build this effect's GPU state.
-            if self.effects[idx].gpu.is_none() {
-                let gpu = build_effect_gpu(
-                    device,
-                    self.effects[idx].asset.capacity,
-                    &emit_bgl,
-                    &sim_bgl,
-                    &draw_bgl,
-                );
-                self.effects[idx].gpu = Some(gpu);
-            }
+            // Lazily build this effect's GPU state (fixed or generated).
+            self.ensure_effect_gpu(idx, device, &emit_bgl, &sim_bgl, &draw_bgl);
 
             let spawn_count = next_spawn_count(&mut self.effects[idx], dt);
-            let asset = &self.effects[idx].asset;
-            let rng_seed = (ctx.frame_index as u32).wrapping_mul(2654435761).wrapping_add(idx as u32);
+            let capacity = self.effects[idx].asset.capacity;
+            let rng_seed = (ctx.frame_index as u32)
+                .wrapping_mul(2654435761)
+                .wrapping_add(idx as u32);
+            let groups = capacity.div_ceil(64).max(1);
 
-            let emit = build_emit_params(&asset.emitter, origin, asset.capacity, spawn_count, rng_seed);
-            let sim = build_sim_params(&asset.forces, dt);
-
-            let gpu = self.effects[idx].gpu.as_ref().unwrap();
-            queue.write_buffer(&gpu.emit_buf, 0, bytemuck::bytes_of(&emit));
-            queue.write_buffer(&gpu.sim_buf, 0, bytemuck::bytes_of(&sim));
-            queue.write_buffer(&gpu.budget_buf, 0, bytemuck::bytes_of(&0u32));
-
-            let groups = self.effects[idx].asset.capacity.div_ceil(64).max(1);
-            {
-                let mut pass = encoder.begin_compute_pass(&vwgpu::ComputePassDescriptor {
-                    label: Some("particle_emit_pass"),
-                    timestamp_writes: None,
-                });
-                pass.set_pipeline(&emit_pipeline);
-                pass.set_bind_group(0, &gpu.emit_bg, &[]);
-                pass.dispatch_workgroups(groups, 1, 1);
-            }
-            {
-                let mut pass = encoder.begin_compute_pass(&vwgpu::ComputePassDescriptor {
-                    label: Some("particle_sim_pass"),
-                    timestamp_writes: None,
-                });
-                pass.set_pipeline(&sim_pipeline);
-                pass.set_bind_group(0, &gpu.sim_bg, &[]);
-                pass.dispatch_workgroups(groups, 1, 1);
+            match self.effects[idx].gpu.as_ref().unwrap() {
+                EffectGpu::Fixed(g) => {
+                    let asset = &self.effects[idx].asset;
+                    let emit =
+                        build_emit_params(&asset.emitter, origin, capacity, spawn_count, rng_seed);
+                    let sim = build_sim_params(&asset.forces, dt);
+                    queue.write_buffer(&g.emit_buf, 0, bytemuck::bytes_of(&emit));
+                    queue.write_buffer(&g.sim_buf, 0, bytemuck::bytes_of(&sim));
+                    queue.write_buffer(&g.budget_buf, 0, bytemuck::bytes_of(&0u32));
+                    dispatch_sim(
+                        &mut encoder,
+                        &emit_pipeline,
+                        &g.emit_bg,
+                        &sim_pipeline,
+                        &g.sim_bg,
+                        groups,
+                    );
+                }
+                EffectGpu::Gen(g) => {
+                    let gp = GenParams {
+                        origin: [origin[0], origin[1], origin[2], 0.0],
+                        dt,
+                        time: 0.0,
+                        spawn_count,
+                        capacity,
+                        rng_seed,
+                        _pad: [0; 3],
+                    };
+                    queue.write_buffer(&g.params_buf, 0, bytemuck::bytes_of(&gp));
+                    queue.write_buffer(&g.budget_buf, 0, bytemuck::bytes_of(&0u32));
+                    dispatch_sim(
+                        &mut encoder,
+                        &g.emit_pipeline,
+                        &g.emit_bg,
+                        &g.sim_pipeline,
+                        &g.sim_bg,
+                        groups,
+                    );
+                }
             }
 
             self.draw_list.push(idx);
@@ -551,32 +673,184 @@ impl ItemTypePlugin for ParticlePlugin {
                 ParticleBlend::Alpha | ParticleBlend::Premultiplied => over,
             };
             pass.set_pipeline(pipeline);
-            pass.set_bind_group(1, &gpu.draw_bg, &[]);
+            pass.set_bind_group(1, gpu.draw_bg(), &[]);
             pass.draw(0..6, 0..eff.asset.capacity);
         }
     }
 }
 
-/// Allocate one effect's persistent particle buffer, its parameter buffers, and
-/// the emit/sim/draw bind groups. The particle buffer starts zeroed, so every
-/// slot reads as dead until the first emit pass.
-fn build_effect_gpu(
+/// Allocate a zeroed persistent particle buffer of `capacity` slots.
+fn build_particle_buffer(device: &vwgpu::Device, capacity: u32) -> vwgpu::Buffer {
+    let bytes = (capacity as u64) * std::mem::size_of::<GpuParticle>() as u64;
+    let buf = device.create_buffer(&vwgpu::BufferDescriptor {
+        label: Some("particle_buffer"),
+        size: bytes.max(std::mem::size_of::<GpuParticle>() as u64),
+        usage: vwgpu::BufferUsages::STORAGE | vwgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: true,
+    });
+    // Zero the buffer so all slots are dead.
+    buf.slice(..).get_mapped_range_mut().fill(0);
+    buf.unmap();
+    buf
+}
+
+/// One-`u32` atomic spawn-budget buffer.
+fn build_budget_buffer(device: &vwgpu::Device) -> vwgpu::Buffer {
+    device.create_buffer(&vwgpu::BufferDescriptor {
+        label: Some("particle_spawn_budget"),
+        size: std::mem::size_of::<u32>() as u64,
+        usage: vwgpu::BufferUsages::STORAGE | vwgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    })
+}
+
+/// Encode this frame's emit and simulate compute passes for one effect.
+fn dispatch_sim(
+    encoder: &mut vwgpu::CommandEncoder,
+    emit_pipeline: &vwgpu::ComputePipeline,
+    emit_bg: &vwgpu::BindGroup,
+    sim_pipeline: &vwgpu::ComputePipeline,
+    sim_bg: &vwgpu::BindGroup,
+    groups: u32,
+) {
+    {
+        let mut pass = encoder.begin_compute_pass(&vwgpu::ComputePassDescriptor {
+            label: Some("particle_emit_pass"),
+            timestamp_writes: None,
+        });
+        pass.set_pipeline(emit_pipeline);
+        pass.set_bind_group(0, emit_bg, &[]);
+        pass.dispatch_workgroups(groups, 1, 1);
+    }
+    {
+        let mut pass = encoder.begin_compute_pass(&vwgpu::ComputePassDescriptor {
+            label: Some("particle_sim_pass"),
+            timestamp_writes: None,
+        });
+        pass.set_pipeline(sim_pipeline);
+        pass.set_bind_group(0, sim_bg, &[]);
+        pass.dispatch_workgroups(groups, 1, 1);
+    }
+}
+
+/// Build a compute pipeline from WGSL source against a single bind group layout.
+fn build_compute_pipeline(
+    device: &vwgpu::Device,
+    src: &str,
+    entry: &str,
+    label: &str,
+    bgl: &vwgpu::BindGroupLayout,
+) -> vwgpu::ComputePipeline {
+    let module = device.create_shader_module(vwgpu::ShaderModuleDescriptor {
+        label: Some(label),
+        source: vwgpu::ShaderSource::Wgsl(src.into()),
+    });
+    let layout = vwgpu::pipeline_layout(device, label, &[bgl]);
+    device.create_compute_pipeline(&vwgpu::ComputePipelineDescriptor {
+        label: Some(label),
+        layout: Some(&layout),
+        module: &module,
+        entry_point: Some(entry),
+        compilation_options: Default::default(),
+        cache: None,
+    })
+}
+
+/// Draw bind group binding the particle buffer at group 1, binding 0.
+fn build_draw_bg(
+    device: &vwgpu::Device,
+    draw_bgl: &vwgpu::BindGroupLayout,
+    particle_buf: &vwgpu::Buffer,
+) -> vwgpu::BindGroup {
+    device.create_bind_group(&vwgpu::BindGroupDescriptor {
+        label: Some("particle_draw_bg"),
+        layout: draw_bgl,
+        entries: &[vwgpu::BindGroupEntry {
+            binding: 0,
+            resource: particle_buf.as_entire_binding(),
+        }],
+    })
+}
+
+/// Build a generated (codegen) effect's GPU state: a `GenParams` uniform, the
+/// budget buffer, and the emit/sim/draw bind groups over the generated
+/// pipelines.
+fn build_gen_gpu(
     device: &vwgpu::Device,
     capacity: u32,
     emit_bgl: &vwgpu::BindGroupLayout,
     sim_bgl: &vwgpu::BindGroupLayout,
     draw_bgl: &vwgpu::BindGroupLayout,
-) -> EffectGpu {
-    let particle_bytes = (capacity as u64) * std::mem::size_of::<GpuParticle>() as u64;
-    let particle_buf = device.create_buffer(&vwgpu::BufferDescriptor {
-        label: Some("particle_buffer"),
-        size: particle_bytes.max(std::mem::size_of::<GpuParticle>() as u64),
-        usage: vwgpu::BufferUsages::STORAGE | vwgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: true,
+    emit_pipeline: vwgpu::ComputePipeline,
+    sim_pipeline: vwgpu::ComputePipeline,
+) -> GenGpu {
+    let particle_buf = build_particle_buffer(device, capacity);
+    let budget_buf = build_budget_buffer(device);
+    let params_buf = device.create_buffer(&vwgpu::BufferDescriptor {
+        label: Some("particle_gen_params"),
+        size: std::mem::size_of::<GenParams>() as u64,
+        usage: vwgpu::BufferUsages::UNIFORM | vwgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
     });
-    // Zero the buffer so all slots are dead.
-    particle_buf.slice(..).get_mapped_range_mut().fill(0);
-    particle_buf.unmap();
+
+    let emit_bg = device.create_bind_group(&vwgpu::BindGroupDescriptor {
+        label: Some("particle_gen_emit_bg"),
+        layout: emit_bgl,
+        entries: &[
+            vwgpu::BindGroupEntry {
+                binding: 0,
+                resource: particle_buf.as_entire_binding(),
+            },
+            vwgpu::BindGroupEntry {
+                binding: 1,
+                resource: params_buf.as_entire_binding(),
+            },
+            vwgpu::BindGroupEntry {
+                binding: 2,
+                resource: budget_buf.as_entire_binding(),
+            },
+        ],
+    });
+    let sim_bg = device.create_bind_group(&vwgpu::BindGroupDescriptor {
+        label: Some("particle_gen_sim_bg"),
+        layout: sim_bgl,
+        entries: &[
+            vwgpu::BindGroupEntry {
+                binding: 0,
+                resource: particle_buf.as_entire_binding(),
+            },
+            vwgpu::BindGroupEntry {
+                binding: 1,
+                resource: params_buf.as_entire_binding(),
+            },
+        ],
+    });
+    let draw_bg = build_draw_bg(device, draw_bgl, &particle_buf);
+
+    GenGpu {
+        particle_buf,
+        params_buf,
+        budget_buf,
+        emit_bg,
+        sim_bg,
+        draw_bg,
+        emit_pipeline,
+        sim_pipeline,
+    }
+}
+
+/// Allocate one fixed-function effect's persistent particle buffer, its
+/// parameter buffers, and the emit/sim/draw bind groups. The particle buffer
+/// starts zeroed, so every slot reads as dead until the first emit pass.
+fn build_fixed_gpu(
+    device: &vwgpu::Device,
+    capacity: u32,
+    emit_bgl: &vwgpu::BindGroupLayout,
+    sim_bgl: &vwgpu::BindGroupLayout,
+    draw_bgl: &vwgpu::BindGroupLayout,
+) -> FixedGpu {
+    let particle_buf = build_particle_buffer(device, capacity);
+    let budget_buf = build_budget_buffer(device);
 
     let emit_buf = device.create_buffer(&vwgpu::BufferDescriptor {
         label: Some("particle_emit_params"),
@@ -588,12 +862,6 @@ fn build_effect_gpu(
         label: Some("particle_sim_params"),
         size: std::mem::size_of::<SimParamsGpu>() as u64,
         usage: vwgpu::BufferUsages::UNIFORM | vwgpu::BufferUsages::COPY_DST,
-        mapped_at_creation: false,
-    });
-    let budget_buf = device.create_buffer(&vwgpu::BufferDescriptor {
-        label: Some("particle_spawn_budget"),
-        size: std::mem::size_of::<u32>() as u64,
-        usage: vwgpu::BufferUsages::STORAGE | vwgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
 
@@ -629,16 +897,9 @@ fn build_effect_gpu(
             },
         ],
     });
-    let draw_bg = device.create_bind_group(&vwgpu::BindGroupDescriptor {
-        label: Some("particle_draw_bg"),
-        layout: draw_bgl,
-        entries: &[vwgpu::BindGroupEntry {
-            binding: 0,
-            resource: particle_buf.as_entire_binding(),
-        }],
-    });
+    let draw_bg = build_draw_bg(device, draw_bgl, &particle_buf);
 
-    EffectGpu {
+    FixedGpu {
         particle_buf,
         emit_buf,
         sim_buf,
@@ -650,8 +911,14 @@ fn build_effect_gpu(
 }
 
 /// How many particles to spawn this frame, advancing the effect's accumulator.
+/// A generated effect takes its rate from the program; a fixed effect from the
+/// emitter.
 fn next_spawn_count(effect: &mut RegisteredEffect, dt: f32) -> u32 {
-    match effect.asset.emitter.rate {
+    let rate = match &effect.asset.program {
+        Some(program) => program.rate,
+        None => effect.asset.emitter.rate,
+    };
+    match rate {
         SpawnRate::PerSecond(rate) => {
             effect.spawn_accum += rate.max(0.0) * dt;
             let count = effect.spawn_accum.floor();

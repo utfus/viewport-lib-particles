@@ -11,6 +11,8 @@
 //! [`ParticlePlugin`](crate::ParticlePlugin) to get an [`EffectId`]; the plugin
 //! allocates the particle buffer and pipelines.
 
+use crate::expr::{ExprHandle, Module};
+
 /// Identifies an [`EffectAsset`] registered with a
 /// [`ParticlePlugin`](crate::ParticlePlugin).
 ///
@@ -135,6 +137,102 @@ impl Default for ParticleBlend {
     }
 }
 
+/// A particle attribute an init modifier can set.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Attribute {
+    /// World-space position (`vec3`).
+    Position,
+    /// Velocity (`vec3`).
+    Velocity,
+    /// Lifetime in seconds (`f32`); also seeds `max_lifetime`.
+    Lifetime,
+    /// RGB colour (`vec3`); alpha comes from the lifetime fade at draw.
+    Colour,
+    /// Billboard size (`f32`).
+    Size,
+}
+
+/// An init modifier: set an attribute from an expression at spawn.
+#[derive(Clone, Debug)]
+pub struct SetAttribute {
+    /// Which attribute to write.
+    pub attribute: Attribute,
+    /// Expression evaluated per particle. Its type must match the attribute
+    /// (`vec3` for position/velocity/colour, `f32` for lifetime/size).
+    pub value: ExprHandle,
+}
+
+/// An update modifier: contributes to the per-step motion.
+#[derive(Clone, Debug)]
+pub enum UpdateOp {
+    /// Add a `vec3` acceleration (integrated into velocity each step). Force
+    /// modifiers are expressed this way; the expression may read attributes such
+    /// as `position` to build attractors.
+    Accelerate(ExprHandle),
+}
+
+/// A codegen program: an expression [`Module`] plus the init and update
+/// modifiers that reference it. An [`EffectAsset`] carrying a program compiles
+/// to per-effect emit and simulate WGSL kernels instead of using the
+/// fixed-function [`Emitter`] path.
+#[derive(Clone, Debug)]
+pub struct EffectProgram {
+    /// The expression graph the modifiers reference.
+    pub module: Module,
+    /// Emission schedule.
+    pub rate: SpawnRate,
+    /// Spawn-time attribute writers, applied in order.
+    pub init: Vec<SetAttribute>,
+    /// Per-step contributions, applied in order.
+    pub update: Vec<UpdateOp>,
+    /// Per-particle lifetime range, sampled uniformly at spawn unless an init
+    /// modifier writes `Lifetime` explicitly.
+    pub lifetime: (f32, f32),
+}
+
+impl Default for EffectProgram {
+    fn default() -> Self {
+        Self {
+            module: Module::new(),
+            rate: SpawnRate::default(),
+            init: Vec::new(),
+            update: Vec::new(),
+            lifetime: (1.0, 2.0),
+        }
+    }
+}
+
+impl EffectProgram {
+    /// A program with an empty module and the default rate and lifetime.
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the emission schedule.
+    pub fn with_rate(mut self, rate: SpawnRate) -> Self {
+        self.rate = rate;
+        self
+    }
+
+    /// Append an init modifier.
+    pub fn set(mut self, attribute: Attribute, value: ExprHandle) -> Self {
+        self.init.push(SetAttribute { attribute, value });
+        self
+    }
+
+    /// Append an update modifier.
+    pub fn update(mut self, op: UpdateOp) -> Self {
+        self.update.push(op);
+        self
+    }
+
+    /// Set the spawn lifetime range.
+    pub fn with_lifetime(mut self, min: f32, max: f32) -> Self {
+        self.lifetime = (min, max);
+        self
+    }
+}
+
 /// Fixed-function emitter configuration.
 #[derive(Clone, Copy, Debug)]
 pub struct Emitter {
@@ -178,10 +276,15 @@ pub struct EffectAsset {
     pub capacity: u32,
     /// Blend mode for the draw.
     pub blend: ParticleBlend,
-    /// Fixed-function emitter.
+    /// Fixed-function emitter. Ignored when [`program`](Self::program) is set.
     pub emitter: Emitter,
-    /// Forces summed each simulation step.
+    /// Forces summed each simulation step. Ignored when
+    /// [`program`](Self::program) is set.
     pub forces: Vec<ForceModifier>,
+    /// Optional codegen program. When present, the effect compiles to per-effect
+    /// emit/simulate WGSL from the expression graph instead of using the
+    /// fixed-function emitter and forces above.
+    pub program: Option<EffectProgram>,
 }
 
 impl Default for EffectAsset {
@@ -192,6 +295,7 @@ impl Default for EffectAsset {
             blend: ParticleBlend::default(),
             emitter: Emitter::default(),
             forces: Vec::new(),
+            program: None,
         }
     }
 }
@@ -226,6 +330,14 @@ impl EffectAsset {
     /// Append a force.
     pub fn force(mut self, force: ForceModifier) -> Self {
         self.forces.push(force);
+        self
+    }
+
+    /// Attach a codegen program. The effect then compiles its emit/simulate
+    /// kernels from the expression graph, ignoring the fixed-function emitter
+    /// and forces.
+    pub fn with_program(mut self, program: EffectProgram) -> Self {
+        self.program = Some(program);
         self
     }
 }

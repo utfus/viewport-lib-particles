@@ -20,10 +20,14 @@
 //! [`crate::codegen`] lowers to the effect's own emit and simulate WGSL kernels.
 //! Compiled pipelines are cached by the hash of their generated source.
 //!
-//! Status: early. Both paths work -- fixed-function (verified by
-//! `tests/simulates.rs`) and codegen (verified by `tests/expression.rs`).
-//! Gradients/curves, more render routes, sorting, and picking are still ahead;
-//! see `docs/plans/particle-system-plan.md` for the phased build-out.
+//! Colour and size ramps over lifetime attach to either path via
+//! [`EffectAsset::with_gradient`] (a LUT sampled by particle age).
+//!
+//! Status: early. Both authoring paths work -- fixed-function (verified by
+//! `tests/simulates.rs`) and codegen (verified by `tests/expression.rs`) -- with
+//! lifetime gradients (verified by `tests/gradient.rs`). More render routes,
+//! sorting, and picking are still ahead; see
+//! `docs/plans/particle-system-plan.md` for the phased build-out.
 //!
 //! Typical setup:
 //!
@@ -47,8 +51,8 @@ mod expr;
 mod plugin;
 
 pub use effect::{
-    Attribute, EffectAsset, EffectId, EffectProgram, Emitter, ForceModifier, ParticleBlend,
-    SetAttribute, SpawnRate, SpawnShape, UpdateOp, VelocityDist,
+    Attribute, EffectAsset, EffectId, EffectProgram, Emitter, ForceModifier, Gradient,
+    ParticleBlend, SetAttribute, SpawnRate, SpawnShape, UpdateOp, VelocityDist,
 };
 pub use expr::{Expr, ExprHandle, Module};
 pub use plugin::{ParticleItem, ParticleItems, ParticlePlugin};

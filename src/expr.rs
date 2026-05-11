@@ -44,6 +44,18 @@ pub enum Expr {
     Cos(ExprHandle),
     /// Broadcast a scalar to a `vec3`.
     Splat3(ExprHandle),
+    /// Normalize a `vec3` (zero-safe is the caller's responsibility).
+    Normalize(ExprHandle),
+    /// Length of a `vec3` (scalar).
+    Length(ExprHandle),
+    /// Cross product of two `vec3`s.
+    Cross(ExprHandle, ExprHandle),
+    /// Component-wise minimum.
+    Min(ExprHandle, ExprHandle),
+    /// Component-wise maximum.
+    Max(ExprHandle, ExprHandle),
+    /// Clamp `x` to `[lo, hi]`.
+    Clamp(ExprHandle, ExprHandle, ExprHandle),
 }
 
 /// Owns the expression nodes for one effect and hands out [`ExprHandle`]s.
@@ -128,6 +140,36 @@ impl Module {
         self.push(Expr::Splat3(a))
     }
 
+    /// `normalize(a)`.
+    pub fn normalize(&mut self, a: ExprHandle) -> ExprHandle {
+        self.push(Expr::Normalize(a))
+    }
+
+    /// `length(a)`.
+    pub fn length(&mut self, a: ExprHandle) -> ExprHandle {
+        self.push(Expr::Length(a))
+    }
+
+    /// `cross(a, b)`.
+    pub fn cross(&mut self, a: ExprHandle, b: ExprHandle) -> ExprHandle {
+        self.push(Expr::Cross(a, b))
+    }
+
+    /// `min(a, b)`.
+    pub fn min(&mut self, a: ExprHandle, b: ExprHandle) -> ExprHandle {
+        self.push(Expr::Min(a, b))
+    }
+
+    /// `max(a, b)`.
+    pub fn max(&mut self, a: ExprHandle, b: ExprHandle) -> ExprHandle {
+        self.push(Expr::Max(a, b))
+    }
+
+    /// `clamp(x, lo, hi)`.
+    pub fn clamp(&mut self, x: ExprHandle, lo: ExprHandle, hi: ExprHandle) -> ExprHandle {
+        self.push(Expr::Clamp(x, lo, hi))
+    }
+
     /// Read a node by handle.
     pub(crate) fn get(&self, handle: ExprHandle) -> &Expr {
         &self.nodes[handle.0 as usize]
@@ -153,11 +195,26 @@ impl Module {
             }
             seen[i as usize] = true;
             match self.nodes[i as usize] {
-                Expr::Add(a, b) | Expr::Sub(a, b) | Expr::Mul(a, b) | Expr::Div(a, b) => {
+                Expr::Add(a, b)
+                | Expr::Sub(a, b)
+                | Expr::Mul(a, b)
+                | Expr::Div(a, b)
+                | Expr::Cross(a, b)
+                | Expr::Min(a, b)
+                | Expr::Max(a, b) => {
                     stack.push(a.0);
                     stack.push(b.0);
                 }
-                Expr::Sin(a) | Expr::Cos(a) | Expr::Splat3(a) => stack.push(a.0),
+                Expr::Sin(a)
+                | Expr::Cos(a)
+                | Expr::Splat3(a)
+                | Expr::Normalize(a)
+                | Expr::Length(a) => stack.push(a.0),
+                Expr::Clamp(x, lo, hi) => {
+                    stack.push(x.0);
+                    stack.push(lo.0);
+                    stack.push(hi.0);
+                }
                 _ => {}
             }
         }

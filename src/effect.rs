@@ -118,6 +118,109 @@ pub enum ForceModifier {
     },
 }
 
+/// Colour and size ramps applied over a particle's lifetime.
+///
+/// Baked into a small 1D lookup texture the draw shader samples by normalized
+/// age (0 at spawn, 1 at death). The sampled RGB multiplies the particle colour
+/// and the sampled scale multiplies its size, so an identity gradient (the
+/// default) leaves both unchanged. Keys are `(t in 0..1, value)` pairs in
+/// ascending `t`; values are linearly interpolated.
+///
+/// When using a colour ramp, set the emitter/program colour to white so the
+/// multiply yields the ramp colour directly.
+#[derive(Clone, Debug)]
+pub struct Gradient {
+    /// Colour keys `(t, rgb)`. Multiplies the particle colour.
+    pub colour: Vec<(f32, [f32; 3])>,
+    /// Size-scale keys `(t, scale)`. Multiplies the particle size.
+    pub size: Vec<(f32, f32)>,
+}
+
+impl Default for Gradient {
+    fn default() -> Self {
+        // Identity: no colour or size change over life.
+        Self {
+            colour: vec![(0.0, [1.0, 1.0, 1.0]), (1.0, [1.0, 1.0, 1.0])],
+            size: vec![(0.0, 1.0), (1.0, 1.0)],
+        }
+    }
+}
+
+impl Gradient {
+    /// An identity gradient (no change over life).
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Set the colour ramp keys (ascending `t`).
+    pub fn with_colour(mut self, keys: Vec<(f32, [f32; 3])>) -> Self {
+        if !keys.is_empty() {
+            self.colour = keys;
+        }
+        self
+    }
+
+    /// Set the size-scale ramp keys (ascending `t`).
+    pub fn with_size(mut self, keys: Vec<(f32, f32)>) -> Self {
+        if !keys.is_empty() {
+            self.size = keys;
+        }
+        self
+    }
+
+    /// Sample the colour ramp at normalized age `t`.
+    pub(crate) fn sample_colour(&self, t: f32) -> [f32; 3] {
+        sample_keys3(&self.colour, t)
+    }
+
+    /// Sample the size ramp at normalized age `t`.
+    pub(crate) fn sample_size(&self, t: f32) -> f32 {
+        sample_keys1(&self.size, t)
+    }
+}
+
+/// Piecewise-linear sample of ascending `(t, vec3)` keys.
+fn sample_keys3(keys: &[(f32, [f32; 3])], t: f32) -> [f32; 3] {
+    if keys.is_empty() {
+        return [1.0, 1.0, 1.0];
+    }
+    if t <= keys[0].0 {
+        return keys[0].1;
+    }
+    for w in keys.windows(2) {
+        let (t0, a) = w[0];
+        let (t1, b) = w[1];
+        if t <= t1 {
+            let f = if t1 > t0 { (t - t0) / (t1 - t0) } else { 0.0 };
+            return [
+                a[0] + (b[0] - a[0]) * f,
+                a[1] + (b[1] - a[1]) * f,
+                a[2] + (b[2] - a[2]) * f,
+            ];
+        }
+    }
+    keys[keys.len() - 1].1
+}
+
+/// Piecewise-linear sample of ascending `(t, f32)` keys.
+fn sample_keys1(keys: &[(f32, f32)], t: f32) -> f32 {
+    if keys.is_empty() {
+        return 1.0;
+    }
+    if t <= keys[0].0 {
+        return keys[0].1;
+    }
+    for w in keys.windows(2) {
+        let (t0, a) = w[0];
+        let (t1, b) = w[1];
+        if t <= t1 {
+            let f = if t1 > t0 { (t - t0) / (t1 - t0) } else { 0.0 };
+            return a + (b - a) * f;
+        }
+    }
+    keys[keys.len() - 1].1
+}
+
 /// GPU blend mode for the particle draw.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ParticleBlend {
@@ -285,6 +388,10 @@ pub struct EffectAsset {
     /// emit/simulate WGSL from the expression graph instead of using the
     /// fixed-function emitter and forces above.
     pub program: Option<EffectProgram>,
+    /// Optional colour/size ramp over lifetime, applied at draw. `None` uses the
+    /// shared identity ramp (no change). Works for both the fixed and codegen
+    /// paths.
+    pub gradient: Option<Gradient>,
 }
 
 impl Default for EffectAsset {
@@ -296,6 +403,7 @@ impl Default for EffectAsset {
             emitter: Emitter::default(),
             forces: Vec::new(),
             program: None,
+            gradient: None,
         }
     }
 }
@@ -338,6 +446,12 @@ impl EffectAsset {
     /// and forces.
     pub fn with_program(mut self, program: EffectProgram) -> Self {
         self.program = Some(program);
+        self
+    }
+
+    /// Attach a colour/size ramp over lifetime.
+    pub fn with_gradient(mut self, gradient: Gradient) -> Self {
+        self.gradient = Some(gradient);
         self
     }
 }

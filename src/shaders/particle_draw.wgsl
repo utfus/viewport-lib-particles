@@ -19,6 +19,11 @@ struct Particle {
 
 @group(1) @binding(0) var<storage, read> particles: array<Particle>;
 
+// Group 2: the lifetime-ramp LUT. rgb multiplies colour, a multiplies size.
+// The identity ramp (all ones) leaves the particle unchanged.
+@group(2) @binding(0) var ramp_tex: texture_2d<f32>;
+@group(2) @binding(1) var ramp_samp: sampler;
+
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) color: vec4<f32>,
@@ -38,8 +43,12 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VsOut
     let c = corners[vi];
     let p = particles[ii];
 
+    // Normalized age (0 at spawn, 1 at death) drives the ramp lookup.
+    let age = clamp(1.0 - p.lifetime / max(p.max_lifetime, 1e-4), 0.0, 1.0);
+    let ramp = textureSampleLevel(ramp_tex, ramp_samp, vec2<f32>(age, 0.5), 0.0);
+
     // Collapse dead particles to zero area (no fragments).
-    var half = p.size * 0.5;
+    var half = p.size * 0.5 * ramp.a;
     if (p.lifetime <= 0.0) {
         half = 0.0;
     }
@@ -52,7 +61,7 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VsOut
 
     var out: VsOut;
     out.pos = camera.view_proj * vec4<f32>(world, 1.0);
-    out.color = vec4<f32>(p.colour.rgb, p.colour.a * fade);
+    out.color = vec4<f32>(p.colour.rgb * ramp.rgb, p.colour.a * fade);
     out.uv = c * 0.5 + vec2<f32>(0.5, 0.5);
     return out;
 }

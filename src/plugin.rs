@@ -214,6 +214,13 @@ impl EffectGpu {
             EffectGpu::Gen(g) => &g.draw_bg,
         }
     }
+
+    fn ramp_bg(&self) -> &vwgpu::BindGroup {
+        match self {
+            EffectGpu::Fixed(g) => &g.ramp_bg,
+            EffectGpu::Gen(g) => &g.ramp_bg,
+        }
+    }
 }
 
 /// Fixed-function effect GPU state (Phase 2 emitter path).
@@ -228,6 +235,11 @@ struct FixedGpu {
     emit_bg: vwgpu::BindGroup,
     sim_bg: vwgpu::BindGroup,
     draw_bg: vwgpu::BindGroup,
+    ramp_bg: vwgpu::BindGroup,
+    /// Effect-specific ramp LUT, held alive when the effect has a gradient.
+    /// `None` when the effect uses the shared identity ramp.
+    #[allow(dead_code)]
+    ramp_lut: Option<vwgpu::Texture>,
 }
 
 /// Generated (codegen) effect GPU state: one `GenParams` buffer feeds both the
@@ -240,6 +252,9 @@ struct GenGpu {
     emit_bg: vwgpu::BindGroup,
     sim_bg: vwgpu::BindGroup,
     draw_bg: vwgpu::BindGroup,
+    ramp_bg: vwgpu::BindGroup,
+    #[allow(dead_code)]
+    ramp_lut: Option<vwgpu::Texture>,
     emit_pipeline: vwgpu::ComputePipeline,
     sim_pipeline: vwgpu::ComputePipeline,
 }
@@ -271,6 +286,15 @@ pub struct ParticlePlugin {
     emit_bgl: Option<vwgpu::BindGroupLayout>,
     sim_bgl: Option<vwgpu::BindGroupLayout>,
     draw_bgl: Option<vwgpu::BindGroupLayout>,
+
+    // Lifetime-ramp LUT (group 2 of the draw pipeline): the layout, the shared
+    // linear sampler, and an identity LUT + bind group reused by effects with no
+    // gradient. Built in `init_gpu`.
+    ramp_bgl: Option<vwgpu::BindGroupLayout>,
+    ramp_sampler: Option<vwgpu::Sampler>,
+    #[allow(dead_code)]
+    identity_ramp_lut: Option<vwgpu::Texture>,
+    identity_ramp_bg: Option<vwgpu::BindGroup>,
 
     /// Compiled generated emit/simulate pipelines, keyed by the hash of their
     /// WGSL so effects with identical programs share pipelines.
@@ -318,6 +342,7 @@ impl ParticlePlugin {
         &mut self,
         idx: usize,
         device: &vwgpu::Device,
+        queue: &vwgpu::Queue,
         emit_bgl: &vwgpu::BindGroupLayout,
         sim_bgl: &vwgpu::BindGroupLayout,
         draw_bgl: &vwgpu::BindGroupLayout,
@@ -326,12 +351,27 @@ impl ParticlePlugin {
             return;
         }
         let capacity = self.effects[idx].asset.capacity;
-        // Clone the program out so the `self.effects` borrow ends before we
-        // touch the pipeline cache and assign the new GPU state.
+        // Clone the program and gradient out so the `self.effects` borrow ends
+        // before we touch the pipeline cache and assign the new GPU state.
         let program = self.effects[idx].asset.program.clone();
+        let gradient = self.effects[idx].asset.gradient.clone();
+
+        // Ramp bind group: an effect with a gradient bakes its own LUT; others
+        // share the identity ramp built in `prepare`.
+        let (ramp_bg, ramp_lut) = match gradient {
+            Some(g) => {
+                let (ramp_bgl, ramp_sampler) =
+                    (self.ramp_bgl.as_ref().unwrap(), self.ramp_sampler.as_ref().unwrap());
+                let lut = build_ramp_lut(device, queue, &g);
+                let bg = make_ramp_bg(device, ramp_bgl, ramp_sampler, &lut);
+                (bg, Some(lut))
+            }
+            None => (self.identity_ramp_bg.clone().unwrap(), None),
+        };
+
         let gpu = match program {
             None => EffectGpu::Fixed(build_fixed_gpu(
-                device, capacity, emit_bgl, sim_bgl, draw_bgl,
+                device, capacity, emit_bgl, sim_bgl, draw_bgl, ramp_bg, ramp_lut,
             )),
             Some(program) => {
                 let (emit_pipeline, sim_pipeline) =
@@ -342,6 +382,8 @@ impl ParticlePlugin {
                     emit_bgl,
                     sim_bgl,
                     draw_bgl,
+                    ramp_bg,
+                    ramp_lut,
                     emit_pipeline,
                     sim_pipeline,
                 ))
@@ -423,6 +465,41 @@ impl ItemTypePlugin for ParticlePlugin {
             }],
         });
 
+        // Group 2: the lifetime-ramp LUT, sampled in the vertex stage. The
+        // identity LUT + its bind group are built lazily in `prepare` (which has
+        // a queue for the texture upload).
+        let ramp_bgl = device.create_bind_group_layout(&vwgpu::BindGroupLayoutDescriptor {
+            label: Some("particle_ramp_bgl"),
+            entries: &[
+                vwgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: vwgpu::ShaderStages::VERTEX,
+                    ty: vwgpu::BindingType::Texture {
+                        sample_type: vwgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: vwgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                vwgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: vwgpu::ShaderStages::VERTEX,
+                    ty: vwgpu::BindingType::Sampler(vwgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        let ramp_sampler = device.create_sampler(&vwgpu::SamplerDescriptor {
+            label: Some("particle_ramp_sampler"),
+            address_mode_u: vwgpu::AddressMode::ClampToEdge,
+            address_mode_v: vwgpu::AddressMode::ClampToEdge,
+            address_mode_w: vwgpu::AddressMode::ClampToEdge,
+            mag_filter: vwgpu::FilterMode::Linear,
+            min_filter: vwgpu::FilterMode::Linear,
+            mipmap_filter: vwgpu::FilterMode::Nearest,
+            ..Default::default()
+        });
+
         // Compute pipelines.
         let compute = |src: &str, entry: &str, label: &str, bgl: &vwgpu::BindGroupLayout| {
             let module = device.create_shader_module(vwgpu::ShaderModuleDescriptor {
@@ -461,8 +538,11 @@ impl ItemTypePlugin for ParticlePlugin {
             label: Some("particle_draw_shader"),
             source: vwgpu::ShaderSource::Wgsl(draw_src.into()),
         });
-        let draw_layout =
-            vwgpu::pipeline_layout(device, "particle_draw_layout", &[shared.group0_layout, &draw_bgl]);
+        let draw_layout = vwgpu::pipeline_layout(
+            device,
+            "particle_draw_layout",
+            &[shared.group0_layout, &draw_bgl, &ramp_bgl],
+        );
 
         let one = vwgpu::BlendComponent {
             src_factor: vwgpu::BlendFactor::One,
@@ -537,6 +617,8 @@ impl ItemTypePlugin for ParticlePlugin {
         self.emit_bgl = Some(emit_bgl);
         self.sim_bgl = Some(sim_bgl);
         self.draw_bgl = Some(draw_bgl);
+        self.ramp_bgl = Some(ramp_bgl);
+        self.ramp_sampler = Some(ramp_sampler);
     }
 
     fn prepare(
@@ -568,6 +650,19 @@ impl ItemTypePlugin for ParticlePlugin {
         let (emit_bgl, sim_bgl, draw_bgl) = (emit_bgl.clone(), sim_bgl.clone(), draw_bgl.clone());
         let (emit_pipeline, sim_pipeline) = (emit_pipeline.clone(), sim_pipeline.clone());
 
+        // Build the shared identity ramp on first use (needs a queue, so not in
+        // `init_gpu`).
+        if self.identity_ramp_bg.is_none() {
+            if let (Some(ramp_bgl), Some(ramp_sampler)) =
+                (self.ramp_bgl.as_ref(), self.ramp_sampler.as_ref())
+            {
+                let lut = build_ramp_lut(device, queue, &crate::effect::Gradient::default());
+                let bg = make_ramp_bg(device, ramp_bgl, ramp_sampler, &lut);
+                self.identity_ramp_lut = Some(lut);
+                self.identity_ramp_bg = Some(bg);
+            }
+        }
+
         let dt = items.dt.max(0.0);
 
         // First non-hidden instance per effect drives that effect's simulation.
@@ -591,7 +686,7 @@ impl ItemTypePlugin for ParticlePlugin {
             let Some(origin) = *origin else { continue };
 
             // Lazily build this effect's GPU state (fixed or generated).
-            self.ensure_effect_gpu(idx, device, &emit_bgl, &sim_bgl, &draw_bgl);
+            self.ensure_effect_gpu(idx, device, queue, &emit_bgl, &sim_bgl, &draw_bgl);
 
             let spawn_count = next_spawn_count(&mut self.effects[idx], dt);
             let capacity = self.effects[idx].asset.capacity;
@@ -674,6 +769,7 @@ impl ItemTypePlugin for ParticlePlugin {
             };
             pass.set_pipeline(pipeline);
             pass.set_bind_group(1, gpu.draw_bg(), &[]);
+            pass.set_bind_group(2, gpu.ramp_bg(), &[]);
             pass.draw(0..6, 0..eff.asset.capacity);
         }
     }
@@ -772,6 +868,106 @@ fn build_draw_bg(
     })
 }
 
+/// Texels in a lifetime-ramp LUT.
+const RAMP_WIDTH: u32 = 64;
+
+/// Encode an `f32` as an IEEE-754 half-precision `u16`. Dependency-free so the
+/// crate needs no `half`; handles the ranges gradients produce (small positive
+/// colours and sizes), with round-to-nearest and flush-to-zero on underflow.
+fn f32_to_f16(value: f32) -> u16 {
+    let bits = value.to_bits();
+    let sign = ((bits >> 16) & 0x8000) as u16;
+    let exp = ((bits >> 23) & 0xff) as i32 - 127 + 15;
+    let mantissa = bits & 0x7f_ffff;
+    if exp >= 0x1f {
+        // Overflow / inf / nan -> largest finite (or inf for nan-free inputs).
+        return sign | 0x7bff;
+    }
+    if exp <= 0 {
+        // Subnormal or underflow -> flush to zero (adequate for ramps).
+        return sign;
+    }
+    sign | ((exp as u16) << 10) | ((mantissa >> 13) as u16)
+}
+
+/// Bake a gradient into a `RAMP_WIDTH` x 1 `Rgba16Float` LUT: rgb = colour,
+/// a = size scale, sampled by normalized age.
+fn build_ramp_lut(
+    device: &vwgpu::Device,
+    queue: &vwgpu::Queue,
+    gradient: &crate::effect::Gradient,
+) -> vwgpu::Texture {
+    let mut texels: Vec<u16> = Vec::with_capacity(RAMP_WIDTH as usize * 4);
+    for i in 0..RAMP_WIDTH {
+        let t = i as f32 / (RAMP_WIDTH - 1) as f32;
+        let c = gradient.sample_colour(t);
+        let s = gradient.sample_size(t);
+        texels.push(f32_to_f16(c[0]));
+        texels.push(f32_to_f16(c[1]));
+        texels.push(f32_to_f16(c[2]));
+        texels.push(f32_to_f16(s));
+    }
+
+    let texture = device.create_texture(&vwgpu::TextureDescriptor {
+        label: Some("particle_ramp_lut"),
+        size: vwgpu::Extent3d {
+            width: RAMP_WIDTH,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: vwgpu::TextureDimension::D2,
+        format: vwgpu::TextureFormat::Rgba16Float,
+        usage: vwgpu::TextureUsages::TEXTURE_BINDING | vwgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        vwgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: vwgpu::Origin3d::ZERO,
+            aspect: vwgpu::TextureAspect::All,
+        },
+        bytemuck::cast_slice(&texels),
+        vwgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(RAMP_WIDTH * 4 * 2),
+            rows_per_image: Some(1),
+        },
+        vwgpu::Extent3d {
+            width: RAMP_WIDTH,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+    );
+    texture
+}
+
+/// Bind group for the ramp LUT (group 2): texture view + sampler.
+fn make_ramp_bg(
+    device: &vwgpu::Device,
+    ramp_bgl: &vwgpu::BindGroupLayout,
+    sampler: &vwgpu::Sampler,
+    lut: &vwgpu::Texture,
+) -> vwgpu::BindGroup {
+    let view = lut.create_view(&vwgpu::TextureViewDescriptor::default());
+    device.create_bind_group(&vwgpu::BindGroupDescriptor {
+        label: Some("particle_ramp_bg"),
+        layout: ramp_bgl,
+        entries: &[
+            vwgpu::BindGroupEntry {
+                binding: 0,
+                resource: vwgpu::BindingResource::TextureView(&view),
+            },
+            vwgpu::BindGroupEntry {
+                binding: 1,
+                resource: vwgpu::BindingResource::Sampler(sampler),
+            },
+        ],
+    })
+}
+
 /// Build a generated (codegen) effect's GPU state: a `GenParams` uniform, the
 /// budget buffer, and the emit/sim/draw bind groups over the generated
 /// pipelines.
@@ -781,6 +977,8 @@ fn build_gen_gpu(
     emit_bgl: &vwgpu::BindGroupLayout,
     sim_bgl: &vwgpu::BindGroupLayout,
     draw_bgl: &vwgpu::BindGroupLayout,
+    ramp_bg: vwgpu::BindGroup,
+    ramp_lut: Option<vwgpu::Texture>,
     emit_pipeline: vwgpu::ComputePipeline,
     sim_pipeline: vwgpu::ComputePipeline,
 ) -> GenGpu {
@@ -834,6 +1032,8 @@ fn build_gen_gpu(
         emit_bg,
         sim_bg,
         draw_bg,
+        ramp_bg,
+        ramp_lut,
         emit_pipeline,
         sim_pipeline,
     }
@@ -848,6 +1048,8 @@ fn build_fixed_gpu(
     emit_bgl: &vwgpu::BindGroupLayout,
     sim_bgl: &vwgpu::BindGroupLayout,
     draw_bgl: &vwgpu::BindGroupLayout,
+    ramp_bg: vwgpu::BindGroup,
+    ramp_lut: Option<vwgpu::Texture>,
 ) -> FixedGpu {
     let particle_buf = build_particle_buffer(device, capacity);
     let budget_buf = build_budget_buffer(device);
@@ -907,6 +1109,8 @@ fn build_fixed_gpu(
         emit_bg,
         sim_bg,
         draw_bg,
+        ramp_bg,
+        ramp_lut,
     }
 }
 

@@ -118,6 +118,12 @@ fn lower_node(module: &Module, i: u32, ctx: Ctx) -> String {
         Expr::Sin(a) => format!("sin(v{})", a.0),
         Expr::Cos(a) => format!("cos(v{})", a.0),
         Expr::Splat3(a) => format!("vec3<f32>(v{})", a.0),
+        Expr::Normalize(a) => format!("normalize(v{})", a.0),
+        Expr::Length(a) => format!("length(v{})", a.0),
+        Expr::Cross(a, b) => format!("cross(v{}, v{})", a.0, b.0),
+        Expr::Min(a, b) => format!("min(v{}, v{})", a.0, b.0),
+        Expr::Max(a, b) => format!("max(v{}, v{})", a.0, b.0),
+        Expr::Clamp(x, lo, hi) => format!("clamp(v{}, v{}, v{})", x.0, lo.0, hi.0),
     }
 }
 

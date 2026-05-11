@@ -11,6 +11,7 @@
 //! Navigation: left / middle drag orbit, right drag pan, scroll zoom.
 
 mod showcase_01_emitters;
+mod showcase_02_expression;
 mod viewport_callback;
 
 use eframe::egui;
@@ -29,14 +30,16 @@ const BG_COLOUR: egui::Color32 = egui::Color32::from_rgb(18, 18, 22);
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ShowcaseMode {
     Emitters,
+    Expression,
 }
 
 impl ShowcaseMode {
-    const ALL: &'static [ShowcaseMode] = &[ShowcaseMode::Emitters];
+    const ALL: &'static [ShowcaseMode] = &[ShowcaseMode::Emitters, ShowcaseMode::Expression];
 
     fn label(self) -> &'static str {
         match self {
             ShowcaseMode::Emitters => "1: Emitters",
+            ShowcaseMode::Expression => "2: Expression",
         }
     }
 }
@@ -68,7 +71,11 @@ fn main() -> eframe::Result {
             // before the plugin is handed to the renderer, so their ids are
             // captured here and kept aligned with the preset list by index.
             let mut plugin = ParticlePlugin::new();
-            let effect_ids: Vec<EffectId> = showcase_01_emitters::presets()
+            let emitter_ids: Vec<EffectId> = showcase_01_emitters::presets()
+                .into_iter()
+                .map(|(_, asset)| plugin.add_effect(device, asset))
+                .collect();
+            let expression_ids: Vec<EffectId> = showcase_02_expression::presets()
                 .into_iter()
                 .map(|(_, asset)| plugin.add_effect(device, asset))
                 .collect();
@@ -85,8 +92,10 @@ fn main() -> eframe::Result {
                 },
                 controller: OrbitCameraController::viewport_primitives(),
                 mode: ShowcaseMode::Emitters,
-                effect_ids,
+                emitter_ids,
+                expression_ids,
                 emitters: showcase_01_emitters::State::default(),
+                expression: showcase_02_expression::State::default(),
             }))
         }),
     )
@@ -100,9 +109,11 @@ struct App {
     camera: Camera,
     controller: OrbitCameraController,
     mode: ShowcaseMode,
-    /// Registered preset effects, aligned with `showcase_01_emitters::presets()`.
-    effect_ids: Vec<EffectId>,
+    /// Registered effects, aligned with each showcase's `presets()`.
+    emitter_ids: Vec<EffectId>,
+    expression_ids: Vec<EffectId>,
     emitters: showcase_01_emitters::State,
+    expression: showcase_02_expression::State,
 }
 
 impl eframe::App for App {
@@ -127,6 +138,9 @@ impl eframe::App for App {
             .default_width(240.0)
             .show(ctx, |ui| match self.mode {
                 ShowcaseMode::Emitters => showcase_01_emitters::controls(&mut self.emitters, ui),
+                ShowcaseMode::Expression => {
+                    showcase_02_expression::controls(&mut self.expression, ui)
+                }
             });
 
         // ---- Central panel: viewport ----
@@ -151,7 +165,10 @@ impl eframe::App for App {
                 let mut scene = SceneFrame::from_surface_items(Vec::new());
                 let items = match self.mode {
                     ShowcaseMode::Emitters => {
-                        showcase_01_emitters::items(&self.effect_ids, &self.emitters, dt)
+                        showcase_01_emitters::items(&self.emitter_ids, &self.emitters, dt)
+                    }
+                    ShowcaseMode::Expression => {
+                        showcase_02_expression::items(&self.expression_ids, &self.expression, dt)
                     }
                 };
                 scene.submit_plugin_items(ParticlePlugin::TYPE_NAME, items);

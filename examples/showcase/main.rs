@@ -12,6 +12,7 @@
 
 mod showcase_01_emitters;
 mod showcase_02_expression;
+mod showcase_03_gradients;
 mod viewport_callback;
 
 use eframe::egui;
@@ -31,15 +32,21 @@ const BG_COLOUR: egui::Color32 = egui::Color32::from_rgb(18, 18, 22);
 enum ShowcaseMode {
     Emitters,
     Expression,
+    Gradients,
 }
 
 impl ShowcaseMode {
-    const ALL: &'static [ShowcaseMode] = &[ShowcaseMode::Emitters, ShowcaseMode::Expression];
+    const ALL: &'static [ShowcaseMode] = &[
+        ShowcaseMode::Emitters,
+        ShowcaseMode::Expression,
+        ShowcaseMode::Gradients,
+    ];
 
     fn label(self) -> &'static str {
         match self {
             ShowcaseMode::Emitters => "1: Emitters",
             ShowcaseMode::Expression => "2: Expression",
+            ShowcaseMode::Gradients => "3: Gradients",
         }
     }
 }
@@ -79,6 +86,10 @@ fn main() -> eframe::Result {
                 .into_iter()
                 .map(|(_, asset)| plugin.add_effect(device, asset))
                 .collect();
+            let gradient_ids: Vec<EffectId> = showcase_03_gradients::presets()
+                .into_iter()
+                .map(|(_, asset)| plugin.add_effect(device, asset))
+                .collect();
             renderer.with_item_type_plugin(device, Box::new(plugin));
 
             rs.renderer.write().callback_resources.insert(renderer);
@@ -94,8 +105,10 @@ fn main() -> eframe::Result {
                 mode: ShowcaseMode::Emitters,
                 emitter_ids,
                 expression_ids,
+                gradient_ids,
                 emitters: showcase_01_emitters::State::default(),
                 expression: showcase_02_expression::State::default(),
+                gradients: showcase_03_gradients::State::default(),
             }))
         }),
     )
@@ -112,8 +125,10 @@ struct App {
     /// Registered effects, aligned with each showcase's `presets()`.
     emitter_ids: Vec<EffectId>,
     expression_ids: Vec<EffectId>,
+    gradient_ids: Vec<EffectId>,
     emitters: showcase_01_emitters::State,
     expression: showcase_02_expression::State,
+    gradients: showcase_03_gradients::State,
 }
 
 impl eframe::App for App {
@@ -140,6 +155,9 @@ impl eframe::App for App {
                 ShowcaseMode::Emitters => showcase_01_emitters::controls(&mut self.emitters, ui),
                 ShowcaseMode::Expression => {
                     showcase_02_expression::controls(&mut self.expression, ui)
+                }
+                ShowcaseMode::Gradients => {
+                    showcase_03_gradients::controls(&mut self.gradients, ui)
                 }
             });
 
@@ -169,6 +187,9 @@ impl eframe::App for App {
                     }
                     ShowcaseMode::Expression => {
                         showcase_02_expression::items(&self.expression_ids, &self.expression, dt)
+                    }
+                    ShowcaseMode::Gradients => {
+                        showcase_03_gradients::items(&self.gradient_ids, &self.gradients, dt)
                     }
                 };
                 scene.submit_plugin_items(ParticlePlugin::TYPE_NAME, items);

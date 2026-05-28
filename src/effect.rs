@@ -20,6 +20,44 @@ use crate::expr::{ExprHandle, Module};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct EffectId(pub(crate) u32);
 
+/// Handle to a mesh uploaded to a [`ParticlePlugin`](crate::ParticlePlugin) for
+/// the mesh render route. Returned by `ParticlePlugin::upload_mesh`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ParticleMeshId(pub(crate) u32);
+
+/// How a mesh-route particle is oriented each frame.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MeshAlign {
+    /// Align the mesh's local +Z to the particle's velocity direction.
+    Velocity,
+    /// A stable per-particle random tumble that advances with age.
+    Random,
+}
+
+/// How an effect's live particles are drawn.
+#[derive(Clone, Copy, Debug)]
+pub enum ParticleRender {
+    /// Camera-facing billboard. `stretch` (> 0) elongates it along the
+    /// screen-projected velocity, scaled by speed, for motion streaks.
+    Billboard {
+        /// Stretch factor. `0` is a round billboard.
+        stretch: f32,
+    },
+    /// One instance of an uploaded mesh per particle.
+    Mesh {
+        /// The uploaded mesh to instance.
+        mesh: ParticleMeshId,
+        /// Per-particle orientation.
+        align: MeshAlign,
+    },
+}
+
+impl Default for ParticleRender {
+    fn default() -> Self {
+        ParticleRender::Billboard { stretch: 0.0 }
+    }
+}
+
 /// How many particles an effect spawns per second.
 #[derive(Clone, Copy, Debug)]
 pub enum SpawnRate {
@@ -392,6 +430,9 @@ pub struct EffectAsset {
     /// shared identity ramp (no change). Works for both the fixed and codegen
     /// paths.
     pub gradient: Option<Gradient>,
+    /// How live particles are drawn. Defaults to a round camera-facing
+    /// billboard.
+    pub render: ParticleRender,
 }
 
 impl Default for EffectAsset {
@@ -404,6 +445,7 @@ impl Default for EffectAsset {
             forces: Vec::new(),
             program: None,
             gradient: None,
+            render: ParticleRender::default(),
         }
     }
 }
@@ -452,6 +494,12 @@ impl EffectAsset {
     /// Attach a colour/size ramp over lifetime.
     pub fn with_gradient(mut self, gradient: Gradient) -> Self {
         self.gradient = Some(gradient);
+        self
+    }
+
+    /// Set the render route (billboard with optional stretch, or mesh instances).
+    pub fn with_render(mut self, render: ParticleRender) -> Self {
+        self.render = render;
         self
     }
 }

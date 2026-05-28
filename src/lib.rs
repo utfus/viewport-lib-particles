@@ -23,11 +23,14 @@
 //! Colour and size ramps over lifetime attach to either path via
 //! [`EffectAsset::with_gradient`] (a LUT sampled by particle age).
 //!
+//! Particles draw as camera-facing billboards (optionally velocity-stretched) or
+//! as instances of an uploaded mesh, chosen by [`EffectAsset::with_render`].
+//!
 //! Status: early. Both authoring paths work -- fixed-function (verified by
 //! `tests/simulates.rs`) and codegen (verified by `tests/expression.rs`) -- with
-//! lifetime gradients (verified by `tests/gradient.rs`). More render routes,
-//! sorting, and picking are still ahead; see
-//! `docs/plans/particle-system-plan.md` for the phased build-out.
+//! lifetime gradients (`tests/gradient.rs`) and billboard/mesh render routes
+//! (`tests/render_routes.rs`). Ribbon trails, sorting, and picking are still
+//! ahead; see `docs/plans/particle-system-plan.md` for the phased build-out.
 //!
 //! Typical setup:
 //!
@@ -51,8 +54,9 @@ mod expr;
 mod plugin;
 
 pub use effect::{
-    Attribute, EffectAsset, EffectId, EffectProgram, Emitter, ForceModifier, Gradient,
-    ParticleBlend, SetAttribute, SpawnRate, SpawnShape, UpdateOp, VelocityDist,
+    Attribute, EffectAsset, EffectId, EffectProgram, Emitter, ForceModifier, Gradient, MeshAlign,
+    ParticleBlend, ParticleMeshId, ParticleRender, SetAttribute, SpawnRate, SpawnShape, UpdateOp,
+    VelocityDist,
 };
 pub use expr::{Expr, ExprHandle, Module};
 pub use plugin::{ParticleItem, ParticleItems, ParticlePlugin};

@@ -34,8 +34,8 @@ use viewport_lib::wgpu as vwgpu;
 
 use crate::codegen;
 use crate::effect::{
-    EffectAsset, EffectId, Emitter, EffectProgram, ForceModifier, ParticleBlend, SpawnRate,
-    SpawnShape, VelocityDist,
+    EffectAsset, EffectId, Emitter, EffectProgram, ForceModifier, MeshAlign, ParticleBlend,
+    ParticleMeshId, ParticleRender, SpawnRate, SpawnShape, VelocityDist,
 };
 
 /// MSAA sample count the plugin builds its pipelines for. A plugin cannot read
@@ -185,6 +185,26 @@ struct SimParamsGpu {
 }
 
 /// Per-effect GPU state, built lazily the first time an effect is simulated.
+/// An uploaded mesh for the mesh render route: local-space vertex positions and
+/// a triangle index buffer.
+struct ParticleMesh {
+    vertex_buf: vwgpu::Buffer,
+    index_buf: vwgpu::Buffer,
+    index_count: u32,
+}
+
+/// Per-effect draw parameters (group 3). Matches `DrawParams` in the draw and
+/// mesh shaders. 16 bytes.
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
+struct DrawParams {
+    /// Billboard stretch factor (0 = round).
+    stretch: f32,
+    /// Mesh orientation: 0 = velocity-aligned, 1 = random tumble.
+    align: u32,
+    _pad: [u32; 2],
+}
+
 /// Generic per-effect params for a generated (codegen) effect. Matches
 /// `GenParams` in the generated WGSL. 48 bytes.
 #[repr(C)]
@@ -221,6 +241,13 @@ impl EffectGpu {
             EffectGpu::Gen(g) => &g.ramp_bg,
         }
     }
+
+    fn drawparams_bg(&self) -> &vwgpu::BindGroup {
+        match self {
+            EffectGpu::Fixed(g) => &g.drawparams_bg,
+            EffectGpu::Gen(g) => &g.drawparams_bg,
+        }
+    }
 }
 
 /// Fixed-function effect GPU state (Phase 2 emitter path).
@@ -236,6 +263,7 @@ struct FixedGpu {
     sim_bg: vwgpu::BindGroup,
     draw_bg: vwgpu::BindGroup,
     ramp_bg: vwgpu::BindGroup,
+    drawparams_bg: vwgpu::BindGroup,
     /// Effect-specific ramp LUT, held alive when the effect has a gradient.
     /// `None` when the effect uses the shared identity ramp.
     #[allow(dead_code)]
@@ -253,6 +281,7 @@ struct GenGpu {
     sim_bg: vwgpu::BindGroup,
     draw_bg: vwgpu::BindGroup,
     ramp_bg: vwgpu::BindGroup,
+    drawparams_bg: vwgpu::BindGroup,
     #[allow(dead_code)]
     ramp_lut: Option<vwgpu::Texture>,
     emit_pipeline: vwgpu::ComputePipeline,
@@ -283,9 +312,15 @@ pub struct ParticlePlugin {
     sim_pipeline: Option<vwgpu::ComputePipeline>,
     draw_pipeline_additive: Option<vwgpu::RenderPipeline>,
     draw_pipeline_over: Option<vwgpu::RenderPipeline>,
+    mesh_pipeline_additive: Option<vwgpu::RenderPipeline>,
+    mesh_pipeline_over: Option<vwgpu::RenderPipeline>,
     emit_bgl: Option<vwgpu::BindGroupLayout>,
     sim_bgl: Option<vwgpu::BindGroupLayout>,
     draw_bgl: Option<vwgpu::BindGroupLayout>,
+    drawparams_bgl: Option<vwgpu::BindGroupLayout>,
+
+    /// Meshes uploaded for the mesh render route, indexed by `ParticleMeshId`.
+    meshes: Vec<ParticleMesh>,
 
     // Lifetime-ramp LUT (group 2 of the draw pipeline): the layout, the shared
     // linear sampler, and an identity LUT + bind group reused by effects with no
@@ -335,6 +370,37 @@ impl ParticlePlugin {
         self.effects.len()
     }
 
+    /// Upload a mesh for the mesh render route, returning a handle to reference
+    /// it from `ParticleRender::Mesh`. `positions` are local-space vertices;
+    /// `indices` are triangle indices into them. Upload meshes before handing
+    /// the plugin to the renderer.
+    pub fn upload_mesh(
+        &mut self,
+        device: &vwgpu::Device,
+        positions: &[[f32; 3]],
+        indices: &[u32],
+    ) -> ParticleMeshId {
+        let vertex_buf = buffer_with_data(
+            device,
+            "particle_mesh_vertices",
+            bytemuck::cast_slice(positions),
+            vwgpu::BufferUsages::VERTEX,
+        );
+        let index_buf = buffer_with_data(
+            device,
+            "particle_mesh_indices",
+            bytemuck::cast_slice(indices),
+            vwgpu::BufferUsages::INDEX,
+        );
+        let id = ParticleMeshId(self.meshes.len() as u32);
+        self.meshes.push(ParticleMesh {
+            vertex_buf,
+            index_buf,
+            index_count: indices.len() as u32,
+        });
+        id
+    }
+
     /// Build effect `idx`'s GPU state if it does not exist yet. Fixed-function
     /// effects get the shared Phase 2 pipelines; effects with a program compile
     /// (or reuse from the cache) their own emit/simulate pipelines.
@@ -355,6 +421,7 @@ impl ParticlePlugin {
         // before we touch the pipeline cache and assign the new GPU state.
         let program = self.effects[idx].asset.program.clone();
         let gradient = self.effects[idx].asset.gradient.clone();
+        let render = self.effects[idx].asset.render;
 
         // Ramp bind group: an effect with a gradient bakes its own LUT; others
         // share the identity ramp built in `prepare`.
@@ -369,9 +436,28 @@ impl ParticlePlugin {
             None => (self.identity_ramp_bg.clone().unwrap(), None),
         };
 
+        // Per-effect draw params (group 3), derived from the render mode.
+        let dp = match render {
+            ParticleRender::Billboard { stretch } => DrawParams {
+                stretch,
+                align: 0,
+                _pad: [0; 2],
+            },
+            ParticleRender::Mesh { align, .. } => DrawParams {
+                stretch: 0.0,
+                align: match align {
+                    MeshAlign::Velocity => 0,
+                    MeshAlign::Random => 1,
+                },
+                _pad: [0; 2],
+            },
+        };
+        let drawparams_bg =
+            build_drawparams_bg(device, self.drawparams_bgl.as_ref().unwrap(), dp);
+
         let gpu = match program {
             None => EffectGpu::Fixed(build_fixed_gpu(
-                device, capacity, emit_bgl, sim_bgl, draw_bgl, ramp_bg, ramp_lut,
+                device, capacity, emit_bgl, sim_bgl, draw_bgl, ramp_bg, ramp_lut, drawparams_bg,
             )),
             Some(program) => {
                 let (emit_pipeline, sim_pipeline) =
@@ -384,6 +470,7 @@ impl ParticlePlugin {
                     draw_bgl,
                     ramp_bg,
                     ramp_lut,
+                    drawparams_bg,
                     emit_pipeline,
                     sim_pipeline,
                 ))
@@ -500,6 +587,22 @@ impl ItemTypePlugin for ParticlePlugin {
             ..Default::default()
         });
 
+        // Group 3: per-effect draw params (stretch / mesh align), read in the
+        // vertex stage of both the billboard and mesh pipelines.
+        let drawparams_bgl = device.create_bind_group_layout(&vwgpu::BindGroupLayoutDescriptor {
+            label: Some("particle_drawparams_bgl"),
+            entries: &[vwgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: vwgpu::ShaderStages::VERTEX,
+                ty: vwgpu::BindingType::Buffer {
+                    ty: vwgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+
         // Compute pipelines.
         let compute = |src: &str, entry: &str, label: &str, bgl: &vwgpu::BindGroupLayout| {
             let module = device.create_shader_module(vwgpu::ShaderModuleDescriptor {
@@ -541,7 +644,7 @@ impl ItemTypePlugin for ParticlePlugin {
         let draw_layout = vwgpu::pipeline_layout(
             device,
             "particle_draw_layout",
-            &[shared.group0_layout, &draw_bgl, &ramp_bgl],
+            &[shared.group0_layout, &draw_bgl, &ramp_bgl, &drawparams_bgl],
         );
 
         let one = vwgpu::BlendComponent {
@@ -612,11 +715,86 @@ impl ItemTypePlugin for ParticlePlugin {
             "particle_draw_over",
         ));
 
+        // Mesh render route: instance an uploaded mesh per particle. Same bind
+        // group layouts plus a per-vertex position stream.
+        let mesh_src = format!(
+            "{SHARED_BINDINGS_WGSL}\n{}",
+            include_str!("shaders/particle_mesh.wgsl")
+        );
+        let mesh_shader = device.create_shader_module(vwgpu::ShaderModuleDescriptor {
+            label: Some("particle_mesh_shader"),
+            source: vwgpu::ShaderSource::Wgsl(mesh_src.into()),
+        });
+        let mesh_vertex_layout = vwgpu::VertexBufferLayout {
+            array_stride: 12,
+            step_mode: vwgpu::VertexStepMode::Vertex,
+            attributes: &[vwgpu::VertexAttribute {
+                format: vwgpu::VertexFormat::Float32x3,
+                offset: 0,
+                shader_location: 0,
+            }],
+        };
+        let make_mesh = |blend: vwgpu::BlendState, label: &str| {
+            vwgpu::render_pipeline(
+                device,
+                vwgpu::RenderPipelineDesc {
+                    label,
+                    layout: &draw_layout,
+                    vertex: vwgpu::VertexState {
+                        module: &mesh_shader,
+                        entry_point: Some("vs"),
+                        buffers: &[mesh_vertex_layout.clone()],
+                        compilation_options: Default::default(),
+                    },
+                    fragment: Some(vwgpu::FragmentState {
+                        module: &mesh_shader,
+                        entry_point: Some("fs"),
+                        targets: &[Some(vwgpu::ColorTargetState {
+                            format: HDR_COLOR_FORMAT,
+                            blend: Some(blend),
+                            write_mask: vwgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options: Default::default(),
+                    }),
+                    primitive: vwgpu::PrimitiveState {
+                        topology: vwgpu::PrimitiveTopology::TriangleList,
+                        cull_mode: None,
+                        ..Default::default()
+                    },
+                    depth_stencil: Some(vwgpu::depth_stencil(
+                        SCENE_DEPTH_FORMAT,
+                        false,
+                        vwgpu::CompareFunction::LessEqual,
+                    )),
+                    multisample: vwgpu::MultisampleState {
+                        count: SAMPLE_COUNT,
+                        ..Default::default()
+                    },
+                    cache: None,
+                },
+            )
+        };
+        self.mesh_pipeline_additive = Some(make_mesh(
+            vwgpu::BlendState {
+                color: one,
+                alpha: one,
+            },
+            "particle_mesh_additive",
+        ));
+        self.mesh_pipeline_over = Some(make_mesh(
+            vwgpu::BlendState {
+                color: over,
+                alpha: over,
+            },
+            "particle_mesh_over",
+        ));
+
         self.emit_pipeline = Some(emit_pipeline);
         self.sim_pipeline = Some(sim_pipeline);
         self.emit_bgl = Some(emit_bgl);
         self.sim_bgl = Some(sim_bgl);
         self.draw_bgl = Some(draw_bgl);
+        self.drawparams_bgl = Some(drawparams_bgl);
         self.ramp_bgl = Some(ramp_bgl);
         self.ramp_sampler = Some(ramp_sampler);
     }
@@ -753,9 +931,11 @@ impl ItemTypePlugin for ParticlePlugin {
         _ctx: &PaintContext<'a>,
         _items: &'a dyn PluginItemCollection,
     ) {
-        let (Some(additive), Some(over)) = (
+        let (Some(bb_add), Some(bb_over), Some(mesh_add), Some(mesh_over)) = (
             self.draw_pipeline_additive.as_ref(),
             self.draw_pipeline_over.as_ref(),
+            self.mesh_pipeline_additive.as_ref(),
+            self.mesh_pipeline_over.as_ref(),
         ) else {
             return;
         };
@@ -763,14 +943,26 @@ impl ItemTypePlugin for ParticlePlugin {
         for &idx in &self.draw_list {
             let eff = &self.effects[idx];
             let Some(gpu) = eff.gpu.as_ref() else { continue };
-            let pipeline = match eff.asset.blend {
-                ParticleBlend::Additive => additive,
-                ParticleBlend::Alpha | ParticleBlend::Premultiplied => over,
-            };
-            pass.set_pipeline(pipeline);
+            let additive = matches!(eff.asset.blend, ParticleBlend::Additive);
             pass.set_bind_group(1, gpu.draw_bg(), &[]);
             pass.set_bind_group(2, gpu.ramp_bg(), &[]);
-            pass.draw(0..6, 0..eff.asset.capacity);
+            pass.set_bind_group(3, gpu.drawparams_bg(), &[]);
+
+            match eff.asset.render {
+                ParticleRender::Billboard { .. } => {
+                    pass.set_pipeline(if additive { bb_add } else { bb_over });
+                    pass.draw(0..6, 0..eff.asset.capacity);
+                }
+                ParticleRender::Mesh { mesh, .. } => {
+                    let Some(m) = self.meshes.get(mesh.0 as usize) else {
+                        continue;
+                    };
+                    pass.set_pipeline(if additive { mesh_add } else { mesh_over });
+                    pass.set_vertex_buffer(0, m.vertex_buf.slice(..));
+                    pass.set_index_buffer(m.index_buf.slice(..), vwgpu::IndexFormat::Uint32);
+                    pass.draw_indexed(0..m.index_count, 0, 0..eff.asset.capacity);
+                }
+            }
         }
     }
 }
@@ -849,6 +1041,47 @@ fn build_compute_pipeline(
         entry_point: Some(entry),
         compilation_options: Default::default(),
         cache: None,
+    })
+}
+
+/// Create a buffer initialized with `data` via `mapped_at_creation` (no queue).
+fn buffer_with_data(
+    device: &vwgpu::Device,
+    label: &str,
+    data: &[u8],
+    usage: vwgpu::BufferUsages,
+) -> vwgpu::Buffer {
+    let size = (data.len() as u64).max(4);
+    let buf = device.create_buffer(&vwgpu::BufferDescriptor {
+        label: Some(label),
+        size,
+        usage,
+        mapped_at_creation: true,
+    });
+    buf.slice(..).get_mapped_range_mut()[..data.len()].copy_from_slice(data);
+    buf.unmap();
+    buf
+}
+
+/// Uniform bind group (group 3) holding a `DrawParams`.
+fn build_drawparams_bg(
+    device: &vwgpu::Device,
+    drawparams_bgl: &vwgpu::BindGroupLayout,
+    params: DrawParams,
+) -> vwgpu::BindGroup {
+    let buf = buffer_with_data(
+        device,
+        "particle_drawparams",
+        bytemuck::bytes_of(&params),
+        vwgpu::BufferUsages::UNIFORM,
+    );
+    device.create_bind_group(&vwgpu::BindGroupDescriptor {
+        label: Some("particle_drawparams_bg"),
+        layout: drawparams_bgl,
+        entries: &[vwgpu::BindGroupEntry {
+            binding: 0,
+            resource: buf.as_entire_binding(),
+        }],
     })
 }
 
@@ -979,6 +1212,7 @@ fn build_gen_gpu(
     draw_bgl: &vwgpu::BindGroupLayout,
     ramp_bg: vwgpu::BindGroup,
     ramp_lut: Option<vwgpu::Texture>,
+    drawparams_bg: vwgpu::BindGroup,
     emit_pipeline: vwgpu::ComputePipeline,
     sim_pipeline: vwgpu::ComputePipeline,
 ) -> GenGpu {
@@ -1033,6 +1267,7 @@ fn build_gen_gpu(
         sim_bg,
         draw_bg,
         ramp_bg,
+        drawparams_bg,
         ramp_lut,
         emit_pipeline,
         sim_pipeline,
@@ -1050,6 +1285,7 @@ fn build_fixed_gpu(
     draw_bgl: &vwgpu::BindGroupLayout,
     ramp_bg: vwgpu::BindGroup,
     ramp_lut: Option<vwgpu::Texture>,
+    drawparams_bg: vwgpu::BindGroup,
 ) -> FixedGpu {
     let particle_buf = build_particle_buffer(device, capacity);
     let budget_buf = build_budget_buffer(device);
@@ -1110,6 +1346,7 @@ fn build_fixed_gpu(
         sim_bg,
         draw_bg,
         ramp_bg,
+        drawparams_bg,
         ramp_lut,
     }
 }

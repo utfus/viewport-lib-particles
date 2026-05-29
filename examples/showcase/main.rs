@@ -13,6 +13,7 @@
 mod showcase_01_emitters;
 mod showcase_02_expression;
 mod showcase_03_gradients;
+mod showcase_04_render_routes;
 mod viewport_callback;
 
 use eframe::egui;
@@ -33,6 +34,7 @@ enum ShowcaseMode {
     Emitters,
     Expression,
     Gradients,
+    RenderRoutes,
 }
 
 impl ShowcaseMode {
@@ -40,6 +42,7 @@ impl ShowcaseMode {
         ShowcaseMode::Emitters,
         ShowcaseMode::Expression,
         ShowcaseMode::Gradients,
+        ShowcaseMode::RenderRoutes,
     ];
 
     fn label(self) -> &'static str {
@@ -47,6 +50,7 @@ impl ShowcaseMode {
             ShowcaseMode::Emitters => "1: Emitters",
             ShowcaseMode::Expression => "2: Expression",
             ShowcaseMode::Gradients => "3: Gradients",
+            ShowcaseMode::RenderRoutes => "4: Render routes",
         }
     }
 }
@@ -90,6 +94,7 @@ fn main() -> eframe::Result {
                 .into_iter()
                 .map(|(_, asset)| plugin.add_effect(device, asset))
                 .collect();
+            let render_route_ids = showcase_04_render_routes::register(&mut plugin, device);
             renderer.with_item_type_plugin(device, Box::new(plugin));
 
             rs.renderer.write().callback_resources.insert(renderer);
@@ -106,9 +111,11 @@ fn main() -> eframe::Result {
                 emitter_ids,
                 expression_ids,
                 gradient_ids,
+                render_route_ids,
                 emitters: showcase_01_emitters::State::default(),
                 expression: showcase_02_expression::State::default(),
                 gradients: showcase_03_gradients::State::default(),
+                render_routes: showcase_04_render_routes::State::default(),
             }))
         }),
     )
@@ -126,9 +133,11 @@ struct App {
     emitter_ids: Vec<EffectId>,
     expression_ids: Vec<EffectId>,
     gradient_ids: Vec<EffectId>,
+    render_route_ids: Vec<EffectId>,
     emitters: showcase_01_emitters::State,
     expression: showcase_02_expression::State,
     gradients: showcase_03_gradients::State,
+    render_routes: showcase_04_render_routes::State,
 }
 
 impl eframe::App for App {
@@ -158,6 +167,9 @@ impl eframe::App for App {
                 }
                 ShowcaseMode::Gradients => {
                     showcase_03_gradients::controls(&mut self.gradients, ui)
+                }
+                ShowcaseMode::RenderRoutes => {
+                    showcase_04_render_routes::controls(&mut self.render_routes, ui)
                 }
             });
 
@@ -191,6 +203,11 @@ impl eframe::App for App {
                     ShowcaseMode::Gradients => {
                         showcase_03_gradients::items(&self.gradient_ids, &self.gradients, dt)
                     }
+                    ShowcaseMode::RenderRoutes => showcase_04_render_routes::items(
+                        &self.render_route_ids,
+                        &self.render_routes,
+                        dt,
+                    ),
                 };
                 scene.submit_plugin_items(ParticlePlugin::TYPE_NAME, items);
 

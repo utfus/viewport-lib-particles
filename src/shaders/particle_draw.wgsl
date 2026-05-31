@@ -29,8 +29,8 @@ struct Particle {
 struct DrawParams {
     stretch: f32,
     align: u32,
-    pad0: u32,
-    pad1: u32,
+    trail_width: f32,
+    trail_segments: u32,
 };
 @group(3) @binding(0) var<uniform> draw_params: DrawParams;
 

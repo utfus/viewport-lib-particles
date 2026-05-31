@@ -13,7 +13,12 @@ use viewport_lib_particles::{
 };
 
 /// Names of the registered effects, in menu order.
-pub const NAMES: &[&str] = &["Round billboards", "Stretched sparks", "Mesh cubes"];
+pub const NAMES: &[&str] = &[
+    "Round billboards",
+    "Stretched sparks",
+    "Mesh cubes",
+    "Comet trails",
+];
 
 /// A cone fountain shared by the three routes, minus the render mode.
 fn base() -> EffectAsset {
@@ -62,11 +67,18 @@ pub fn register(plugin: &mut ParticlePlugin, device: &eframe::wgpu::Device) -> V
             mesh,
             align: MeshAlign::Random,
         });
+    // A ribbon swept through each particle's actual path: the one route that
+    // follows the simulated arc, not just the instantaneous velocity.
+    let trails = base().with_render(ParticleRender::Trail {
+        width: 0.06,
+        segments: 20,
+    });
 
     vec![
         plugin.add_effect(device, round),
         plugin.add_effect(device, stretched),
         plugin.add_effect(device, mesh_cubes),
+        plugin.add_effect(device, trails),
     ]
 }
 
@@ -120,8 +132,9 @@ pub fn controls(state: &mut State, ui: &mut egui::Ui) {
     ui.add(egui::Slider::new(&mut state.position[1], -5.0..=5.0).text("y"));
     ui.add(egui::Slider::new(&mut state.position[2], -2.0..=5.0).text("z"));
     ui.separator();
-    ui.label("One simulation, three draws: round billboards, velocity-");
-    ui.label("stretched streaks, and instanced tumbling cubes.");
+    ui.label("One simulation, four draws: round billboards, velocity-");
+    ui.label("stretched streaks, instanced tumbling cubes, and comet");
+    ui.label("trails swept through each particle's recorded path.");
 }
 
 /// Build this frame's submission for the selected route.

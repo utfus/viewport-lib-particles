@@ -50,6 +50,15 @@ pub enum ParticleRender {
         /// Per-particle orientation.
         align: MeshAlign,
     },
+    /// A camera-facing ribbon swept through each particle's recent position
+    /// history, tapering to a point at the tail. A comet / streak that follows
+    /// the actual simulated path, not just the instantaneous velocity.
+    Trail {
+        /// Ribbon half-width at the head, in world units. Tapers to zero.
+        width: f32,
+        /// History segments to sweep. Clamped to the trail history length.
+        segments: u32,
+    },
 }
 
 impl Default for ParticleRender {

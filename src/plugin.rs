@@ -34,7 +34,7 @@ use viewport_lib::wgpu as vwgpu;
 
 use crate::codegen;
 use crate::effect::{
-    EffectAsset, EffectId, Emitter, EffectProgram, ForceModifier, MeshAlign, ParticleBlend,
+    EffectAsset, EffectId, EffectProgram, Emitter, ForceModifier, MeshAlign, ParticleBlend,
     ParticleMeshId, ParticleRender, SpawnRate, SpawnShape, VelocityDist,
 };
 
@@ -45,6 +45,11 @@ const SAMPLE_COUNT: u32 = 1;
 
 /// Max forces per effect, matching the fixed array in `particle_sim.wgsl`.
 const MAX_FORCES: usize = 8;
+
+/// Trail history samples kept per particle. Matches `HISTORY_LEN` usage in the
+/// trail shaders (passed to them as `HistParams::history_len`). Longer trails
+/// cost `capacity * HISTORY_LEN` vec4 of storage per trail effect.
+const HISTORY_LEN: u32 = 24;
 
 /// One live instance of an effect in the scene this frame.
 ///
@@ -202,7 +207,23 @@ struct DrawParams {
     stretch: f32,
     /// Mesh orientation: 0 = velocity-aligned, 1 = random tumble.
     align: u32,
-    _pad: [u32; 2],
+    /// Trail ribbon half-width at the head (world units).
+    trail_width: f32,
+    /// Trail segments swept (clamped to `HISTORY_LEN - 1`).
+    trail_segments: u32,
+}
+
+/// Trail history parameters (group 1, binding 2 of the append and trail draw
+/// passes). Matches `HistParams` in `particle_history.wgsl` /
+/// `particle_trail.wgsl`. 16 bytes.
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
+struct HistoryParams {
+    /// Ring slot written this frame; also the newest sample when drawing.
+    head: u32,
+    capacity: u32,
+    history_len: u32,
+    _pad: u32,
 }
 
 /// Generic per-effect params for a generated (codegen) effect. Matches
@@ -248,6 +269,30 @@ impl EffectGpu {
             EffectGpu::Gen(g) => &g.drawparams_bg,
         }
     }
+
+    /// The persistent particle buffer, for building the trail history bindings.
+    fn particle_buf(&self) -> &vwgpu::Buffer {
+        match self {
+            EffectGpu::Fixed(g) => &g.particle_buf,
+            EffectGpu::Gen(g) => &g.particle_buf,
+        }
+    }
+}
+
+/// Trail render-route GPU state for one effect: a per-particle position history
+/// ring, its parameters, and the bind groups for the append (compute) and
+/// ribbon (draw) passes. Built lazily alongside the effect's `EffectGpu` when
+/// the effect uses `ParticleRender::Trail`.
+struct TrailGpu {
+    /// `capacity * HISTORY_LEN` vec4 samples (xyz = position, w = seed).
+    #[allow(dead_code)]
+    history_buf: vwgpu::Buffer,
+    /// `HistoryParams`; `head` is rewritten each frame.
+    params_buf: vwgpu::Buffer,
+    /// Append pass bind group (particles, history, params).
+    append_bg: vwgpu::BindGroup,
+    /// Trail draw bind group at group 1 (particles, history, params).
+    draw_bg: vwgpu::BindGroup,
 }
 
 /// Fixed-function effect GPU state (Phase 2 emitter path).
@@ -318,6 +363,16 @@ pub struct ParticlePlugin {
     sim_bgl: Option<vwgpu::BindGroupLayout>,
     draw_bgl: Option<vwgpu::BindGroupLayout>,
     drawparams_bgl: Option<vwgpu::BindGroupLayout>,
+
+    // Trail render route: the history-append compute pass and the ribbon draw.
+    append_pipeline: Option<vwgpu::ComputePipeline>,
+    trail_pipeline_additive: Option<vwgpu::RenderPipeline>,
+    trail_pipeline_over: Option<vwgpu::RenderPipeline>,
+    history_bgl: Option<vwgpu::BindGroupLayout>,
+    trail_draw_bgl: Option<vwgpu::BindGroupLayout>,
+    /// Per-effect trail state, keyed by effect index. Present only for effects
+    /// whose render route is `ParticleRender::Trail`.
+    trails: HashMap<usize, TrailGpu>,
 
     /// Meshes uploaded for the mesh render route, indexed by `ParticleMeshId`.
     meshes: Vec<ParticleMesh>,
@@ -427,8 +482,10 @@ impl ParticlePlugin {
         // share the identity ramp built in `prepare`.
         let (ramp_bg, ramp_lut) = match gradient {
             Some(g) => {
-                let (ramp_bgl, ramp_sampler) =
-                    (self.ramp_bgl.as_ref().unwrap(), self.ramp_sampler.as_ref().unwrap());
+                let (ramp_bgl, ramp_sampler) = (
+                    self.ramp_bgl.as_ref().unwrap(),
+                    self.ramp_sampler.as_ref().unwrap(),
+                );
                 let lut = build_ramp_lut(device, queue, &g);
                 let bg = make_ramp_bg(device, ramp_bgl, ramp_sampler, &lut);
                 (bg, Some(lut))
@@ -441,7 +498,8 @@ impl ParticlePlugin {
             ParticleRender::Billboard { stretch } => DrawParams {
                 stretch,
                 align: 0,
-                _pad: [0; 2],
+                trail_width: 0.0,
+                trail_segments: 0,
             },
             ParticleRender::Mesh { align, .. } => DrawParams {
                 stretch: 0.0,
@@ -449,15 +507,28 @@ impl ParticlePlugin {
                     MeshAlign::Velocity => 0,
                     MeshAlign::Random => 1,
                 },
-                _pad: [0; 2],
+                trail_width: 0.0,
+                trail_segments: 0,
+            },
+            ParticleRender::Trail { width, segments } => DrawParams {
+                stretch: 0.0,
+                align: 0,
+                trail_width: width,
+                trail_segments: segments.clamp(1, HISTORY_LEN - 1),
             },
         };
-        let drawparams_bg =
-            build_drawparams_bg(device, self.drawparams_bgl.as_ref().unwrap(), dp);
+        let drawparams_bg = build_drawparams_bg(device, self.drawparams_bgl.as_ref().unwrap(), dp);
 
         let gpu = match program {
             None => EffectGpu::Fixed(build_fixed_gpu(
-                device, capacity, emit_bgl, sim_bgl, draw_bgl, ramp_bg, ramp_lut, drawparams_bg,
+                device,
+                capacity,
+                emit_bgl,
+                sim_bgl,
+                draw_bgl,
+                ramp_bg,
+                ramp_lut,
+                drawparams_bg,
             )),
             Some(program) => {
                 let (emit_pipeline, sim_pipeline) =
@@ -477,6 +548,22 @@ impl ParticlePlugin {
             }
         };
         self.effects[idx].gpu = Some(gpu);
+
+        // Trail effects also get a per-particle history ring plus the append and
+        // ribbon bind groups, built over the particle buffer just allocated.
+        if let ParticleRender::Trail { .. } = render {
+            let history_bgl = self.history_bgl.clone().unwrap();
+            let trail_draw_bgl = self.trail_draw_bgl.clone().unwrap();
+            let particle_buf = self.effects[idx].gpu.as_ref().unwrap().particle_buf();
+            let trail = build_trail_gpu(
+                device,
+                capacity,
+                particle_buf,
+                &history_bgl,
+                &trail_draw_bgl,
+            );
+            self.trails.insert(idx, trail);
+        }
     }
 
     /// Compile (or reuse) the emit/simulate pipelines for a program, keyed by
@@ -603,6 +690,52 @@ impl ItemTypePlugin for ParticlePlugin {
             }],
         });
 
+        // Trail render route bind group layouts. The append pass (compute) reads
+        // the particles and writes the history ring; the ribbon draw reads both
+        // in the vertex stage. Binding 2 is the shared `HistParams` uniform.
+        let storage_ro_vertex = |binding| vwgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: vwgpu::ShaderStages::VERTEX,
+            ty: vwgpu::BindingType::Buffer {
+                ty: vwgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        };
+        let uniform_vertex = |binding| vwgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: vwgpu::ShaderStages::VERTEX,
+            ty: vwgpu::BindingType::Buffer {
+                ty: vwgpu::BufferBindingType::Uniform,
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        };
+        let storage_ro_compute = |binding| vwgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: vwgpu::ShaderStages::COMPUTE,
+            ty: vwgpu::BindingType::Buffer {
+                ty: vwgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        };
+        let history_bgl = device.create_bind_group_layout(&vwgpu::BindGroupLayoutDescriptor {
+            label: Some("particle_history_bgl"),
+            entries: &[storage_ro_compute(0), storage_rw(1), uniform(2)],
+        });
+        let trail_draw_bgl = device.create_bind_group_layout(&vwgpu::BindGroupLayoutDescriptor {
+            label: Some("particle_trail_draw_bgl"),
+            entries: &[
+                storage_ro_vertex(0),
+                storage_ro_vertex(1),
+                uniform_vertex(2),
+            ],
+        });
+
         // Compute pipelines.
         let compute = |src: &str, entry: &str, label: &str, bgl: &vwgpu::BindGroupLayout| {
             let module = device.create_shader_module(vwgpu::ShaderModuleDescriptor {
@@ -630,6 +763,12 @@ impl ItemTypePlugin for ParticlePlugin {
             "sim_main",
             "particle_sim",
             &sim_bgl,
+        );
+        let append_pipeline = compute(
+            include_str!("shaders/particle_history.wgsl"),
+            "history_main",
+            "particle_history",
+            &history_bgl,
         );
 
         // Draw pipelines (additive and premultiplied over).
@@ -789,12 +928,91 @@ impl ItemTypePlugin for ParticlePlugin {
             "particle_mesh_over",
         ));
 
+        // Trail render route: a camera-facing ribbon swept through the history
+        // ring. Group 1 is the trail bindings (particles + history + params);
+        // groups 0/2/3 match the other routes.
+        let trail_src = format!(
+            "{SHARED_BINDINGS_WGSL}\n{}",
+            include_str!("shaders/particle_trail.wgsl")
+        );
+        let trail_shader = device.create_shader_module(vwgpu::ShaderModuleDescriptor {
+            label: Some("particle_trail_shader"),
+            source: vwgpu::ShaderSource::Wgsl(trail_src.into()),
+        });
+        let trail_layout = vwgpu::pipeline_layout(
+            device,
+            "particle_trail_layout",
+            &[
+                shared.group0_layout,
+                &trail_draw_bgl,
+                &ramp_bgl,
+                &drawparams_bgl,
+            ],
+        );
+        let make_trail = |blend: vwgpu::BlendState, label: &str| {
+            vwgpu::render_pipeline(
+                device,
+                vwgpu::RenderPipelineDesc {
+                    label,
+                    layout: &trail_layout,
+                    vertex: vwgpu::VertexState {
+                        module: &trail_shader,
+                        entry_point: Some("vs"),
+                        buffers: &[],
+                        compilation_options: Default::default(),
+                    },
+                    fragment: Some(vwgpu::FragmentState {
+                        module: &trail_shader,
+                        entry_point: Some("fs"),
+                        targets: &[Some(vwgpu::ColorTargetState {
+                            format: HDR_COLOR_FORMAT,
+                            blend: Some(blend),
+                            write_mask: vwgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options: Default::default(),
+                    }),
+                    primitive: vwgpu::PrimitiveState {
+                        topology: vwgpu::PrimitiveTopology::TriangleList,
+                        cull_mode: None,
+                        ..Default::default()
+                    },
+                    depth_stencil: Some(vwgpu::depth_stencil(
+                        SCENE_DEPTH_FORMAT,
+                        false,
+                        vwgpu::CompareFunction::LessEqual,
+                    )),
+                    multisample: vwgpu::MultisampleState {
+                        count: SAMPLE_COUNT,
+                        ..Default::default()
+                    },
+                    cache: None,
+                },
+            )
+        };
+        self.trail_pipeline_additive = Some(make_trail(
+            vwgpu::BlendState {
+                color: one,
+                alpha: one,
+            },
+            "particle_trail_additive",
+        ));
+        self.trail_pipeline_over = Some(make_trail(
+            vwgpu::BlendState {
+                color: over,
+                alpha: over,
+            },
+            "particle_trail_over",
+        ));
+
         self.emit_pipeline = Some(emit_pipeline);
         self.sim_pipeline = Some(sim_pipeline);
+        self.append_pipeline = Some(append_pipeline);
         self.emit_bgl = Some(emit_bgl);
         self.sim_bgl = Some(sim_bgl);
         self.draw_bgl = Some(draw_bgl);
         self.drawparams_bgl = Some(drawparams_bgl);
+        self.history_bgl = Some(history_bgl);
+        self.trail_draw_bgl = Some(trail_draw_bgl);
         self.ramp_bgl = Some(ramp_bgl);
         self.ramp_sampler = Some(ramp_sampler);
     }
@@ -827,6 +1045,7 @@ impl ItemTypePlugin for ParticlePlugin {
         // ends before the per-effect loop mutates `self.effects`.
         let (emit_bgl, sim_bgl, draw_bgl) = (emit_bgl.clone(), sim_bgl.clone(), draw_bgl.clone());
         let (emit_pipeline, sim_pipeline) = (emit_pipeline.clone(), sim_pipeline.clone());
+        let append_pipeline = self.append_pipeline.clone();
 
         // Build the shared identity ramp on first use (needs a queue, so not in
         // `init_gpu`).
@@ -914,6 +1133,30 @@ impl ItemTypePlugin for ParticlePlugin {
                 }
             }
 
+            // Trail effects record this frame's positions into the history ring,
+            // after the simulate pass has moved the particles.
+            if let ParticleRender::Trail { .. } = self.effects[idx].asset.render {
+                if let (Some(append_pipeline), Some(trail)) =
+                    (append_pipeline.as_ref(), self.trails.get(&idx))
+                {
+                    let head = (ctx.frame_index as u32) % HISTORY_LEN;
+                    let hp = HistoryParams {
+                        head,
+                        capacity,
+                        history_len: HISTORY_LEN,
+                        _pad: 0,
+                    };
+                    queue.write_buffer(&trail.params_buf, 0, bytemuck::bytes_of(&hp));
+                    let mut pass = encoder.begin_compute_pass(&vwgpu::ComputePassDescriptor {
+                        label: Some("particle_history_pass"),
+                        timestamp_writes: None,
+                    });
+                    pass.set_pipeline(append_pipeline);
+                    pass.set_bind_group(0, &trail.append_bg, &[]);
+                    pass.dispatch_workgroups(groups, 1, 1);
+                }
+            }
+
             self.draw_list.push(idx);
             any = true;
         }
@@ -931,26 +1174,40 @@ impl ItemTypePlugin for ParticlePlugin {
         _ctx: &PaintContext<'a>,
         _items: &'a dyn PluginItemCollection,
     ) {
-        let (Some(bb_add), Some(bb_over), Some(mesh_add), Some(mesh_over)) = (
+        let (
+            Some(bb_add),
+            Some(bb_over),
+            Some(mesh_add),
+            Some(mesh_over),
+            Some(trail_add),
+            Some(trail_over),
+        ) = (
             self.draw_pipeline_additive.as_ref(),
             self.draw_pipeline_over.as_ref(),
             self.mesh_pipeline_additive.as_ref(),
             self.mesh_pipeline_over.as_ref(),
-        ) else {
+            self.trail_pipeline_additive.as_ref(),
+            self.trail_pipeline_over.as_ref(),
+        )
+        else {
             return;
         };
         // Group 0 (camera + scene) is already bound by the lib.
         for &idx in &self.draw_list {
             let eff = &self.effects[idx];
-            let Some(gpu) = eff.gpu.as_ref() else { continue };
+            let Some(gpu) = eff.gpu.as_ref() else {
+                continue;
+            };
             let additive = matches!(eff.asset.blend, ParticleBlend::Additive);
-            pass.set_bind_group(1, gpu.draw_bg(), &[]);
+            // Groups 2 (ramp) and 3 (draw params) are shared by every route;
+            // group 1 is route-specific (particles, or the trail bindings).
             pass.set_bind_group(2, gpu.ramp_bg(), &[]);
             pass.set_bind_group(3, gpu.drawparams_bg(), &[]);
 
             match eff.asset.render {
                 ParticleRender::Billboard { .. } => {
                     pass.set_pipeline(if additive { bb_add } else { bb_over });
+                    pass.set_bind_group(1, gpu.draw_bg(), &[]);
                     pass.draw(0..6, 0..eff.asset.capacity);
                 }
                 ParticleRender::Mesh { mesh, .. } => {
@@ -958,9 +1215,21 @@ impl ItemTypePlugin for ParticlePlugin {
                         continue;
                     };
                     pass.set_pipeline(if additive { mesh_add } else { mesh_over });
+                    pass.set_bind_group(1, gpu.draw_bg(), &[]);
                     pass.set_vertex_buffer(0, m.vertex_buf.slice(..));
                     pass.set_index_buffer(m.index_buf.slice(..), vwgpu::IndexFormat::Uint32);
                     pass.draw_indexed(0..m.index_count, 0, 0..eff.asset.capacity);
+                }
+                ParticleRender::Trail { segments, .. } => {
+                    let Some(trail) = self.trails.get(&idx) else {
+                        continue;
+                    };
+                    pass.set_pipeline(if additive { trail_add } else { trail_over });
+                    pass.set_bind_group(1, &trail.draw_bg, &[]);
+                    // Six vertices per segment; the shader clamps to the live
+                    // history and discards stale or dead segments.
+                    let segs = segments.clamp(1, HISTORY_LEN - 1);
+                    pass.draw(0..segs * 6, 0..eff.asset.capacity);
                 }
             }
         }
@@ -1348,6 +1617,80 @@ fn build_fixed_gpu(
         ramp_bg,
         drawparams_bg,
         ramp_lut,
+    }
+}
+
+/// Build a trail effect's history ring, its params uniform, and the append and
+/// ribbon bind groups over the effect's persistent particle buffer. The history
+/// starts zeroed, so every sample reads as invalid (`w = 0` never matches a live
+/// seed) until the append pass fills it in over the first frames.
+fn build_trail_gpu(
+    device: &vwgpu::Device,
+    capacity: u32,
+    particle_buf: &vwgpu::Buffer,
+    history_bgl: &vwgpu::BindGroupLayout,
+    trail_draw_bgl: &vwgpu::BindGroupLayout,
+) -> TrailGpu {
+    let sample_count = (capacity as u64) * HISTORY_LEN as u64;
+    let bytes = (sample_count * 16).max(16);
+    let history_buf = device.create_buffer(&vwgpu::BufferDescriptor {
+        label: Some("particle_trail_history"),
+        size: bytes,
+        usage: vwgpu::BufferUsages::STORAGE | vwgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: true,
+    });
+    history_buf.slice(..).get_mapped_range_mut().fill(0);
+    history_buf.unmap();
+
+    let params_buf = device.create_buffer(&vwgpu::BufferDescriptor {
+        label: Some("particle_trail_params"),
+        size: std::mem::size_of::<HistoryParams>() as u64,
+        usage: vwgpu::BufferUsages::UNIFORM | vwgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+
+    let append_bg = device.create_bind_group(&vwgpu::BindGroupDescriptor {
+        label: Some("particle_trail_append_bg"),
+        layout: history_bgl,
+        entries: &[
+            vwgpu::BindGroupEntry {
+                binding: 0,
+                resource: particle_buf.as_entire_binding(),
+            },
+            vwgpu::BindGroupEntry {
+                binding: 1,
+                resource: history_buf.as_entire_binding(),
+            },
+            vwgpu::BindGroupEntry {
+                binding: 2,
+                resource: params_buf.as_entire_binding(),
+            },
+        ],
+    });
+    let draw_bg = device.create_bind_group(&vwgpu::BindGroupDescriptor {
+        label: Some("particle_trail_draw_bg"),
+        layout: trail_draw_bgl,
+        entries: &[
+            vwgpu::BindGroupEntry {
+                binding: 0,
+                resource: particle_buf.as_entire_binding(),
+            },
+            vwgpu::BindGroupEntry {
+                binding: 1,
+                resource: history_buf.as_entire_binding(),
+            },
+            vwgpu::BindGroupEntry {
+                binding: 2,
+                resource: params_buf.as_entire_binding(),
+            },
+        ],
+    });
+
+    TrailGpu {
+        history_buf,
+        params_buf,
+        append_bg,
+        draw_bg,
     }
 }
 

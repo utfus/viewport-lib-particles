@@ -23,14 +23,16 @@
 //! Colour and size ramps over lifetime attach to either path via
 //! [`EffectAsset::with_gradient`] (a LUT sampled by particle age).
 //!
-//! Particles draw as camera-facing billboards (optionally velocity-stretched) or
-//! as instances of an uploaded mesh, chosen by [`EffectAsset::with_render`].
+//! Particles draw as camera-facing billboards (optionally velocity-stretched),
+//! as instances of an uploaded mesh, or as ribbon trails swept through each
+//! particle's recorded path, chosen by [`EffectAsset::with_render`].
 //!
 //! Status: early. Both authoring paths work -- fixed-function (verified by
 //! `tests/simulates.rs`) and codegen (verified by `tests/expression.rs`) -- with
-//! lifetime gradients (`tests/gradient.rs`) and billboard/mesh render routes
-//! (`tests/render_routes.rs`). Ribbon trails, sorting, and picking are still
-//! ahead; see `docs/plans/particle-system-plan.md` for the phased build-out.
+//! lifetime gradients (`tests/gradient.rs`) and the billboard, mesh, and trail
+//! render routes (`tests/render_routes.rs`, `tests/trails.rs`). Sorting and
+//! picking are still ahead; see `docs/plans/particle-system-plan.md` for the
+//! phased build-out.
 //!
 //! Typical setup:
 //!

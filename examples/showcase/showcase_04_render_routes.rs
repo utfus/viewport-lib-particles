@@ -42,12 +42,14 @@ fn base() -> EffectAsset {
             size: 0.16,
         })
         .force(ForceModifier::Accel([0.0, 0.0, -5.0]))
+        // Cool electric palette, distinct from the warm fire look the Gradients
+        // showcase uses: this tab is about the draw route, not the colour.
         .with_gradient(
             Gradient::new()
                 .with_colour(vec![
-                    (0.0, [1.4, 1.2, 0.6]),
-                    (0.5, [1.2, 0.4, 0.1]),
-                    (1.0, [0.2, 0.03, 0.02]),
+                    (0.0, [0.6, 1.5, 1.9]),
+                    (0.5, [0.15, 0.5, 1.4]),
+                    (1.0, [0.03, 0.08, 0.35]),
                 ])
                 .with_size(vec![(0.0, 1.0), (1.0, 0.4)]),
         )

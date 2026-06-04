@@ -17,30 +17,33 @@ use viewport_lib_particles::{
 /// [`EffectId`]s aligned by index.
 pub fn presets() -> Vec<(&'static str, EffectAsset)> {
     vec![
+        // Lead with the attractor swirl: a point emitter dragged into orbit by a
+        // PointAttractor. Purple and clearly rotational, so this tab does not open
+        // on the same upward cone as the Gradients and Render-routes showcases.
         (
-            "Additive fountain",
-            EffectAsset::new("fountain")
+            "Attractor swirl",
+            EffectAsset::new("swirl")
                 .with_capacity(40_000)
                 .with_blend(ParticleBlend::Additive)
                 .with_emitter(Emitter {
-                    rate: SpawnRate::PerSecond(12_000.0),
-                    lifetime: (1.2, 2.4),
-                    spawn: SpawnShape::Sphere {
-                        radius: 0.2,
-                        volume: true,
-                    },
+                    rate: SpawnRate::PerSecond(14_000.0),
+                    lifetime: (2.0, 3.5),
+                    spawn: SpawnShape::Point,
                     velocity: VelocityDist::UniformCone {
-                        axis: [0.0, 0.0, 1.0],
-                        half_angle: 0.35,
+                        axis: [1.0, 0.0, 0.2],
+                        half_angle: 0.5,
                         min_speed: 3.0,
-                        max_speed: 5.5,
+                        max_speed: 5.0,
                     },
-                    colour: [1.0, 0.55, 0.15, 1.0],
-                    size: 0.14,
+                    colour: [0.85, 0.4, 1.0, 1.0],
+                    size: 0.11,
                 })
-                // Z-up: gravity pulls along -Z.
-                .force(ForceModifier::Accel([0.0, 0.0, -4.0]))
-                .force(ForceModifier::Drag(0.05)),
+                .force(ForceModifier::PointAttractor {
+                    position: [0.0, 0.0, 1.5],
+                    strength: 12.0,
+                    falloff: 0.6,
+                })
+                .force(ForceModifier::Drag(0.08)),
         ),
         (
             "Isotropic burst",
@@ -85,29 +88,29 @@ pub fn presets() -> Vec<(&'static str, EffectAsset)> {
                 .force(ForceModifier::Accel([0.0, 0.0, -3.0])),
         ),
         (
-            "Attractor swirl",
-            EffectAsset::new("swirl")
+            "Additive fountain",
+            EffectAsset::new("fountain")
                 .with_capacity(40_000)
                 .with_blend(ParticleBlend::Additive)
                 .with_emitter(Emitter {
-                    rate: SpawnRate::PerSecond(14_000.0),
-                    lifetime: (2.0, 3.5),
-                    spawn: SpawnShape::Point,
-                    velocity: VelocityDist::UniformCone {
-                        axis: [1.0, 0.0, 0.2],
-                        half_angle: 0.5,
-                        min_speed: 3.0,
-                        max_speed: 5.0,
+                    rate: SpawnRate::PerSecond(12_000.0),
+                    lifetime: (1.2, 2.4),
+                    spawn: SpawnShape::Sphere {
+                        radius: 0.2,
+                        volume: true,
                     },
-                    colour: [0.85, 0.4, 1.0, 1.0],
-                    size: 0.11,
+                    velocity: VelocityDist::UniformCone {
+                        axis: [0.0, 0.0, 1.0],
+                        half_angle: 0.35,
+                        min_speed: 3.0,
+                        max_speed: 5.5,
+                    },
+                    colour: [0.3, 1.0, 0.6, 1.0],
+                    size: 0.14,
                 })
-                .force(ForceModifier::PointAttractor {
-                    position: [0.0, 0.0, 1.5],
-                    strength: 12.0,
-                    falloff: 0.6,
-                })
-                .force(ForceModifier::Drag(0.08)),
+                // Z-up: gravity pulls along -Z.
+                .force(ForceModifier::Accel([0.0, 0.0, -4.0]))
+                .force(ForceModifier::Drag(0.05)),
         ),
     ]
 }

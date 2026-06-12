@@ -14,6 +14,7 @@ mod showcase_01_emitters;
 mod showcase_02_expression;
 mod showcase_03_gradients;
 mod showcase_04_render_routes;
+mod showcase_05_refraction;
 mod viewport_callback;
 
 use eframe::egui;
@@ -35,6 +36,7 @@ enum ShowcaseMode {
     Expression,
     Gradients,
     RenderRoutes,
+    Refraction,
 }
 
 impl ShowcaseMode {
@@ -43,6 +45,7 @@ impl ShowcaseMode {
         ShowcaseMode::Expression,
         ShowcaseMode::Gradients,
         ShowcaseMode::RenderRoutes,
+        ShowcaseMode::Refraction,
     ];
 
     fn label(self) -> &'static str {
@@ -51,7 +54,15 @@ impl ShowcaseMode {
             ShowcaseMode::Expression => "2: Expression",
             ShowcaseMode::Gradients => "3: Gradients",
             ShowcaseMode::RenderRoutes => "4: Render routes",
+            ShowcaseMode::Refraction => "5: Refraction",
         }
+    }
+
+    /// The next (`step = 1`) or previous (`step = -1`) mode, wrapping around.
+    fn cycle(self, step: isize) -> ShowcaseMode {
+        let n = Self::ALL.len() as isize;
+        let cur = Self::ALL.iter().position(|&m| m == self).unwrap_or(0) as isize;
+        Self::ALL[(cur + step).rem_euclid(n) as usize]
     }
 }
 
@@ -97,7 +108,16 @@ fn main() -> eframe::Result {
             let render_route_ids = showcase_04_render_routes::register(&mut plugin, device);
             renderer.with_item_type_plugin(device, Box::new(plugin));
 
-            rs.renderer.write().callback_resources.insert(renderer);
+            let mut writer = rs.renderer.write();
+            writer.callback_resources.insert(renderer);
+            // The refraction showcase drives a GpuPlugin directly; its GPU
+            // resources live alongside the renderer in the callback map.
+            writer
+                .callback_resources
+                .insert(showcase_05_refraction::RefractionResources::new(
+                    device, format,
+                ));
+            drop(writer);
 
             Ok(Box::new(App {
                 camera: Camera {
@@ -116,6 +136,7 @@ fn main() -> eframe::Result {
                 expression: showcase_02_expression::State::default(),
                 gradients: showcase_03_gradients::State::default(),
                 render_routes: showcase_04_render_routes::State::default(),
+                refraction: showcase_05_refraction::State::default(),
             }))
         }),
     )
@@ -138,6 +159,7 @@ struct App {
     expression: showcase_02_expression::State,
     gradients: showcase_03_gradients::State,
     render_routes: showcase_04_render_routes::State,
+    refraction: showcase_05_refraction::State,
 }
 
 impl eframe::App for App {
@@ -145,12 +167,31 @@ impl eframe::App for App {
         // Particles animate every frame.
         ctx.request_repaint();
 
+        // Cmd/Ctrl + [ / ] cycles through the showcase tabs.
+        let step = ctx.input(|i| {
+            if !i.modifiers.command {
+                0
+            } else if i.key_pressed(egui::Key::CloseBracket) {
+                1
+            } else if i.key_pressed(egui::Key::OpenBracket) {
+                -1
+            } else {
+                0
+            }
+        });
+        if step != 0 {
+            self.mode = self.mode.cycle(step);
+        }
+
         // ---- Top bar: mode switch ----
         egui::TopBottomPanel::top("mode_panel").show(ctx, |ui| {
             ui.horizontal_wrapped(|ui| {
                 ui.label("Showcase:");
                 for mode in ShowcaseMode::ALL.iter().copied() {
-                    if ui.selectable_label(self.mode == mode, mode.label()).clicked() {
+                    if ui
+                        .selectable_label(self.mode == mode, mode.label())
+                        .clicked()
+                    {
                         self.mode = mode;
                     }
                 }
@@ -165,11 +206,12 @@ impl eframe::App for App {
                 ShowcaseMode::Expression => {
                     showcase_02_expression::controls(&mut self.expression, ui)
                 }
-                ShowcaseMode::Gradients => {
-                    showcase_03_gradients::controls(&mut self.gradients, ui)
-                }
+                ShowcaseMode::Gradients => showcase_03_gradients::controls(&mut self.gradients, ui),
                 ShowcaseMode::RenderRoutes => {
                     showcase_04_render_routes::controls(&mut self.render_routes, ui)
+                }
+                ShowcaseMode::Refraction => {
+                    showcase_05_refraction::controls(&mut self.refraction, ui)
                 }
             });
 
@@ -192,6 +234,27 @@ impl eframe::App for App {
                 self.camera.set_aspect_ratio(w, h);
 
                 let dt = ctx.input(|i| i.stable_dt).min(1.0 / 30.0);
+
+                // Refraction runs a GpuPlugin post-pass rather than submitting
+                // particle items, so it uses a dedicated callback.
+                if self.mode == ShowcaseMode::Refraction {
+                    self.refraction.time += dt;
+                    ui.painter()
+                        .add(eframe::egui_wgpu::Callback::new_paint_callback(
+                            rect,
+                            showcase_05_refraction::RefractionCallback {
+                                center: [0.5, 0.5],
+                                radius: self.refraction.radius(),
+                                width: self.refraction.width,
+                                strength: self.refraction.strength,
+                            },
+                        ));
+                    if response.hovered() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::Default);
+                    }
+                    return;
+                }
+
                 let mut scene = SceneFrame::from_surface_items(Vec::new());
                 let items = match self.mode {
                     ShowcaseMode::Emitters => {
@@ -208,6 +271,7 @@ impl eframe::App for App {
                         &self.render_routes,
                         dt,
                     ),
+                    ShowcaseMode::Refraction => unreachable!("handled above"),
                 };
                 scene.submit_plugin_items(ParticlePlugin::TYPE_NAME, items);
 
@@ -237,13 +301,12 @@ impl App {
     /// controller.
     fn feed_input(&mut self, ui: &egui::Ui, rect: egui::Rect) {
         ui.input(|i| {
-            self.controller.push_event(ViewportEvent::ModifiersChanged(
-                viewport_lib::Modifiers {
+            self.controller
+                .push_event(ViewportEvent::ModifiersChanged(viewport_lib::Modifiers {
                     alt: i.modifiers.alt,
                     shift: i.modifiers.shift,
                     ctrl: i.modifiers.command,
-                },
-            ));
+                }));
 
             if let Some(p) = i.pointer.interact_pos() {
                 let local = glam::Vec2::new(p.x - rect.left(), p.y - rect.top());

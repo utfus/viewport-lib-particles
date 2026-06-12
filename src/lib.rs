@@ -27,6 +27,12 @@
 //! as instances of an uploaded mesh, or as ribbon trails swept through each
 //! particle's recorded path, chosen by [`EffectAsset::with_render`].
 //!
+//! Screen-space effects that bend the scene behind particles (shockwaves, heat
+//! haze) cannot be done in the particle draw, which has no readable copy of the
+//! scene colour. Those live on the other seam `viewport-lib` exposes: see
+//! [`RefractionPlugin`], a companion `GpuPlugin` that distorts the rendered
+//! colour in a `post_paint` pass.
+//!
 //! Status: early. Both authoring paths work -- fixed-function (verified by
 //! `tests/simulates.rs`) and codegen (verified by `tests/expression.rs`) -- with
 //! lifetime gradients (`tests/gradient.rs`) and the billboard, mesh, and trail
@@ -54,6 +60,7 @@ mod codegen;
 mod effect;
 mod expr;
 mod plugin;
+mod refraction;
 
 pub use effect::{
     Attribute, EffectAsset, EffectId, EffectProgram, Emitter, ForceModifier, Gradient, MeshAlign,
@@ -62,6 +69,7 @@ pub use effect::{
 };
 pub use expr::{Expr, ExprHandle, Module};
 pub use plugin::{ParticleItem, ParticleItems, ParticlePlugin};
+pub use refraction::RefractionPlugin;
 
 /// Catalogue version of `viewport-lib` this crate was built against.
 ///

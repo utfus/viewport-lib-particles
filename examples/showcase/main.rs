@@ -15,12 +15,14 @@ mod showcase_02_expression;
 mod showcase_03_gradients;
 mod showcase_04_render_routes;
 mod showcase_05_refraction;
+mod showcase_06_interaction;
 mod viewport_callback;
 
 use eframe::egui;
+use viewport_lib::renderer::{PickBackend, PickMask};
 use viewport_lib::{
-    ButtonState, Camera, CameraFrame, FrameData, OrbitCameraController, SceneFrame, ScrollUnits,
-    ViewportContext, ViewportEvent, ViewportRenderer,
+    ButtonState, Camera, CameraFrame, FrameData, MeshId, OrbitCameraController, SceneFrame,
+    ScrollUnits, ViewportContext, ViewportEvent, ViewportRenderer, primitives,
 };
 use viewport_lib_particles::{EffectId, ParticlePlugin};
 
@@ -37,6 +39,7 @@ enum ShowcaseMode {
     Gradients,
     RenderRoutes,
     Refraction,
+    Interaction,
 }
 
 impl ShowcaseMode {
@@ -46,6 +49,7 @@ impl ShowcaseMode {
         ShowcaseMode::Gradients,
         ShowcaseMode::RenderRoutes,
         ShowcaseMode::Refraction,
+        ShowcaseMode::Interaction,
     ];
 
     fn label(self) -> &'static str {
@@ -55,6 +59,7 @@ impl ShowcaseMode {
             ShowcaseMode::Gradients => "3: Gradients",
             ShowcaseMode::RenderRoutes => "4: Render routes",
             ShowcaseMode::Refraction => "5: Refraction",
+            ShowcaseMode::Interaction => "6: Interaction",
         }
     }
 
@@ -106,7 +111,18 @@ fn main() -> eframe::Result {
                 .map(|(_, asset)| plugin.add_effect(device, asset))
                 .collect();
             let render_route_ids = showcase_04_render_routes::register(&mut plugin, device);
+            let interaction_id = showcase_06_interaction::presets()
+                .into_iter()
+                .map(|(_, asset)| plugin.add_effect(device, asset))
+                .next()
+                .expect("one interaction effect");
             renderer.with_item_type_plugin(device, Box::new(plugin));
+
+            // Ground plane for the interaction showcase (shadow receiver).
+            let ground_mesh = renderer
+                .resources_mut()
+                .upload_mesh_data(device, &primitives::cuboid(20.0, 20.0, 0.5))
+                .expect("ground mesh");
 
             let mut writer = rs.renderer.write();
             writer.callback_resources.insert(renderer);
@@ -137,6 +153,9 @@ fn main() -> eframe::Result {
                 gradients: showcase_03_gradients::State::default(),
                 render_routes: showcase_04_render_routes::State::default(),
                 refraction: showcase_05_refraction::State::default(),
+                interaction_id,
+                ground_mesh,
+                interaction: showcase_06_interaction::State::default(),
             }))
         }),
     )
@@ -160,12 +179,19 @@ struct App {
     gradients: showcase_03_gradients::State,
     render_routes: showcase_04_render_routes::State,
     refraction: showcase_05_refraction::State,
+    interaction_id: EffectId,
+    ground_mesh: MeshId,
+    interaction: showcase_06_interaction::State,
 }
 
 impl eframe::App for App {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn update(&mut self, ctx: &egui::Context, eframe_frame: &mut eframe::Frame) {
         // Particles animate every frame.
         ctx.request_repaint();
+
+        // A click in the Interaction mode requests a GPU pick, resolved after the
+        // panels close (where the wgpu render state is reachable).
+        let mut pick_request: Option<(glam::Vec2, [f32; 2], f32)> = None;
 
         // Cmd/Ctrl + [ / ] cycles through the showcase tabs.
         let step = ctx.input(|i| {
@@ -213,6 +239,9 @@ impl eframe::App for App {
                 ShowcaseMode::Refraction => {
                     showcase_05_refraction::controls(&mut self.refraction, ui)
                 }
+                ShowcaseMode::Interaction => {
+                    showcase_06_interaction::controls(&mut self.interaction, ui)
+                }
             });
 
         // ---- Central panel: viewport ----
@@ -255,6 +284,31 @@ impl eframe::App for App {
                     return;
                 }
 
+                let ppp = ui.ctx().pixels_per_point();
+
+                // Interaction submits a ground plane + directional light alongside
+                // the particles, and a click requests a GPU pick.
+                if self.mode == ShowcaseMode::Interaction {
+                    if response.clicked() {
+                        if let Some(p) = response.interact_pointer_pos() {
+                            let cursor = glam::Vec2::new(p.x - rect.left(), p.y - rect.top());
+                            pick_request = Some((cursor, [w, h], ppp));
+                        }
+                    }
+                    let frame_data = self.interaction_frame([w, h], ppp, dt);
+                    ui.painter()
+                        .add(eframe::egui_wgpu::Callback::new_paint_callback(
+                            rect,
+                            viewport_callback::ViewportCallback { frame: frame_data },
+                        ));
+                    if response.dragged() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
+                    } else if response.hovered() {
+                        ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
+                    }
+                    return;
+                }
+
                 let mut scene = SceneFrame::from_surface_items(Vec::new());
                 let items = match self.mode {
                     ShowcaseMode::Emitters => {
@@ -271,7 +325,9 @@ impl eframe::App for App {
                         &self.render_routes,
                         dt,
                     ),
-                    ShowcaseMode::Refraction => unreachable!("handled above"),
+                    ShowcaseMode::Refraction | ShowcaseMode::Interaction => {
+                        unreachable!("handled above")
+                    }
                 };
                 scene.submit_plugin_items(ParticlePlugin::TYPE_NAME, items);
 
@@ -293,10 +349,47 @@ impl eframe::App for App {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::Grab);
                 }
             });
+
+        // Resolve a pending interaction pick now that the panels have closed and
+        // the wgpu render state (device / queue / renderer) is reachable.
+        if let Some((cursor, size, ppp)) = pick_request {
+            if let Some(rs) = eframe_frame.wgpu_render_state() {
+                let frame_data = self.interaction_frame(size, ppp, 0.0);
+                let mut writer = rs.renderer.write();
+                if let Some(renderer) = writer.callback_resources.get_mut::<ViewportRenderer>() {
+                    let hit = renderer.pick_object(
+                        PickBackend::Gpu,
+                        cursor,
+                        &frame_data,
+                        &rs.device,
+                        &rs.queue,
+                        PickMask::OBJECT,
+                    );
+                    self.interaction.picked =
+                        matches!(hit, Some(h) if h.id == showcase_06_interaction::PICK_ID);
+                }
+            }
+        }
     }
 }
 
 impl App {
+    /// Build the Interaction mode's frame: the ground plane, the directional
+    /// light, and the particle system tagged with its pick id / selection.
+    fn interaction_frame(&self, size: [f32; 2], ppp: f32, dt: f32) -> FrameData {
+        let ground = showcase_06_interaction::ground_item(self.ground_mesh);
+        let mut scene = SceneFrame::from_surface_items(vec![ground]);
+        let items = showcase_06_interaction::items(self.interaction_id, &self.interaction, dt);
+        scene.submit_plugin_items(ParticlePlugin::TYPE_NAME, items);
+        let mut frame_data = FrameData::new(
+            CameraFrame::from_camera(&self.camera, size).with_pixels_per_point(ppp),
+            scene,
+        );
+        frame_data.effects.lighting = showcase_06_interaction::lighting();
+        frame_data.interaction.outline_selected = true;
+        frame_data
+    }
+
     /// Translate egui pointer / wheel events into `ViewportEvent`s for the orbit
     /// controller.
     fn feed_input(&mut self, ui: &egui::Ui, rect: egui::Rect) {

@@ -24,11 +24,17 @@ use std::collections::HashMap;
 use std::hash::{Hash, Hasher};
 
 use bytemuck::{Pod, Zeroable};
-use viewport_lib::plugin_api::shared_wgsl::SHARED_BINDINGS_WGSL;
-use viewport_lib::plugin_api::{
-    ItemFrameContext, ItemTypePlugin, PaintContext, PluginItemCollection, SharedBindings,
+use viewport_lib::plugin_api::shared_wgsl::{
+    SHARED_BINDINGS_WGSL, SHARED_MASK_WGSL, SHARED_PICK_WGSL,
 };
-use viewport_lib::resources::{HDR_COLOR_FORMAT, SCENE_DEPTH_FORMAT};
+use viewport_lib::plugin_api::{
+    ItemFrameContext, ItemTypePlugin, OutlineMaskContext, PaintContext, PickPassContext,
+    PluginItemCollection, ShadowCastContext, SharedBindings,
+};
+use viewport_lib::resources::{
+    HDR_COLOR_FORMAT, MASK_COLOR_FORMAT, PICK_COLOR_FORMAT, PICK_DEPTH_CHANNEL_FORMAT,
+    SCENE_DEPTH_FORMAT, SHADOW_DEPTH_FORMAT,
+};
 use viewport_lib::scene::material::ItemSettings;
 use viewport_lib::wgpu as vwgpu;
 
@@ -93,6 +99,11 @@ pub struct ParticleItems {
     items: Vec<ParticleItem>,
     /// Simulation time step in seconds for this frame. Defaults to 1/60.
     pub dt: f32,
+    /// Whether to depth-sort non-additive (alpha / premultiplied) effects
+    /// back-to-front this frame. Additive effects are order-independent and are
+    /// never sorted. Defaults to `true`; set `false` to see the ordering
+    /// artefact.
+    pub sort_transparent: bool,
 }
 
 impl Default for ParticleItems {
@@ -100,6 +111,7 @@ impl Default for ParticleItems {
         Self {
             items: Vec::new(),
             dt: 1.0 / 60.0,
+            sort_transparent: true,
         }
     }
 }
@@ -113,6 +125,13 @@ impl ParticleItems {
     /// Set the simulation time step for this frame.
     pub fn with_dt(mut self, dt: f32) -> Self {
         self.dt = dt;
+        self
+    }
+
+    /// Enable or disable back-to-front depth sorting of non-additive effects for
+    /// this frame.
+    pub fn with_sort_transparent(mut self, sort: bool) -> Self {
+        self.sort_transparent = sort;
         self
     }
 
@@ -279,6 +298,49 @@ impl EffectGpu {
     }
 }
 
+/// Init-pass parameters for the depth sort. Matches `InitParams` in
+/// `particle_sort_init.wgsl`. 32 bytes.
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
+struct SortInitParams {
+    eye: [f32; 4],
+    capacity: u32,
+    n: u32,
+    _pad: [u32; 2],
+}
+
+/// One bitonic stage's constants. Matches `SortParams` in `particle_sort.wgsl`.
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
+struct SortStageParams {
+    k: u32,
+    j: u32,
+    n: u32,
+    _pad: u32,
+}
+
+/// Minimum dynamic-uniform-offset alignment (wgpu default), the stride between
+/// the per-stage `SortStageParams` in the shared stage buffer.
+const SORT_STAGE_STRIDE: u64 = 256;
+
+/// Depth-sort GPU state for one non-additive effect: the key buffer, the sort
+/// parameter buffers, and the init/stage bind groups over the effect's particle
+/// and order buffers. The bitonic stage constants are fixed for the effect's
+/// padded length, so they are written once at build time.
+struct SortGpu {
+    #[allow(dead_code)]
+    keys_buf: vwgpu::Buffer,
+    init_buf: vwgpu::Buffer,
+    #[allow(dead_code)]
+    stage_buf: vwgpu::Buffer,
+    init_bg: vwgpu::BindGroup,
+    stage_bg: vwgpu::BindGroup,
+    /// Padded power-of-two length (>= capacity).
+    n: u32,
+    /// Number of bitonic stages for `n`.
+    num_stages: u32,
+}
+
 /// Trail render-route GPU state for one effect: a per-particle position history
 /// ring, its parameters, and the bind groups for the append (compute) and
 /// ribbon (draw) passes. Built lazily alongside the effect's `EffectGpu` when
@@ -374,6 +436,25 @@ pub struct ParticlePlugin {
     /// whose render route is `ParticleRender::Trail`.
     trails: HashMap<usize, TrailGpu>,
 
+    // Depth sort: the setup (key + identity order) pass and one bitonic stage.
+    sort_init_pipeline: Option<vwgpu::ComputePipeline>,
+    sort_stage_pipeline: Option<vwgpu::ComputePipeline>,
+    sort_init_bgl: Option<vwgpu::BindGroupLayout>,
+    sort_stage_bgl: Option<vwgpu::BindGroupLayout>,
+    /// Per-effect sort state, keyed by effect index. Present only for
+    /// non-additive effects, whose draw order needs back-to-front sorting.
+    sorts: HashMap<usize, SortGpu>,
+
+    // Interaction: pick-id, outline-mask, and shadow-cast pipelines.
+    pick_pipeline: Option<vwgpu::RenderPipeline>,
+    mask_pipeline: Option<vwgpu::RenderPipeline>,
+    shadow_pipeline: Option<vwgpu::RenderPipeline>,
+    pick_bgl: Option<vwgpu::BindGroupLayout>,
+    shadow_group0_bgl: Option<vwgpu::BindGroupLayout>,
+    /// Per-effect pick-id uniform + bind group (group 2 of the pick pipeline),
+    /// keyed by effect index. Written each frame from the driving item's id.
+    pick_gpu: HashMap<usize, (vwgpu::Buffer, vwgpu::BindGroup)>,
+
     /// Meshes uploaded for the mesh render route, indexed by `ParticleMeshId`.
     meshes: Vec<ParticleMesh>,
 
@@ -390,8 +471,27 @@ pub struct ParticlePlugin {
     /// WGSL so effects with identical programs share pipelines.
     gen_cache: HashMap<u64, (vwgpu::ComputePipeline, vwgpu::ComputePipeline)>,
 
-    /// Effects with live simulation this frame, drawn in `paint`.
-    draw_list: Vec<usize>,
+    /// Effects with live simulation this frame, drawn in `paint` and the
+    /// interaction passes.
+    draw_list: Vec<DrawEntry>,
+}
+
+/// One effect drawn this frame, with the driving item's interaction flags.
+#[derive(Copy, Clone)]
+struct DrawEntry {
+    idx: usize,
+    /// Pick id of the driving item (0 = `PickId::NONE`, not pickable).
+    pick_id: u32,
+    selected: bool,
+    cast_shadows: bool,
+}
+
+/// Per-effect pick-id uniform (group 2 of the pick pipeline). 16 bytes.
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
+struct PickUniform {
+    id: u32,
+    _pad: [u32; 3],
 }
 
 impl ParticlePlugin {
@@ -477,6 +577,13 @@ impl ParticlePlugin {
         let program = self.effects[idx].asset.program.clone();
         let gradient = self.effects[idx].asset.gradient.clone();
         let render = self.effects[idx].asset.render;
+        let blend = self.effects[idx].asset.blend;
+
+        // Draw order buffer, padded to a power of two so the bitonic sort has a
+        // clean length. Identity for now; sorted per frame for non-additive
+        // effects.
+        let n = next_pow2(capacity);
+        let order_buf = build_order_buffer(device, n);
 
         // Ramp bind group: an effect with a gradient bakes its own LUT; others
         // share the identity ramp built in `prepare`.
@@ -523,6 +630,7 @@ impl ParticlePlugin {
             None => EffectGpu::Fixed(build_fixed_gpu(
                 device,
                 capacity,
+                &order_buf,
                 emit_bgl,
                 sim_bgl,
                 draw_bgl,
@@ -536,6 +644,7 @@ impl ParticlePlugin {
                 EffectGpu::Gen(build_gen_gpu(
                     device,
                     capacity,
+                    &order_buf,
                     emit_bgl,
                     sim_bgl,
                     draw_bgl,
@@ -559,11 +668,49 @@ impl ParticlePlugin {
                 device,
                 capacity,
                 particle_buf,
+                &order_buf,
                 &history_bgl,
                 &trail_draw_bgl,
             );
             self.trails.insert(idx, trail);
         }
+
+        // Non-additive effects need back-to-front draw order for correct alpha,
+        // so they get the sort key + bitonic state over the particle and order
+        // buffers. Additive effects are order-independent and keep identity.
+        if !matches!(blend, ParticleBlend::Additive) {
+            let sort_init_bgl = self.sort_init_bgl.clone().unwrap();
+            let sort_stage_bgl = self.sort_stage_bgl.clone().unwrap();
+            let particle_buf = self.effects[idx].gpu.as_ref().unwrap().particle_buf();
+            let sort = build_sort_gpu(
+                device,
+                n,
+                particle_buf,
+                &order_buf,
+                &sort_init_bgl,
+                &sort_stage_bgl,
+            );
+            self.sorts.insert(idx, sort);
+        }
+
+        // Per-effect pick-id uniform (group 2 of the pick pipeline). Written each
+        // frame from the driving item's pick id.
+        let pick_bgl = self.pick_bgl.clone().unwrap();
+        let pick_buf = device.create_buffer(&vwgpu::BufferDescriptor {
+            label: Some("particle_pick_id"),
+            size: std::mem::size_of::<PickUniform>() as u64,
+            usage: vwgpu::BufferUsages::UNIFORM | vwgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let pick_bg = device.create_bind_group(&vwgpu::BindGroupDescriptor {
+            label: Some("particle_pick_bg"),
+            layout: &pick_bgl,
+            entries: &[vwgpu::BindGroupEntry {
+                binding: 0,
+                resource: pick_buf.as_entire_binding(),
+            }],
+        });
+        self.pick_gpu.insert(idx, (pick_buf, pick_bg));
     }
 
     /// Compile (or reuse) the emit/simulate pipelines for a program, keyed by
@@ -625,18 +772,20 @@ impl ItemTypePlugin for ParticlePlugin {
             label: Some("particle_sim_bgl"),
             entries: &[storage_rw(0), uniform(1)],
         });
+        let draw_storage = |binding| vwgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: vwgpu::ShaderStages::VERTEX,
+            ty: vwgpu::BindingType::Buffer {
+                ty: vwgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        };
+        // binding 0 = particles, binding 1 = draw order (identity or sorted).
         let draw_bgl = device.create_bind_group_layout(&vwgpu::BindGroupLayoutDescriptor {
             label: Some("particle_draw_bgl"),
-            entries: &[vwgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: vwgpu::ShaderStages::VERTEX,
-                ty: vwgpu::BindingType::Buffer {
-                    ty: vwgpu::BufferBindingType::Storage { read_only: true },
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
-                },
-                count: None,
-            }],
+            entries: &[draw_storage(0), draw_storage(1)],
         });
 
         // Group 2: the lifetime-ramp LUT, sampled in the vertex stage. The
@@ -727,12 +876,14 @@ impl ItemTypePlugin for ParticlePlugin {
             label: Some("particle_history_bgl"),
             entries: &[storage_ro_compute(0), storage_rw(1), uniform(2)],
         });
+        // binding 0 = particles, 1 = history, 2 = HistParams, 3 = draw order.
         let trail_draw_bgl = device.create_bind_group_layout(&vwgpu::BindGroupLayoutDescriptor {
             label: Some("particle_trail_draw_bgl"),
             entries: &[
                 storage_ro_vertex(0),
                 storage_ro_vertex(1),
                 uniform_vertex(2),
+                storage_ro_vertex(3),
             ],
         });
 
@@ -769,6 +920,48 @@ impl ItemTypePlugin for ParticlePlugin {
             "history_main",
             "particle_history",
             &history_bgl,
+        );
+
+        // Depth sort: a setup pass (keys + identity order) and a bitonic stage.
+        let sort_init_bgl = device.create_bind_group_layout(&vwgpu::BindGroupLayoutDescriptor {
+            label: Some("particle_sort_init_bgl"),
+            entries: &[
+                storage_ro_compute(0),
+                storage_rw(1),
+                storage_rw(2),
+                uniform(3),
+            ],
+        });
+        // The stage constants sit in a dynamic-offset uniform so one pass can be
+        // dispatched per bitonic stage without re-uploading between passes.
+        let sort_stage_bgl = device.create_bind_group_layout(&vwgpu::BindGroupLayoutDescriptor {
+            label: Some("particle_sort_stage_bgl"),
+            entries: &[
+                storage_ro_compute(0),
+                storage_rw(1),
+                vwgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: vwgpu::ShaderStages::COMPUTE,
+                    ty: vwgpu::BindingType::Buffer {
+                        ty: vwgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: true,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+            ],
+        });
+        let sort_init_pipeline = compute(
+            include_str!("shaders/particle_sort_init.wgsl"),
+            "init_main",
+            "particle_sort_init",
+            &sort_init_bgl,
+        );
+        let sort_stage_pipeline = compute(
+            include_str!("shaders/particle_sort.wgsl"),
+            "sort_main",
+            "particle_sort",
+            &sort_stage_bgl,
         );
 
         // Draw pipelines (additive and premultiplied over).
@@ -1004,15 +1197,213 @@ impl ItemTypePlugin for ParticlePlugin {
             "particle_trail_over",
         ));
 
+        // Interaction pipelines: pick id, outline mask, and shadow casting. They
+        // reuse the draw bind group (particles + order) at group 1.
+        let pick_bgl = device.create_bind_group_layout(&vwgpu::BindGroupLayoutDescriptor {
+            label: Some("particle_pick_bgl"),
+            entries: &[vwgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: vwgpu::ShaderStages::VERTEX,
+                ty: vwgpu::BindingType::Buffer {
+                    ty: vwgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            }],
+        });
+        // The shadow pass binds a single cascade light-space matrix with a
+        // dynamic offset (the lib's shadow_camera group), not the scene camera.
+        let shadow_group0_bgl =
+            device.create_bind_group_layout(&vwgpu::BindGroupLayoutDescriptor {
+                label: Some("particle_shadow_group0_bgl"),
+                entries: &[vwgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: vwgpu::ShaderStages::VERTEX,
+                    ty: vwgpu::BindingType::Buffer {
+                        ty: vwgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: true,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
+
+        let pick_src = format!(
+            "{SHARED_BINDINGS_WGSL}\n{SHARED_PICK_WGSL}\n{}",
+            include_str!("shaders/particle_pick.wgsl")
+        );
+        let pick_shader = device.create_shader_module(vwgpu::ShaderModuleDescriptor {
+            label: Some("particle_pick_shader"),
+            source: vwgpu::ShaderSource::Wgsl(pick_src.into()),
+        });
+        let pick_layout = vwgpu::pipeline_layout(
+            device,
+            "particle_pick_layout",
+            &[shared.group0_layout, &draw_bgl, &pick_bgl],
+        );
+        let pick_color = |format| {
+            Some(vwgpu::ColorTargetState {
+                format,
+                blend: None,
+                write_mask: vwgpu::ColorWrites::ALL,
+            })
+        };
+        let pick_pipeline = vwgpu::render_pipeline(
+            device,
+            vwgpu::RenderPipelineDesc {
+                label: "particle_pick",
+                layout: &pick_layout,
+                vertex: vwgpu::VertexState {
+                    module: &pick_shader,
+                    entry_point: Some("vs"),
+                    buffers: &[],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(vwgpu::FragmentState {
+                    module: &pick_shader,
+                    entry_point: Some("viewport_pick_fs"),
+                    targets: &[
+                        pick_color(PICK_COLOR_FORMAT),
+                        pick_color(PICK_COLOR_FORMAT),
+                        pick_color(PICK_DEPTH_CHANNEL_FORMAT),
+                    ],
+                    compilation_options: Default::default(),
+                }),
+                primitive: vwgpu::PrimitiveState {
+                    topology: vwgpu::PrimitiveTopology::TriangleList,
+                    cull_mode: None,
+                    ..Default::default()
+                },
+                depth_stencil: Some(vwgpu::depth_stencil(
+                    SCENE_DEPTH_FORMAT,
+                    true,
+                    vwgpu::CompareFunction::LessEqual,
+                )),
+                multisample: vwgpu::MultisampleState {
+                    count: SAMPLE_COUNT,
+                    ..Default::default()
+                },
+                cache: None,
+            },
+        );
+
+        let mask_src = format!(
+            "{SHARED_BINDINGS_WGSL}\n{SHARED_MASK_WGSL}\n{}",
+            include_str!("shaders/particle_mask.wgsl")
+        );
+        let mask_shader = device.create_shader_module(vwgpu::ShaderModuleDescriptor {
+            label: Some("particle_mask_shader"),
+            source: vwgpu::ShaderSource::Wgsl(mask_src.into()),
+        });
+        let mask_layout = vwgpu::pipeline_layout(
+            device,
+            "particle_mask_layout",
+            &[shared.group0_layout, &draw_bgl],
+        );
+        let mask_pipeline = vwgpu::render_pipeline(
+            device,
+            vwgpu::RenderPipelineDesc {
+                label: "particle_mask",
+                layout: &mask_layout,
+                vertex: vwgpu::VertexState {
+                    module: &mask_shader,
+                    entry_point: Some("vs"),
+                    buffers: &[],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(vwgpu::FragmentState {
+                    module: &mask_shader,
+                    entry_point: Some("viewport_mask_fs"),
+                    targets: &[Some(vwgpu::ColorTargetState {
+                        format: MASK_COLOR_FORMAT,
+                        blend: None,
+                        write_mask: vwgpu::ColorWrites::RED,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                primitive: vwgpu::PrimitiveState {
+                    topology: vwgpu::PrimitiveTopology::TriangleList,
+                    cull_mode: None,
+                    ..Default::default()
+                },
+                depth_stencil: Some(vwgpu::depth_stencil(
+                    SCENE_DEPTH_FORMAT,
+                    false,
+                    vwgpu::CompareFunction::LessEqual,
+                )),
+                multisample: vwgpu::MultisampleState {
+                    count: SAMPLE_COUNT,
+                    ..Default::default()
+                },
+                cache: None,
+            },
+        );
+
+        let shadow_shader = device.create_shader_module(vwgpu::ShaderModuleDescriptor {
+            label: Some("particle_shadow_shader"),
+            source: vwgpu::ShaderSource::Wgsl(include_str!("shaders/particle_shadow.wgsl").into()),
+        });
+        let shadow_layout = vwgpu::pipeline_layout(
+            device,
+            "particle_shadow_layout",
+            &[&shadow_group0_bgl, &draw_bgl],
+        );
+        let shadow_pipeline = vwgpu::render_pipeline(
+            device,
+            vwgpu::RenderPipelineDesc {
+                label: "particle_shadow",
+                layout: &shadow_layout,
+                vertex: vwgpu::VertexState {
+                    module: &shadow_shader,
+                    entry_point: Some("vs"),
+                    buffers: &[],
+                    compilation_options: Default::default(),
+                },
+                fragment: None,
+                primitive: vwgpu::PrimitiveState {
+                    topology: vwgpu::PrimitiveTopology::TriangleList,
+                    cull_mode: None,
+                    ..Default::default()
+                },
+                depth_stencil: Some(vwgpu::DepthStencilState {
+                    format: SHADOW_DEPTH_FORMAT,
+                    depth_write_enabled: true,
+                    depth_compare: vwgpu::CompareFunction::LessEqual,
+                    stencil: vwgpu::StencilState::default(),
+                    bias: vwgpu::DepthBiasState {
+                        constant: 2,
+                        slope_scale: 2.0,
+                        clamp: 0.0,
+                    },
+                }),
+                multisample: vwgpu::MultisampleState {
+                    count: SAMPLE_COUNT,
+                    ..Default::default()
+                },
+                cache: None,
+            },
+        );
+
+        self.pick_pipeline = Some(pick_pipeline);
+        self.mask_pipeline = Some(mask_pipeline);
+        self.shadow_pipeline = Some(shadow_pipeline);
+        self.pick_bgl = Some(pick_bgl);
+        self.shadow_group0_bgl = Some(shadow_group0_bgl);
+
         self.emit_pipeline = Some(emit_pipeline);
         self.sim_pipeline = Some(sim_pipeline);
         self.append_pipeline = Some(append_pipeline);
+        self.sort_init_pipeline = Some(sort_init_pipeline);
+        self.sort_stage_pipeline = Some(sort_stage_pipeline);
         self.emit_bgl = Some(emit_bgl);
         self.sim_bgl = Some(sim_bgl);
         self.draw_bgl = Some(draw_bgl);
         self.drawparams_bgl = Some(drawparams_bgl);
         self.history_bgl = Some(history_bgl);
         self.trail_draw_bgl = Some(trail_draw_bgl);
+        self.sort_init_bgl = Some(sort_init_bgl);
+        self.sort_stage_bgl = Some(sort_stage_bgl);
         self.ramp_bgl = Some(ramp_bgl);
         self.ramp_sampler = Some(ramp_sampler);
     }
@@ -1046,6 +1437,8 @@ impl ItemTypePlugin for ParticlePlugin {
         let (emit_bgl, sim_bgl, draw_bgl) = (emit_bgl.clone(), sim_bgl.clone(), draw_bgl.clone());
         let (emit_pipeline, sim_pipeline) = (emit_pipeline.clone(), sim_pipeline.clone());
         let append_pipeline = self.append_pipeline.clone();
+        let sort_init_pipeline = self.sort_init_pipeline.clone();
+        let sort_stage_pipeline = self.sort_stage_pipeline.clone();
 
         // Build the shared identity ramp on first use (needs a queue, so not in
         // `init_gpu`).
@@ -1063,14 +1456,21 @@ impl ItemTypePlugin for ParticlePlugin {
         let dt = items.dt.max(0.0);
 
         // First non-hidden instance per effect drives that effect's simulation.
-        let mut driver: Vec<Option<[f32; 3]>> = vec![None; self.effects.len()];
+        // First non-hidden instance per effect drives the simulation and supplies
+        // the interaction flags (pick id / selected / cast shadows).
+        let mut driver: Vec<Option<([f32; 3], u32, bool, bool)>> = vec![None; self.effects.len()];
         for it in &items.items {
             if it.settings.hidden {
                 continue;
             }
             let idx = it.effect.0 as usize;
             if idx < driver.len() && driver[idx].is_none() {
-                driver[idx] = Some(it.position);
+                driver[idx] = Some((
+                    it.position,
+                    it.settings.pick_id.0 as u32,
+                    it.settings.selected,
+                    it.settings.cast_shadows,
+                ));
             }
         }
 
@@ -1080,10 +1480,21 @@ impl ItemTypePlugin for ParticlePlugin {
         let mut any = false;
 
         for (idx, origin) in driver.iter().enumerate() {
-            let Some(origin) = *origin else { continue };
+            let Some((origin, pick_id, selected, cast_shadows)) = *origin else {
+                continue;
+            };
 
             // Lazily build this effect's GPU state (fixed or generated).
             self.ensure_effect_gpu(idx, device, queue, &emit_bgl, &sim_bgl, &draw_bgl);
+
+            // Publish the driving item's pick id for the pick pass.
+            if let Some((buf, _)) = self.pick_gpu.get(&idx) {
+                let pu = PickUniform {
+                    id: pick_id,
+                    _pad: [0; 3],
+                };
+                queue.write_buffer(buf, 0, bytemuck::bytes_of(&pu));
+            }
 
             let spawn_count = next_spawn_count(&mut self.effects[idx], dt);
             let capacity = self.effects[idx].asset.capacity;
@@ -1157,7 +1568,33 @@ impl ItemTypePlugin for ParticlePlugin {
                 }
             }
 
-            self.draw_list.push(idx);
+            // Non-additive effects sort their draw order back-to-front, after
+            // the simulate pass has set final positions. Skipped when the frame
+            // disables sorting, leaving the identity order (to show the artefact).
+            if items.sort_transparent {
+                if let (Some(init_pipeline), Some(stage_pipeline), Some(sort)) = (
+                    sort_init_pipeline.as_ref(),
+                    sort_stage_pipeline.as_ref(),
+                    self.sorts.get(&idx),
+                ) {
+                    let eye = ctx.camera.eye_position;
+                    let ip = SortInitParams {
+                        eye: [eye[0], eye[1], eye[2], 0.0],
+                        capacity,
+                        n: sort.n,
+                        _pad: [0; 2],
+                    };
+                    queue.write_buffer(&sort.init_buf, 0, bytemuck::bytes_of(&ip));
+                    dispatch_sort(&mut encoder, init_pipeline, stage_pipeline, sort);
+                }
+            }
+
+            self.draw_list.push(DrawEntry {
+                idx,
+                pick_id,
+                selected,
+                cast_shadows,
+            });
             any = true;
         }
 
@@ -1193,7 +1630,8 @@ impl ItemTypePlugin for ParticlePlugin {
             return;
         };
         // Group 0 (camera + scene) is already bound by the lib.
-        for &idx in &self.draw_list {
+        for entry in &self.draw_list {
+            let idx = entry.idx;
             let eff = &self.effects[idx];
             let Some(gpu) = eff.gpu.as_ref() else {
                 continue;
@@ -1232,6 +1670,86 @@ impl ItemTypePlugin for ParticlePlugin {
                     pass.draw(0..segs * 6, 0..eff.asset.capacity);
                 }
             }
+        }
+    }
+
+    fn render_pick<'a>(
+        &'a self,
+        pass: &mut vwgpu::RenderPass<'a>,
+        _ctx: &PickPassContext<'a>,
+        _items: &'a dyn PluginItemCollection,
+    ) {
+        let Some(pipeline) = self.pick_pipeline.as_ref() else {
+            return;
+        };
+        // Group 0 (camera) is bound by the lib. Draw each pickable effect's live
+        // particles as billboards writing the driving item's pick id.
+        for entry in &self.draw_list {
+            if entry.pick_id == 0 {
+                continue;
+            }
+            let eff = &self.effects[entry.idx];
+            let Some(gpu) = eff.gpu.as_ref() else {
+                continue;
+            };
+            let Some((_, pick_bg)) = self.pick_gpu.get(&entry.idx) else {
+                continue;
+            };
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(1, gpu.draw_bg(), &[]);
+            pass.set_bind_group(2, pick_bg, &[]);
+            pass.draw(0..6, 0..eff.asset.capacity);
+        }
+    }
+
+    fn outline_mask<'a>(
+        &'a self,
+        pass: &mut vwgpu::RenderPass<'a>,
+        _ctx: &OutlineMaskContext<'a>,
+        _items: &'a dyn PluginItemCollection,
+    ) {
+        let Some(pipeline) = self.mask_pipeline.as_ref() else {
+            return;
+        };
+        // Group 0 (camera) is bound by the lib. Draw selected effects' particles
+        // into the R8 mask; the lib's edge pass turns coverage into an outline.
+        for entry in &self.draw_list {
+            if !entry.selected {
+                continue;
+            }
+            let eff = &self.effects[entry.idx];
+            let Some(gpu) = eff.gpu.as_ref() else {
+                continue;
+            };
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(1, gpu.draw_bg(), &[]);
+            pass.draw(0..6, 0..eff.asset.capacity);
+        }
+    }
+
+    fn cast_shadow_pass<'a>(
+        &'a self,
+        pass: &mut vwgpu::RenderPass<'a>,
+        _ctx: &ShadowCastContext<'a>,
+        _items: &'a dyn PluginItemCollection,
+    ) {
+        let Some(pipeline) = self.shadow_pipeline.as_ref() else {
+            return;
+        };
+        // Group 0 (the cascade light matrix), viewport, and scissor are set by
+        // the lib. Draw each shadow-casting effect's particles as depth-only
+        // world-axis quads into the cascade tile.
+        for entry in &self.draw_list {
+            if !entry.cast_shadows {
+                continue;
+            }
+            let eff = &self.effects[entry.idx];
+            let Some(gpu) = eff.gpu.as_ref() else {
+                continue;
+            };
+            pass.set_pipeline(pipeline);
+            pass.set_bind_group(1, gpu.draw_bg(), &[]);
+            pass.draw(0..6, 0..eff.asset.capacity);
         }
     }
 }
@@ -1354,20 +1872,50 @@ fn build_drawparams_bg(
     })
 }
 
-/// Draw bind group binding the particle buffer at group 1, binding 0.
+/// Draw bind group binding the particle buffer (group 1, binding 0) and the draw
+/// order buffer (binding 1).
 fn build_draw_bg(
     device: &vwgpu::Device,
     draw_bgl: &vwgpu::BindGroupLayout,
     particle_buf: &vwgpu::Buffer,
+    order_buf: &vwgpu::Buffer,
 ) -> vwgpu::BindGroup {
     device.create_bind_group(&vwgpu::BindGroupDescriptor {
         label: Some("particle_draw_bg"),
         layout: draw_bgl,
-        entries: &[vwgpu::BindGroupEntry {
-            binding: 0,
-            resource: particle_buf.as_entire_binding(),
-        }],
+        entries: &[
+            vwgpu::BindGroupEntry {
+                binding: 0,
+                resource: particle_buf.as_entire_binding(),
+            },
+            vwgpu::BindGroupEntry {
+                binding: 1,
+                resource: order_buf.as_entire_binding(),
+            },
+        ],
     })
+}
+
+/// Allocate a draw-order index buffer of `n` slots, initialised to identity
+/// (`order[i] = i`). Unsorted effects keep this identity; sorted effects
+/// overwrite it each frame in the sort setup pass.
+fn build_order_buffer(device: &vwgpu::Device, n: u32) -> vwgpu::Buffer {
+    let indices: Vec<u32> = (0..n).collect();
+    buffer_with_data(
+        device,
+        "particle_order",
+        bytemuck::cast_slice(&indices),
+        vwgpu::BufferUsages::STORAGE | vwgpu::BufferUsages::COPY_DST,
+    )
+}
+
+/// Smallest power of two >= `v` (and >= 1).
+fn next_pow2(v: u32) -> u32 {
+    let mut n = 1u32;
+    while n < v {
+        n <<= 1;
+    }
+    n
 }
 
 /// Texels in a lifetime-ramp LUT.
@@ -1476,6 +2024,7 @@ fn make_ramp_bg(
 fn build_gen_gpu(
     device: &vwgpu::Device,
     capacity: u32,
+    order_buf: &vwgpu::Buffer,
     emit_bgl: &vwgpu::BindGroupLayout,
     sim_bgl: &vwgpu::BindGroupLayout,
     draw_bgl: &vwgpu::BindGroupLayout,
@@ -1526,7 +2075,7 @@ fn build_gen_gpu(
             },
         ],
     });
-    let draw_bg = build_draw_bg(device, draw_bgl, &particle_buf);
+    let draw_bg = build_draw_bg(device, draw_bgl, &particle_buf, order_buf);
 
     GenGpu {
         particle_buf,
@@ -1549,6 +2098,7 @@ fn build_gen_gpu(
 fn build_fixed_gpu(
     device: &vwgpu::Device,
     capacity: u32,
+    order_buf: &vwgpu::Buffer,
     emit_bgl: &vwgpu::BindGroupLayout,
     sim_bgl: &vwgpu::BindGroupLayout,
     draw_bgl: &vwgpu::BindGroupLayout,
@@ -1604,7 +2154,7 @@ fn build_fixed_gpu(
             },
         ],
     });
-    let draw_bg = build_draw_bg(device, draw_bgl, &particle_buf);
+    let draw_bg = build_draw_bg(device, draw_bgl, &particle_buf, order_buf);
 
     FixedGpu {
         particle_buf,
@@ -1628,6 +2178,7 @@ fn build_trail_gpu(
     device: &vwgpu::Device,
     capacity: u32,
     particle_buf: &vwgpu::Buffer,
+    order_buf: &vwgpu::Buffer,
     history_bgl: &vwgpu::BindGroupLayout,
     trail_draw_bgl: &vwgpu::BindGroupLayout,
 ) -> TrailGpu {
@@ -1683,6 +2234,10 @@ fn build_trail_gpu(
                 binding: 2,
                 resource: params_buf.as_entire_binding(),
             },
+            vwgpu::BindGroupEntry {
+                binding: 3,
+                resource: order_buf.as_entire_binding(),
+            },
         ],
     });
 
@@ -1691,6 +2246,144 @@ fn build_trail_gpu(
         params_buf,
         append_bg,
         draw_bg,
+    }
+}
+
+/// Build a non-additive effect's depth-sort state: the key buffer, the per-frame
+/// init uniform, the fixed bitonic stage constants, and the init/stage bind
+/// groups over the effect's particle and order buffers.
+fn build_sort_gpu(
+    device: &vwgpu::Device,
+    n: u32,
+    particle_buf: &vwgpu::Buffer,
+    order_buf: &vwgpu::Buffer,
+    sort_init_bgl: &vwgpu::BindGroupLayout,
+    sort_stage_bgl: &vwgpu::BindGroupLayout,
+) -> SortGpu {
+    let keys_buf = device.create_buffer(&vwgpu::BufferDescriptor {
+        label: Some("particle_sort_keys"),
+        size: (n as u64) * 4,
+        usage: vwgpu::BufferUsages::STORAGE,
+        mapped_at_creation: false,
+    });
+    let init_buf = device.create_buffer(&vwgpu::BufferDescriptor {
+        label: Some("particle_sort_init_params"),
+        size: std::mem::size_of::<SortInitParams>() as u64,
+        usage: vwgpu::BufferUsages::UNIFORM | vwgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+
+    // Precompute the bitonic (k, j) stages for this padded length. They depend
+    // only on `n`, so they are baked into a dynamic-offset uniform once.
+    let mut stages: Vec<SortStageParams> = Vec::new();
+    let mut k = 2u32;
+    while k <= n {
+        let mut j = k >> 1;
+        while j > 0 {
+            stages.push(SortStageParams { k, j, n, _pad: 0 });
+            j >>= 1;
+        }
+        k <<= 1;
+    }
+    let num_stages = stages.len() as u32;
+    let mut stage_bytes = vec![0u8; num_stages as usize * SORT_STAGE_STRIDE as usize];
+    for (s, params) in stages.iter().enumerate() {
+        let off = s * SORT_STAGE_STRIDE as usize;
+        stage_bytes[off..off + std::mem::size_of::<SortStageParams>()]
+            .copy_from_slice(bytemuck::bytes_of(params));
+    }
+    let stage_buf = buffer_with_data(
+        device,
+        "particle_sort_stages",
+        &stage_bytes,
+        vwgpu::BufferUsages::UNIFORM | vwgpu::BufferUsages::COPY_DST,
+    );
+
+    let init_bg = device.create_bind_group(&vwgpu::BindGroupDescriptor {
+        label: Some("particle_sort_init_bg"),
+        layout: sort_init_bgl,
+        entries: &[
+            vwgpu::BindGroupEntry {
+                binding: 0,
+                resource: particle_buf.as_entire_binding(),
+            },
+            vwgpu::BindGroupEntry {
+                binding: 1,
+                resource: keys_buf.as_entire_binding(),
+            },
+            vwgpu::BindGroupEntry {
+                binding: 2,
+                resource: order_buf.as_entire_binding(),
+            },
+            vwgpu::BindGroupEntry {
+                binding: 3,
+                resource: init_buf.as_entire_binding(),
+            },
+        ],
+    });
+    // The stage uniform is bound with a dynamic offset; each dispatch supplies
+    // its stage's offset, so bind just one struct's worth here.
+    let stage_bg = device.create_bind_group(&vwgpu::BindGroupDescriptor {
+        label: Some("particle_sort_stage_bg"),
+        layout: sort_stage_bgl,
+        entries: &[
+            vwgpu::BindGroupEntry {
+                binding: 0,
+                resource: keys_buf.as_entire_binding(),
+            },
+            vwgpu::BindGroupEntry {
+                binding: 1,
+                resource: order_buf.as_entire_binding(),
+            },
+            vwgpu::BindGroupEntry {
+                binding: 2,
+                resource: vwgpu::BindingResource::Buffer(vwgpu::BufferBinding {
+                    buffer: &stage_buf,
+                    offset: 0,
+                    size: std::num::NonZeroU64::new(std::mem::size_of::<SortStageParams>() as u64),
+                }),
+            },
+        ],
+    });
+
+    SortGpu {
+        keys_buf,
+        init_buf,
+        stage_buf,
+        init_bg,
+        stage_bg,
+        n,
+        num_stages,
+    }
+}
+
+/// Encode the depth sort: the setup pass, then one compute pass per bitonic
+/// stage (separate passes so each stage sees the previous stage's writes).
+fn dispatch_sort(
+    encoder: &mut vwgpu::CommandEncoder,
+    init_pipeline: &vwgpu::ComputePipeline,
+    stage_pipeline: &vwgpu::ComputePipeline,
+    sort: &SortGpu,
+) {
+    let groups = sort.n.div_ceil(64).max(1);
+    {
+        let mut pass = encoder.begin_compute_pass(&vwgpu::ComputePassDescriptor {
+            label: Some("particle_sort_init_pass"),
+            timestamp_writes: None,
+        });
+        pass.set_pipeline(init_pipeline);
+        pass.set_bind_group(0, &sort.init_bg, &[]);
+        pass.dispatch_workgroups(groups, 1, 1);
+    }
+    for s in 0..sort.num_stages {
+        let offset = s * SORT_STAGE_STRIDE as u32;
+        let mut pass = encoder.begin_compute_pass(&vwgpu::ComputePassDescriptor {
+            label: Some("particle_sort_stage_pass"),
+            timestamp_writes: None,
+        });
+        pass.set_pipeline(stage_pipeline);
+        pass.set_bind_group(0, &sort.stage_bg, &[offset]);
+        pass.dispatch_workgroups(groups, 1, 1);
     }
 }
 

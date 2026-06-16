@@ -18,6 +18,9 @@ struct Particle {
 };
 
 @group(1) @binding(0) var<storage, read> particles: array<Particle>;
+// Draw order: instance i draws particle `order[i]`. Identity for unsorted
+// effects; a back-to-front permutation for sorted (alpha-blended) ones.
+@group(1) @binding(1) var<storage, read> order: array<u32>;
 
 // Group 2: the lifetime-ramp LUT. rgb multiplies colour, a multiplies size.
 // The identity ramp (all ones) leaves the particle unchanged.
@@ -51,7 +54,7 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VsOut
         vec2<f32>(-1.0,  1.0),
     );
     let c = corners[vi];
-    let p = particles[ii];
+    let p = particles[order[ii]];
 
     // Normalized age (0 at spawn, 1 at death) drives the ramp lookup.
     let age = clamp(1.0 - p.lifetime / max(p.max_lifetime, 1e-4), 0.0, 1.0);

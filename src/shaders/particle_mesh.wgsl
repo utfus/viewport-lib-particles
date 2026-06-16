@@ -19,6 +19,7 @@ struct Particle {
 };
 
 @group(1) @binding(0) var<storage, read> particles: array<Particle>;
+@group(1) @binding(1) var<storage, read> order: array<u32>;
 @group(2) @binding(0) var ramp_tex: texture_2d<f32>;
 @group(2) @binding(1) var ramp_samp: sampler;
 
@@ -67,7 +68,7 @@ fn rot_from_seed_age(seed: f32, age: f32) -> mat3x3<f32> {
 
 @vertex
 fn vs(@location(0) v_pos: vec3<f32>, @builtin(instance_index) ii: u32) -> VsOut {
-    let p = particles[ii];
+    let p = particles[order[ii]];
 
     let age = clamp(1.0 - p.lifetime / max(p.max_lifetime, 1e-4), 0.0, 1.0);
     let ramp = textureSampleLevel(ramp_tex, ramp_samp, vec2<f32>(age, 0.5), 0.0);

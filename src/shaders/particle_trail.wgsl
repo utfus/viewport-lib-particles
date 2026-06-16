@@ -29,6 +29,7 @@ struct HistParams {
 @group(1) @binding(0) var<storage, read> particles: array<Particle>;
 @group(1) @binding(1) var<storage, read> history: array<vec4<f32>>;
 @group(1) @binding(2) var<uniform> hist: HistParams;
+@group(1) @binding(3) var<storage, read> order: array<u32>;
 
 @group(2) @binding(0) var ramp_tex: texture_2d<f32>;
 @group(2) @binding(1) var ramp_samp: sampler;
@@ -60,12 +61,13 @@ fn sample(pi: u32, k: u32) -> vec4<f32> {
 fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VsOut {
     let seg = vi / 6u;
     let corner = vi % 6u;
-    let p = particles[ii];
+    let pidx = order[ii];
+    let p = particles[pidx];
 
     var out: VsOut;
 
-    let s_new = sample(ii, seg);
-    let s_old = sample(ii, seg + 1u);
+    let s_new = sample(pidx, seg);
+    let s_old = sample(pidx, seg + 1u);
     let ok_new = abs(s_new.w - p.seed) < 1e-6;
     let ok_old = abs(s_old.w - p.seed) < 1e-6;
     let dead = p.lifetime <= 0.0 || seg >= draw_params.trail_segments;

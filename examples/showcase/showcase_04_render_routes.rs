@@ -18,6 +18,7 @@ pub const NAMES: &[&str] = &[
     "Stretched sparks",
     "Mesh cubes",
     "Comet trails",
+    "Alpha (sorted)",
 ];
 
 /// A cone fountain shared by the three routes, minus the render mode.
@@ -75,12 +76,18 @@ pub fn register(plugin: &mut ParticlePlugin, device: &eframe::wgpu::Device) -> V
         width: 0.06,
         segments: 20,
     });
+    // Alpha (over) blend is order-dependent, so this route is depth-sorted
+    // back-to-front each frame (toggle in the controls to see the artefact).
+    let alpha = base()
+        .with_blend(ParticleBlend::Alpha)
+        .with_render(ParticleRender::Billboard { stretch: 0.0 });
 
     vec![
         plugin.add_effect(device, round),
         plugin.add_effect(device, stretched),
         plugin.add_effect(device, mesh_cubes),
         plugin.add_effect(device, trails),
+        plugin.add_effect(device, alpha),
     ]
 }
 
@@ -108,6 +115,9 @@ pub struct State {
     pub selected: usize,
     pub paused: bool,
     pub position: [f32; 3],
+    /// Depth-sort non-additive effects back-to-front (only affects the alpha
+    /// route; additive routes are order-independent).
+    pub sort: bool,
 }
 
 impl Default for State {
@@ -116,6 +126,7 @@ impl Default for State {
             selected: 0,
             paused: false,
             position: [0.0, 0.0, 0.0],
+            sort: true,
         }
     }
 }
@@ -128,6 +139,10 @@ pub fn controls(state: &mut State, ui: &mut egui::Ui) {
     }
     ui.separator();
     ui.checkbox(&mut state.paused, "Pause");
+    ui.add_enabled(
+        state.selected == 4,
+        egui::Checkbox::new(&mut state.sort, "Sort back-to-front (alpha)"),
+    );
     ui.separator();
     ui.label("Emitter position:");
     ui.add(egui::Slider::new(&mut state.position[0], -5.0..=5.0).text("x"));
@@ -141,7 +156,9 @@ pub fn controls(state: &mut State, ui: &mut egui::Ui) {
 
 /// Build this frame's submission for the selected route.
 pub fn items(effect_ids: &[EffectId], state: &State, dt: f32) -> ParticleItems {
-    let mut items = ParticleItems::new().with_dt(dt);
+    let mut items = ParticleItems::new()
+        .with_dt(dt)
+        .with_sort_transparent(state.sort);
     if let Some(&id) = effect_ids.get(state.selected) {
         let mut item = ParticleItem::new(id).at(state.position);
         item.settings.hidden = state.paused;

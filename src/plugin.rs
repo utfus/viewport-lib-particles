@@ -25,11 +25,11 @@ use std::hash::{Hash, Hasher};
 
 use bytemuck::{Pod, Zeroable};
 use viewport_lib::plugin_api::shared_wgsl::{
-    SHARED_BINDINGS_WGSL, SHARED_MASK_WGSL, SHARED_PICK_WGSL,
+    SHARED_BINDINGS_WGSL, SHARED_MASK_WGSL, SHARED_OIT_WGSL, SHARED_PICK_WGSL,
 };
 use viewport_lib::plugin_api::{
-    ItemFrameContext, ItemTypePlugin, OutlineMaskContext, PaintContext, PickPassContext,
-    PluginItemCollection, ShadowCastContext, SharedBindings,
+    ItemFrameContext, ItemTypePlugin, OIT_ACCUM_BLEND, OIT_REVEAL_BLEND, OutlineMaskContext,
+    PaintContext, PickPassContext, PluginItemCollection, ShadowCastContext, SharedBindings,
 };
 use viewport_lib::resources::{
     HDR_COLOR_FORMAT, MASK_COLOR_FORMAT, PICK_COLOR_FORMAT, PICK_DEPTH_CHANNEL_FORMAT,
@@ -418,7 +418,10 @@ pub struct ParticlePlugin {
     emit_pipeline: Option<vwgpu::ComputePipeline>,
     sim_pipeline: Option<vwgpu::ComputePipeline>,
     draw_pipeline_additive: Option<vwgpu::RenderPipeline>,
-    draw_pipeline_over: Option<vwgpu::RenderPipeline>,
+    // OIT variant of the billboard draw, for Alpha/Premultiplied effects. These
+    // route through the lib's OIT pass (paint_transparent) instead of the main
+    // HDR draw so they composite after the skybox and blend order-independently.
+    draw_pipeline_oit: Option<vwgpu::RenderPipeline>,
     mesh_pipeline_additive: Option<vwgpu::RenderPipeline>,
     mesh_pipeline_over: Option<vwgpu::RenderPipeline>,
     emit_bgl: Option<vwgpu::BindGroupLayout>,
@@ -1039,12 +1042,66 @@ impl ItemTypePlugin for ParticlePlugin {
             },
             "particle_draw_additive",
         ));
-        self.draw_pipeline_over = Some(make_draw(
-            vwgpu::BlendState {
-                color: over,
-                alpha: over,
+        // OIT billboard variant: same vertex stage, but the fragment writes the
+        // two weighted-blended MRT targets (accum + reveal). Drawn inside the
+        // lib's OIT pass via paint_transparent, so it composites after the
+        // skybox and needs no back-to-front sort.
+        let oit_src = format!(
+            "{SHARED_BINDINGS_WGSL}\n{SHARED_OIT_WGSL}\n{}",
+            include_str!("shaders/particle_oit.wgsl")
+        );
+        let oit_shader = device.create_shader_module(vwgpu::ShaderModuleDescriptor {
+            label: Some("particle_oit_shader"),
+            source: vwgpu::ShaderSource::Wgsl(oit_src.into()),
+        });
+        self.draw_pipeline_oit = Some(vwgpu::render_pipeline(
+            device,
+            vwgpu::RenderPipelineDesc {
+                label: "particle_draw_oit",
+                layout: &draw_layout,
+                vertex: vwgpu::VertexState {
+                    module: &oit_shader,
+                    entry_point: Some("vs"),
+                    buffers: &[],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(vwgpu::FragmentState {
+                    module: &oit_shader,
+                    entry_point: Some("fs"),
+                    targets: &[
+                        // Target 0: accum (Rgba16Float, additive).
+                        Some(vwgpu::ColorTargetState {
+                            format: HDR_COLOR_FORMAT,
+                            blend: Some(OIT_ACCUM_BLEND),
+                            write_mask: vwgpu::ColorWrites::ALL,
+                        }),
+                        // Target 1: reveal (R8Unorm, multiplicative).
+                        Some(vwgpu::ColorTargetState {
+                            format: MASK_COLOR_FORMAT,
+                            blend: Some(OIT_REVEAL_BLEND),
+                            write_mask: vwgpu::ColorWrites::RED,
+                        }),
+                    ],
+                    compilation_options: Default::default(),
+                }),
+                primitive: vwgpu::PrimitiveState {
+                    topology: vwgpu::PrimitiveTopology::TriangleList,
+                    cull_mode: None,
+                    ..Default::default()
+                },
+                // Depth-test against opaques, read-only (the OIT pass never
+                // writes depth).
+                depth_stencil: Some(vwgpu::depth_stencil(
+                    SCENE_DEPTH_FORMAT,
+                    false,
+                    vwgpu::CompareFunction::LessEqual,
+                )),
+                multisample: vwgpu::MultisampleState {
+                    count: SAMPLE_COUNT,
+                    ..Default::default()
+                },
+                cache: None,
             },
-            "particle_draw_over",
         ));
 
         // Mesh render route: instance an uploaded mesh per particle. Same bind
@@ -1611,22 +1668,13 @@ impl ItemTypePlugin for ParticlePlugin {
         _ctx: &PaintContext<'a>,
         _items: &'a dyn PluginItemCollection,
     ) {
-        let (
-            Some(bb_add),
-            Some(bb_over),
-            Some(mesh_add),
-            Some(mesh_over),
-            Some(trail_add),
-            Some(trail_over),
-        ) = (
+        let (Some(bb_add), Some(mesh_add), Some(mesh_over), Some(trail_add), Some(trail_over)) = (
             self.draw_pipeline_additive.as_ref(),
-            self.draw_pipeline_over.as_ref(),
             self.mesh_pipeline_additive.as_ref(),
             self.mesh_pipeline_over.as_ref(),
             self.trail_pipeline_additive.as_ref(),
             self.trail_pipeline_over.as_ref(),
-        )
-        else {
+        ) else {
             return;
         };
         // Group 0 (camera + scene) is already bound by the lib.
@@ -1644,7 +1692,12 @@ impl ItemTypePlugin for ParticlePlugin {
 
             match eff.asset.render {
                 ParticleRender::Billboard { .. } => {
-                    pass.set_pipeline(if additive { bb_add } else { bb_over });
+                    // Alpha/Premultiplied billboards route through the OIT pass
+                    // (paint_transparent). Only additive draws here.
+                    if !additive {
+                        continue;
+                    }
+                    pass.set_pipeline(bb_add);
                     pass.set_bind_group(1, gpu.draw_bg(), &[]);
                     pass.draw(0..6, 0..eff.asset.capacity);
                 }
@@ -1670,6 +1723,38 @@ impl ItemTypePlugin for ParticlePlugin {
                     pass.draw(0..segs * 6, 0..eff.asset.capacity);
                 }
             }
+        }
+    }
+
+    fn paint_transparent<'a>(
+        &'a self,
+        pass: &mut vwgpu::RenderPass<'a>,
+        _ctx: &PaintContext<'a>,
+        _items: &'a dyn PluginItemCollection,
+    ) {
+        let Some(oit) = self.draw_pipeline_oit.as_ref() else {
+            return;
+        };
+        // Group 0 (camera + scene) is bound by the lib inside the OIT pass.
+        // Draw only Alpha/Premultiplied billboards; additive billboards and the
+        // mesh/trail routes stay in the main HDR draw (paint).
+        pass.set_pipeline(oit);
+        for entry in &self.draw_list {
+            let idx = entry.idx;
+            let eff = &self.effects[idx];
+            let Some(gpu) = eff.gpu.as_ref() else {
+                continue;
+            };
+            if matches!(eff.asset.blend, ParticleBlend::Additive) {
+                continue;
+            }
+            if !matches!(eff.asset.render, ParticleRender::Billboard { .. }) {
+                continue;
+            }
+            pass.set_bind_group(1, gpu.draw_bg(), &[]);
+            pass.set_bind_group(2, gpu.ramp_bg(), &[]);
+            pass.set_bind_group(3, gpu.drawparams_bg(), &[]);
+            pass.draw(0..6, 0..eff.asset.capacity);
         }
     }
 

@@ -118,6 +118,10 @@ pub struct State {
     /// Depth-sort non-additive effects back-to-front (only affects the alpha
     /// route; additive routes are order-independent).
     pub sort: bool,
+    /// Render the environment map as a skybox background. The alpha route draws
+    /// in the OIT pass (after the skybox), so it composites over it; toggle off
+    /// to compare against the dark viewport background.
+    pub skybox: bool,
 }
 
 impl Default for State {
@@ -127,8 +131,44 @@ impl Default for State {
             paused: false,
             position: [0.0, 0.0, 0.0],
             sort: true,
+            skybox: false,
         }
     }
+}
+
+/// A small equirectangular sky gradient (row-major RGBA f32) for the skybox
+/// toggle: blue zenith, warm horizon, dark nadir. Values are linear; the
+/// renderer tone-maps them.
+pub fn skybox_pixels() -> (Vec<f32>, u32, u32) {
+    const W: u32 = 32;
+    const H: u32 = 16;
+    let zenith = [0.10, 0.28, 0.75];
+    let horizon = [0.95, 0.72, 0.48];
+    let nadir = [0.06, 0.06, 0.09];
+    let mut px = Vec::with_capacity((W * H * 4) as usize);
+    for y in 0..H {
+        // 0 at the top row (zenith), 1 at the bottom (nadir); horizon at 0.5.
+        let t = y as f32 / (H - 1) as f32;
+        let rgb = if t < 0.5 {
+            let k = t / 0.5;
+            [
+                zenith[0] + (horizon[0] - zenith[0]) * k,
+                zenith[1] + (horizon[1] - zenith[1]) * k,
+                zenith[2] + (horizon[2] - zenith[2]) * k,
+            ]
+        } else {
+            let k = (t - 0.5) / 0.5;
+            [
+                horizon[0] + (nadir[0] - horizon[0]) * k,
+                horizon[1] + (nadir[1] - horizon[1]) * k,
+                horizon[2] + (nadir[2] - horizon[2]) * k,
+            ]
+        };
+        for _ in 0..W {
+            px.extend_from_slice(&[rgb[0], rgb[1], rgb[2], 1.0]);
+        }
+    }
+    (px, W, H)
 }
 
 /// Left-panel controls.
@@ -143,6 +183,11 @@ pub fn controls(state: &mut State, ui: &mut egui::Ui) {
         state.selected == 4,
         egui::Checkbox::new(&mut state.sort, "Sort back-to-front (alpha)"),
     );
+    ui.checkbox(&mut state.skybox, "Skybox background");
+    if state.skybox {
+        ui.label("Alpha draws in the OIT pass, after the skybox, so it");
+        ui.label("composites over it. Additive routes stay in the main pass.");
+    }
     ui.separator();
     ui.label("Emitter position:");
     ui.add(egui::Slider::new(&mut state.position[0], -5.0..=5.0).text("x"));

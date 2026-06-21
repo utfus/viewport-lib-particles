@@ -19,7 +19,7 @@ mod showcase_06_interaction;
 mod viewport_callback;
 
 use eframe::egui;
-use viewport_lib::renderer::{PickBackend, PickMask};
+use viewport_lib::renderer::{EnvironmentMap, PickBackend, PickMask};
 use viewport_lib::{
     ButtonState, Camera, CameraFrame, FrameData, MeshId, OrbitCameraController, SceneFrame,
     ScrollUnits, ViewportContext, ViewportEvent, ViewportRenderer, primitives,
@@ -90,9 +90,17 @@ fn main() -> eframe::Result {
                 .as_ref()
                 .expect("wgpu backend required");
             let device = &rs.device;
+            let queue = &rs.queue;
             let format = rs.target_format;
 
             let mut renderer = ViewportRenderer::new(device, format);
+
+            // Environment map for the Render routes skybox toggle: a simple sky
+            // gradient the alpha route can be shown compositing over via OIT.
+            let (sky, sky_w, sky_h) = showcase_04_render_routes::skybox_pixels();
+            renderer
+                .upload_environment_map(device, queue, &sky, sky_w, sky_h)
+                .expect("skybox env map");
 
             // Register the plugin and its preset effects. Effects must be added
             // before the plugin is handed to the renderer, so their ids are
@@ -331,11 +339,20 @@ impl eframe::App for App {
                 };
                 scene.submit_plugin_items(ParticlePlugin::TYPE_NAME, items);
 
-                let frame_data = FrameData::new(
+                let mut frame_data = FrameData::new(
                     CameraFrame::from_camera(&self.camera, [w, h])
                         .with_pixels_per_point(ui.ctx().pixels_per_point()),
                     scene,
                 );
+
+                // Render routes can toggle a skybox to show the alpha route
+                // compositing over it through the OIT pass.
+                if self.mode == ShowcaseMode::RenderRoutes && self.render_routes.skybox {
+                    frame_data.effects.environment = Some(EnvironmentMap {
+                        show_skybox: true,
+                        ..Default::default()
+                    });
+                }
 
                 ui.painter()
                     .add(eframe::egui_wgpu::Callback::new_paint_callback(

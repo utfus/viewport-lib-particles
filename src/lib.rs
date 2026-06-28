@@ -66,8 +66,8 @@ mod refraction;
 
 pub use effect::{
     Attribute, EffectAsset, EffectId, EffectProgram, Emitter, ForceModifier, Gradient, MeshAlign,
-    ParticleBlend, ParticleMeshId, ParticleRender, SetAttribute, SpawnRate, SpawnShape, UpdateOp,
-    VelocityDist,
+    ParticleBlend, ParticleMeshId, ParticleRender, PropertyDecl, PropertyValue, SetAttribute,
+    SpawnRate, SpawnShape, UpdateOp, VelocityDist,
 };
 pub use expr::{Expr, ExprHandle, Module};
 pub use plugin::{ParticleItem, ParticleItems, ParticlePlugin};

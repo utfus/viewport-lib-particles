@@ -13,7 +13,7 @@
 //! spawn-budget atomic at binding 2), so the plugin reuses the Phase 2 bind
 //! group layouts and only swaps the pipelines.
 
-use crate::effect::{Attribute, EffectProgram, UpdateOp};
+use crate::effect::{Attribute, EffectProgram, PropertyDecl, PropertyValue, UpdateOp};
 use crate::expr::{Expr, ExprHandle, Module};
 
 /// The WGSL source for one compiled effect.
@@ -26,10 +26,18 @@ pub(crate) struct GeneratedShaders {
 }
 
 /// Which kernel a lowering runs in. Governs how attribute reads resolve.
-#[derive(Clone, Copy)]
-enum Ctx {
+#[derive(Clone, Copy, PartialEq)]
+enum Kind {
     Emit,
     Sim,
+}
+
+/// Lowering context: which kernel, plus the program's property declarations so
+/// [`Expr::Property`] reads resolve to the right swizzle of the property uniform.
+#[derive(Clone, Copy)]
+struct Ctx<'a> {
+    kind: Kind,
+    props: &'a [PropertyDecl],
 }
 
 /// Shared struct + binding declarations for both kernels.
@@ -88,17 +96,44 @@ fn flit(v: f32) -> String {
 
 /// Resolve an attribute read to its WGSL expression in the given kernel.
 fn attribute_wgsl(name: &str, ctx: Ctx) -> String {
-    match (ctx, name) {
+    match (ctx.kind, name) {
         (_, "origin") => "params.origin.xyz".to_string(),
-        (Ctx::Sim, "position") => "p.position".to_string(),
-        (Ctx::Sim, "velocity") => "p.velocity".to_string(),
-        (Ctx::Sim, "lifetime") => "p.lifetime".to_string(),
-        (Ctx::Sim, "age") => "(p.max_lifetime - p.lifetime)".to_string(),
-        (Ctx::Sim, "seed") => "p.seed".to_string(),
+        (Kind::Sim, "position") => "p.position".to_string(),
+        (Kind::Sim, "velocity") => "p.velocity".to_string(),
+        (Kind::Sim, "lifetime") => "p.lifetime".to_string(),
+        (Kind::Sim, "age") => "(p.max_lifetime - p.lifetime)".to_string(),
+        (Kind::Sim, "seed") => "p.seed".to_string(),
         // Not meaningful in this kernel; resolve to a zero of the right shape.
         (_, "position") | (_, "velocity") => "vec3<f32>(0.0, 0.0, 0.0)".to_string(),
         _ => "0.0".to_string(),
     }
+}
+
+/// Resolve a property read to the right swizzle of its `vec4` uniform lane.
+fn property_wgsl(name: &str, props: &[PropertyDecl]) -> String {
+    match props.iter().find(|d| d.name == name).map(|d| d.default) {
+        Some(PropertyValue::F32(_)) => format!("props.{name}.x"),
+        Some(PropertyValue::Vec3(_)) => format!("props.{name}.xyz"),
+        // Full vec4, or an unknown name (authoring error): read the whole lane.
+        Some(PropertyValue::Vec4(_)) | None => format!("props.{name}"),
+    }
+}
+
+/// The `Properties` uniform struct for a program's declared properties. Every
+/// property is stored as a `vec4<f32>` lane (16-byte aligned, no packing), read
+/// via the swizzle in [`property_wgsl`]. An empty set still declares one lane so
+/// the binding and layout are uniform across every generated effect.
+fn properties_struct(props: &[PropertyDecl]) -> String {
+    let mut s = String::from("struct Properties {\n");
+    if props.is_empty() {
+        s.push_str("    _pad: vec4<f32>,\n");
+    } else {
+        for d in props {
+            s.push_str(&format!("    {}: vec4<f32>,\n", d.name));
+        }
+    }
+    s.push_str("};\n");
+    s
 }
 
 /// Right-hand side for one node, referencing `v{child}` for its children.
@@ -109,6 +144,7 @@ fn lower_node(module: &Module, i: u32, ctx: Ctx) -> String {
             format!("vec3<f32>({}, {}, {})", flit(x), flit(y), flit(z))
         }
         Expr::Attribute(name) => attribute_wgsl(name, ctx),
+        Expr::Property(name) => property_wgsl(name, ctx.props),
         Expr::Rand => "rand01(&rng)".to_string(),
         Expr::RandUnit => "rand_dir(&rng)".to_string(),
         Expr::Add(a, b) => format!("(v{} + v{})", a.0, b.0),
@@ -157,8 +193,13 @@ fn find_attr(program: &EffectProgram, attr: Attribute) -> Option<ExprHandle> {
 
 fn generate_emit(program: &EffectProgram) -> String {
     let module = &program.module;
+    let ctx = Ctx {
+        kind: Kind::Emit,
+        props: &program.properties,
+    };
     let roots: Vec<ExprHandle> = program.init.iter().map(|m| m.value).collect();
-    let lets = lower_block(module, &roots, Ctx::Emit, "    ");
+    let lets = lower_block(module, &roots, ctx, "    ");
+    let props_struct = properties_struct(&program.properties);
 
     let pos = find_attr(program, Attribute::Position)
         .map(|h| format!("v{}", h.0))
@@ -184,11 +225,13 @@ fn generate_emit(program: &EffectProgram) -> String {
 
     format!(
         r#"{PARTICLE_STRUCT}
+{props_struct}
 struct Budget {{ count: atomic<u32> }};
 
 @group(0) @binding(0) var<storage, read_write> particles: array<Particle>;
 @group(0) @binding(1) var<uniform> params: GenParams;
 @group(0) @binding(2) var<storage, read_write> budget: Budget;
+@group(0) @binding(3) var<uniform> props: Properties;
 {RNG_HELPERS}
 @compute @workgroup_size(64)
 fn emit_main(@builtin(global_invocation_id) gid: vec3<u32>) {{
@@ -217,6 +260,10 @@ fn emit_main(@builtin(global_invocation_id) gid: vec3<u32>) {{
 
 fn generate_sim(program: &EffectProgram) -> String {
     let module = &program.module;
+    let ctx = Ctx {
+        kind: Kind::Sim,
+        props: &program.properties,
+    };
     let roots: Vec<ExprHandle> = program
         .update
         .iter()
@@ -224,7 +271,8 @@ fn generate_sim(program: &EffectProgram) -> String {
             UpdateOp::Accelerate(h) => *h,
         })
         .collect();
-    let lets = lower_block(module, &roots, Ctx::Sim, "    ");
+    let lets = lower_block(module, &roots, ctx, "    ");
+    let props_struct = properties_struct(&program.properties);
 
     let mut accel = String::new();
     for op in &program.update {
@@ -237,8 +285,10 @@ fn generate_sim(program: &EffectProgram) -> String {
 
     format!(
         r#"{PARTICLE_STRUCT}
+{props_struct}
 @group(0) @binding(0) var<storage, read_write> particles: array<Particle>;
 @group(0) @binding(1) var<uniform> params: GenParams;
+@group(0) @binding(2) var<uniform> props: Properties;
 
 @compute @workgroup_size(64)
 fn sim_main(@builtin(global_invocation_id) gid: vec3<u32>) {{

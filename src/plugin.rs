@@ -40,8 +40,9 @@ use viewport_lib::wgpu as vwgpu;
 
 use crate::codegen;
 use crate::effect::{
-    EffectAsset, EffectId, EffectProgram, Emitter, ForceModifier, MeshAlign, ParticleBlend,
-    ParticleMeshId, ParticleRender, SpawnRate, SpawnShape, VelocityDist,
+    EffectAsset, EffectId, EffectProgram, Emitter, ForceModifier, Gradient, MeshAlign,
+    ParticleBlend, ParticleMeshId, ParticleRender, PropertyDecl, PropertyValue, SpawnRate,
+    SpawnShape, VelocityDist,
 };
 
 /// MSAA sample count the plugin builds its pipelines for. A plugin cannot read
@@ -61,6 +62,13 @@ const HISTORY_LEN: u32 = 24;
 ///
 /// Carries the emitter origin and per-item settings; the authored behavior
 /// lives in the [`EffectAsset`] the [`EffectId`] points at.
+///
+/// Per-frame overrides tune the driving instance without re-registering the
+/// effect: [`with_emitter`](Self::with_emitter) / [`with_forces`](Self::with_forces)
+/// replace the fixed-function emitter and forces for live sliders,
+/// [`with_gradient`](Self::with_gradient) re-bakes the lifetime ramp, and
+/// [`with_property`](Self::with_property) sets a codegen property's value. All
+/// are read from the first non-hidden instance of the effect (its driver).
 #[derive(Clone, Debug)]
 pub struct ParticleItem {
     /// Which registered effect to simulate and draw.
@@ -69,6 +77,18 @@ pub struct ParticleItem {
     pub position: [f32; 3],
     /// Shared per-item flags (hidden, selected, pick id, opacity, ...).
     pub settings: ItemSettings,
+    /// Per-frame emitter override for the fixed-function path. `None` uses the
+    /// effect's registered emitter. Ignored by effects carrying a program.
+    pub emitter: Option<Emitter>,
+    /// Per-frame force override for the fixed-function path. `None` uses the
+    /// effect's registered forces. Ignored by effects carrying a program.
+    pub forces: Option<Vec<ForceModifier>>,
+    /// Per-frame lifetime-ramp override. When set, the effect's ramp LUT is
+    /// re-baked from these keys this frame. `None` keeps the registered gradient.
+    pub gradient: Option<Gradient>,
+    /// Per-frame property values, applied over the program's declared defaults by
+    /// name. Empty leaves every property at its default.
+    pub properties: Vec<(&'static str, PropertyValue)>,
 }
 
 impl ParticleItem {
@@ -78,12 +98,43 @@ impl ParticleItem {
             effect,
             position: [0.0, 0.0, 0.0],
             settings: ItemSettings::default(),
+            emitter: None,
+            forces: None,
+            gradient: None,
+            properties: Vec::new(),
         }
     }
 
     /// Place the emitter at `position`.
     pub fn at(mut self, position: [f32; 3]) -> Self {
         self.position = position;
+        self
+    }
+
+    /// Override the fixed-function emitter for this frame (live tuning of rate,
+    /// lifetime, shape, velocity, colour, size). No effect on program effects.
+    pub fn with_emitter(mut self, emitter: Emitter) -> Self {
+        self.emitter = Some(emitter);
+        self
+    }
+
+    /// Override the fixed-function forces for this frame. No effect on program
+    /// effects.
+    pub fn with_forces(mut self, forces: Vec<ForceModifier>) -> Self {
+        self.forces = Some(forces);
+        self
+    }
+
+    /// Re-bake the lifetime ramp from `gradient` this frame (live gradient-key
+    /// editing).
+    pub fn with_gradient(mut self, gradient: Gradient) -> Self {
+        self.gradient = Some(gradient);
+        self
+    }
+
+    /// Set a codegen property's value for this frame.
+    pub fn with_property(mut self, name: &'static str, value: PropertyValue) -> Self {
+        self.properties.push((name, value));
         self
     }
 }
@@ -296,6 +347,20 @@ impl EffectGpu {
             EffectGpu::Gen(g) => &g.particle_buf,
         }
     }
+
+    /// Swap in a freshly baked lifetime ramp (for per-frame gradient overrides).
+    fn set_ramp(&mut self, bg: vwgpu::BindGroup, lut: vwgpu::Texture) {
+        match self {
+            EffectGpu::Fixed(g) => {
+                g.ramp_bg = bg;
+                g.ramp_lut = Some(lut);
+            }
+            EffectGpu::Gen(g) => {
+                g.ramp_bg = bg;
+                g.ramp_lut = Some(lut);
+            }
+        }
+    }
 }
 
 /// Init-pass parameters for the depth sort. Matches `InitParams` in
@@ -383,6 +448,9 @@ struct GenGpu {
     #[allow(dead_code)]
     particle_buf: vwgpu::Buffer,
     params_buf: vwgpu::Buffer,
+    /// Property uniform (one `vec4` lane per declared property, min one lane).
+    /// Rewritten each frame from the driving item's property overrides.
+    props_buf: vwgpu::Buffer,
     budget_buf: vwgpu::Buffer,
     emit_bg: vwgpu::BindGroup,
     sim_bg: vwgpu::BindGroup,
@@ -426,6 +494,11 @@ pub struct ParticlePlugin {
     mesh_pipeline_over: Option<vwgpu::RenderPipeline>,
     emit_bgl: Option<vwgpu::BindGroupLayout>,
     sim_bgl: Option<vwgpu::BindGroupLayout>,
+    // Codegen-path variants carry an extra property uniform (emit binding 3,
+    // sim binding 2). Kept separate so the fixed-function pipelines and bind
+    // groups are unchanged.
+    gen_emit_bgl: Option<vwgpu::BindGroupLayout>,
+    gen_sim_bgl: Option<vwgpu::BindGroupLayout>,
     draw_bgl: Option<vwgpu::BindGroupLayout>,
     drawparams_bgl: Option<vwgpu::BindGroupLayout>,
 
@@ -642,18 +715,21 @@ impl ParticlePlugin {
                 drawparams_bg,
             )),
             Some(program) => {
+                let gen_emit_bgl = self.gen_emit_bgl.clone().unwrap();
+                let gen_sim_bgl = self.gen_sim_bgl.clone().unwrap();
                 let (emit_pipeline, sim_pipeline) =
-                    self.gen_pipelines(device, &program, emit_bgl, sim_bgl);
+                    self.gen_pipelines(device, &program, &gen_emit_bgl, &gen_sim_bgl);
                 EffectGpu::Gen(build_gen_gpu(
                     device,
                     capacity,
                     &order_buf,
-                    emit_bgl,
-                    sim_bgl,
+                    &gen_emit_bgl,
+                    &gen_sim_bgl,
                     draw_bgl,
                     ramp_bg,
                     ramp_lut,
                     drawparams_bg,
+                    program.properties.len(),
                     emit_pipeline,
                     sim_pipeline,
                 ))
@@ -774,6 +850,15 @@ impl ItemTypePlugin for ParticlePlugin {
         let sim_bgl = device.create_bind_group_layout(&vwgpu::BindGroupLayoutDescriptor {
             label: Some("particle_sim_bgl"),
             entries: &[storage_rw(0), uniform(1)],
+        });
+        // Codegen kernels add the property uniform: emit binding 3, sim binding 2.
+        let gen_emit_bgl = device.create_bind_group_layout(&vwgpu::BindGroupLayoutDescriptor {
+            label: Some("particle_gen_emit_bgl"),
+            entries: &[storage_rw(0), uniform(1), storage_rw(2), uniform(3)],
+        });
+        let gen_sim_bgl = device.create_bind_group_layout(&vwgpu::BindGroupLayoutDescriptor {
+            label: Some("particle_gen_sim_bgl"),
+            entries: &[storage_rw(0), uniform(1), uniform(2)],
         });
         let draw_storage = |binding| vwgpu::BindGroupLayoutEntry {
             binding,
@@ -1455,6 +1540,8 @@ impl ItemTypePlugin for ParticlePlugin {
         self.sort_stage_pipeline = Some(sort_stage_pipeline);
         self.emit_bgl = Some(emit_bgl);
         self.sim_bgl = Some(sim_bgl);
+        self.gen_emit_bgl = Some(gen_emit_bgl);
+        self.gen_sim_bgl = Some(gen_sim_bgl);
         self.draw_bgl = Some(draw_bgl);
         self.drawparams_bgl = Some(drawparams_bgl);
         self.history_bgl = Some(history_bgl);
@@ -1496,6 +1583,9 @@ impl ItemTypePlugin for ParticlePlugin {
         let append_pipeline = self.append_pipeline.clone();
         let sort_init_pipeline = self.sort_init_pipeline.clone();
         let sort_stage_pipeline = self.sort_stage_pipeline.clone();
+        // For per-frame gradient overrides (re-baking the ramp LUT in the loop).
+        let ramp_bgl = self.ramp_bgl.clone();
+        let ramp_sampler = self.ramp_sampler.clone();
 
         // Build the shared identity ramp on first use (needs a queue, so not in
         // `init_gpu`).
@@ -1512,22 +1602,18 @@ impl ItemTypePlugin for ParticlePlugin {
 
         let dt = items.dt.max(0.0);
 
-        // First non-hidden instance per effect drives that effect's simulation.
         // First non-hidden instance per effect drives the simulation and supplies
-        // the interaction flags (pick id / selected / cast shadows).
-        let mut driver: Vec<Option<([f32; 3], u32, bool, bool)>> = vec![None; self.effects.len()];
-        for it in &items.items {
+        // the emitter origin, interaction flags (pick id / selected / cast
+        // shadows), and any per-frame overrides. We store its item index so the
+        // loop can read the full override set from it.
+        let mut driver: Vec<Option<usize>> = vec![None; self.effects.len()];
+        for (i, it) in items.items.iter().enumerate() {
             if it.settings.hidden {
                 continue;
             }
             let idx = it.effect.0 as usize;
             if idx < driver.len() && driver[idx].is_none() {
-                driver[idx] = Some((
-                    it.position,
-                    it.settings.pick_id.0 as u32,
-                    it.settings.selected,
-                    it.settings.cast_shadows,
-                ));
+                driver[idx] = Some(i);
             }
         }
 
@@ -1536,13 +1622,29 @@ impl ItemTypePlugin for ParticlePlugin {
         });
         let mut any = false;
 
-        for (idx, origin) in driver.iter().enumerate() {
-            let Some((origin, pick_id, selected, cast_shadows)) = *origin else {
+        for (idx, driver_idx) in driver.iter().enumerate() {
+            let Some(driver_idx) = *driver_idx else {
                 continue;
             };
+            let item = &items.items[driver_idx];
+            let origin = item.position;
+            let pick_id = item.settings.pick_id.0 as u32;
+            let selected = item.settings.selected;
+            let cast_shadows = item.settings.cast_shadows;
 
             // Lazily build this effect's GPU state (fixed or generated).
             self.ensure_effect_gpu(idx, device, queue, &emit_bgl, &sim_bgl, &draw_bgl);
+
+            // Per-frame gradient override: re-bake the ramp LUT and swap the draw
+            // group-2 bind group. Cheap (a 64-texel upload) so it runs whenever an
+            // override is present, no diffing.
+            if let (Some(g), Some(ramp_bgl), Some(ramp_sampler)) =
+                (&item.gradient, ramp_bgl.as_ref(), ramp_sampler.as_ref())
+            {
+                let lut = build_ramp_lut(device, queue, g);
+                let bg = make_ramp_bg(device, ramp_bgl, ramp_sampler, &lut);
+                self.effects[idx].gpu.as_mut().unwrap().set_ramp(bg, lut);
+            }
 
             // Publish the driving item's pick id for the pick pass.
             if let Some((buf, _)) = self.pick_gpu.get(&idx) {
@@ -1553,7 +1655,16 @@ impl ItemTypePlugin for ParticlePlugin {
                 queue.write_buffer(buf, 0, bytemuck::bytes_of(&pu));
             }
 
-            let spawn_count = next_spawn_count(&mut self.effects[idx], dt);
+            // Effective spawn rate: a program takes its rate from the program; a
+            // fixed effect from the per-frame emitter override, else its emitter.
+            let rate = match &self.effects[idx].asset.program {
+                Some(p) => p.rate,
+                None => item
+                    .emitter
+                    .map(|e| e.rate)
+                    .unwrap_or(self.effects[idx].asset.emitter.rate),
+            };
+            let spawn_count = next_spawn_count(&mut self.effects[idx], rate, dt);
             let capacity = self.effects[idx].asset.capacity;
             let rng_seed = (ctx.frame_index as u32)
                 .wrapping_mul(2654435761)
@@ -1563,9 +1674,12 @@ impl ItemTypePlugin for ParticlePlugin {
             match self.effects[idx].gpu.as_ref().unwrap() {
                 EffectGpu::Fixed(g) => {
                     let asset = &self.effects[idx].asset;
+                    // Per-frame emitter / force overrides fall back to the asset.
+                    let emitter = item.emitter.as_ref().unwrap_or(&asset.emitter);
+                    let forces = item.forces.as_deref().unwrap_or(&asset.forces);
                     let emit =
-                        build_emit_params(&asset.emitter, origin, capacity, spawn_count, rng_seed);
-                    let sim = build_sim_params(&asset.forces, dt);
+                        build_emit_params(emitter, origin, capacity, spawn_count, rng_seed);
+                    let sim = build_sim_params(forces, dt);
                     queue.write_buffer(&g.emit_buf, 0, bytemuck::bytes_of(&emit));
                     queue.write_buffer(&g.sim_buf, 0, bytemuck::bytes_of(&sim));
                     queue.write_buffer(&g.budget_buf, 0, bytemuck::bytes_of(&0u32));
@@ -1589,6 +1703,16 @@ impl ItemTypePlugin for ParticlePlugin {
                         _pad: [0; 3],
                     };
                     queue.write_buffer(&g.params_buf, 0, bytemuck::bytes_of(&gp));
+                    // Property uniform: declared defaults overlaid with this
+                    // frame's overrides, in declaration order.
+                    let decls: &[PropertyDecl] = self.effects[idx]
+                        .asset
+                        .program
+                        .as_ref()
+                        .map(|p| p.properties.as_slice())
+                        .unwrap_or(&[]);
+                    let props = build_props_data(decls, &item.properties);
+                    queue.write_buffer(&g.props_buf, 0, bytemuck::cast_slice(&props));
                     queue.write_buffer(&g.budget_buf, 0, bytemuck::bytes_of(&0u32));
                     dispatch_sim(
                         &mut encoder,
@@ -2116,6 +2240,7 @@ fn build_gen_gpu(
     ramp_bg: vwgpu::BindGroup,
     ramp_lut: Option<vwgpu::Texture>,
     drawparams_bg: vwgpu::BindGroup,
+    property_count: usize,
     emit_pipeline: vwgpu::ComputePipeline,
     sim_pipeline: vwgpu::ComputePipeline,
 ) -> GenGpu {
@@ -2124,6 +2249,15 @@ fn build_gen_gpu(
     let params_buf = device.create_buffer(&vwgpu::BufferDescriptor {
         label: Some("particle_gen_params"),
         size: std::mem::size_of::<GenParams>() as u64,
+        usage: vwgpu::BufferUsages::UNIFORM | vwgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    // One `vec4` lane per property; at least one so the binding is never empty
+    // (the generated `Properties` struct always has a lane).
+    let props_lanes = property_count.max(1) as u64;
+    let props_buf = device.create_buffer(&vwgpu::BufferDescriptor {
+        label: Some("particle_gen_props"),
+        size: props_lanes * 16,
         usage: vwgpu::BufferUsages::UNIFORM | vwgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     });
@@ -2144,6 +2278,10 @@ fn build_gen_gpu(
                 binding: 2,
                 resource: budget_buf.as_entire_binding(),
             },
+            vwgpu::BindGroupEntry {
+                binding: 3,
+                resource: props_buf.as_entire_binding(),
+            },
         ],
     });
     let sim_bg = device.create_bind_group(&vwgpu::BindGroupDescriptor {
@@ -2158,6 +2296,10 @@ fn build_gen_gpu(
                 binding: 1,
                 resource: params_buf.as_entire_binding(),
             },
+            vwgpu::BindGroupEntry {
+                binding: 2,
+                resource: props_buf.as_entire_binding(),
+            },
         ],
     });
     let draw_bg = build_draw_bg(device, draw_bgl, &particle_buf, order_buf);
@@ -2165,6 +2307,7 @@ fn build_gen_gpu(
     GenGpu {
         particle_buf,
         params_buf,
+        props_buf,
         budget_buf,
         emit_bg,
         sim_bg,
@@ -2473,13 +2616,9 @@ fn dispatch_sort(
 }
 
 /// How many particles to spawn this frame, advancing the effect's accumulator.
-/// A generated effect takes its rate from the program; a fixed effect from the
-/// emitter.
-fn next_spawn_count(effect: &mut RegisteredEffect, dt: f32) -> u32 {
-    let rate = match &effect.asset.program {
-        Some(program) => program.rate,
-        None => effect.asset.emitter.rate,
-    };
+/// The caller resolves the effective `rate` (program, per-frame emitter
+/// override, or the registered emitter).
+fn next_spawn_count(effect: &mut RegisteredEffect, rate: SpawnRate, dt: f32) -> u32 {
     match rate {
         SpawnRate::PerSecond(rate) => {
             effect.spawn_accum += rate.max(0.0) * dt;
@@ -2496,6 +2635,30 @@ fn next_spawn_count(effect: &mut RegisteredEffect, dt: f32) -> u32 {
             }
         }
     }
+}
+
+/// Pack a program's property values for the GPU: one `vec4` lane per declared
+/// property in declaration order, each the item's override for that name or the
+/// declared default. Effects with no properties get a single zero lane (the
+/// generated `Properties` struct always declares one).
+fn build_props_data(
+    decls: &[PropertyDecl],
+    overrides: &[(&'static str, PropertyValue)],
+) -> Vec<[f32; 4]> {
+    if decls.is_empty() {
+        return vec![[0.0; 4]];
+    }
+    decls
+        .iter()
+        .map(|d| {
+            overrides
+                .iter()
+                .find(|(name, _)| *name == d.name)
+                .map(|(_, v)| *v)
+                .unwrap_or(d.default)
+                .to_vec4()
+        })
+        .collect()
 }
 
 fn build_emit_params(

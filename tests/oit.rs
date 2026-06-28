@@ -66,11 +66,13 @@ fn frame_looking_at_origin() -> FrameData {
     frame
 }
 
-// A blue alpha cloud so its contribution is separable from the red skybox.
-fn blue_alpha_effect() -> EffectAsset {
+// A blue cloud so its contribution is separable from the red skybox. The blend
+// selects the compositing route: Alpha goes through the OIT pass, Additive
+// stays in the main draw.
+fn blue_effect(blend: ParticleBlend) -> EffectAsset {
     EffectAsset::new("smoke")
         .with_capacity(4096)
-        .with_blend(ParticleBlend::Alpha)
+        .with_blend(blend)
         .with_emitter(Emitter {
             rate: SpawnRate::PerSecond(3_000.0),
             lifetime: (1.0, 1.5),
@@ -92,7 +94,7 @@ struct Readout {
     corner_blue: i32,
 }
 
-fn render() -> Option<Readout> {
+fn render(blend: ParticleBlend) -> Option<Readout> {
     let (device, queue) = headless_device()?;
 
     let mut renderer = ViewportRenderer::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
@@ -109,7 +111,7 @@ fn render() -> Option<Readout> {
         .expect("upload env map");
 
     let mut plugin = ParticlePlugin::new();
-    let id = plugin.add_effect(&device, blue_alpha_effect());
+    let id = plugin.add_effect(&device, blue_effect(blend));
     renderer.with_item_type_plugin(&device, Box::new(plugin));
 
     let target = device.create_texture(&wgpu::TextureDescriptor {
@@ -165,17 +167,34 @@ fn render() -> Option<Readout> {
 
 #[test]
 fn alpha_composites_over_skybox() {
-    let Some(r) = render() else {
+    let Some(r) = render(ParticleBlend::Alpha) else {
         eprintln!("skipping: no GPU adapter available");
         return;
     };
 
-    // The blue cloud composites over the skybox in the OIT pass, so the center
-    // is clearly bluer than the skybox-only corners. Pre-OIT, the skybox drew
-    // over the particles and the center would match the corner.
+    // The blue cloud composites over the skybox in the OIT pass (drawn after the
+    // skybox), so the center is clearly bluer than the skybox-only corners.
     assert!(
         r.center_blue > r.corner_blue + 40,
         "alpha particles did not composite over skybox: center_blue={}, corner_blue={}",
+        r.center_blue,
+        r.corner_blue
+    );
+}
+
+#[test]
+fn additive_composites_over_skybox() {
+    let Some(r) = render(ParticleBlend::Additive) else {
+        eprintln!("skipping: no GPU adapter available");
+        return;
+    };
+
+    // Additive particles draw in the main pass, which now runs after the skybox,
+    // so they add over the sky instead of being painted over by it. The center
+    // is clearly bluer than the skybox-only corners.
+    assert!(
+        r.center_blue > r.corner_blue + 40,
+        "additive particles did not composite over skybox: center_blue={}, corner_blue={}",
         r.center_blue,
         r.corner_blue
     );

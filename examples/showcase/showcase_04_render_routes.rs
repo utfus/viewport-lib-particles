@@ -118,9 +118,9 @@ pub struct State {
     /// Depth-sort non-additive effects back-to-front (only affects the alpha
     /// route; additive routes are order-independent).
     pub sort: bool,
-    /// Render the environment map as a skybox background. The alpha route draws
-    /// in the OIT pass (after the skybox), so it composites over it; toggle off
-    /// to compare against the dark viewport background.
+    /// Render the environment map as a skybox background. Every route
+    /// composites over it (additive in the main pass, alpha through the OIT
+    /// pass); toggle off to compare against the dark viewport background.
     pub skybox: bool,
 }
 
@@ -185,8 +185,8 @@ pub fn controls(state: &mut State, ui: &mut egui::Ui) {
     );
     ui.checkbox(&mut state.skybox, "Skybox background");
     if state.skybox {
-        ui.label("Alpha draws in the OIT pass, after the skybox, so it");
-        ui.label("composites over it. Additive routes stay in the main pass.");
+        ui.label("Every route composites over the sky: additive adds over");
+        ui.label("it, the alpha route over-blends through the OIT pass.");
     }
     ui.separator();
     ui.label("Emitter position:");

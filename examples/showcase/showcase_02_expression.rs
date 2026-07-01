@@ -8,7 +8,7 @@
 use eframe::egui;
 use viewport_lib_particles::{
     Attribute, EffectAsset, EffectId, EffectProgram, Module, ParticleBlend, ParticleItem,
-    ParticleItems, SpawnRate, UpdateOp,
+    ParticleItems, PropertyValue, SpawnRate, UpdateOp,
 };
 
 /// A cloud of randomly-tinted particles launched isotropically and sprung back
@@ -32,16 +32,18 @@ fn random_hue_cloud() -> EffectAsset {
 
     let size = m.lit(0.12);
 
-    // Update: spring toward the emitter, accel = (origin - position) * k.
+    // Update: spring toward the emitter, accel = (origin - position) * k, where
+    // k is a runtime property the host tunes live.
     let origin = m.attr("origin");
     let position = m.attr("position");
     let toward = m.sub(origin, position);
-    let k = m.lit(6.0);
+    let k = m.property("spring");
     let spring = m.mul(toward, k);
 
     let mut program = EffectProgram::new()
         .with_rate(SpawnRate::PerSecond(9_000.0))
-        .with_lifetime(1.8, 2.8);
+        .with_lifetime(1.8, 2.8)
+        .property("spring", PropertyValue::F32(6.0));
     program.module = m;
     let program = program
         .set(Attribute::Colour, colour)
@@ -65,6 +67,8 @@ pub struct State {
     pub selected: usize,
     pub paused: bool,
     pub position: [f32; 3],
+    /// Live spring stiffness, fed to the `spring` property each frame.
+    pub spring: f32,
 }
 
 impl Default for State {
@@ -73,6 +77,7 @@ impl Default for State {
             selected: 0,
             paused: false,
             position: [0.0, 0.0, 0.0],
+            spring: 6.0,
         }
     }
 }
@@ -92,16 +97,22 @@ pub fn controls(state: &mut State, ui: &mut egui::Ui) {
     ui.add(egui::Slider::new(&mut state.position[1], -5.0..=5.0).text("y"));
     ui.add(egui::Slider::new(&mut state.position[2], -2.0..=5.0).text("z"));
     ui.separator();
+    ui.label("Spring stiffness (runtime property):");
+    ui.add(egui::Slider::new(&mut state.spring, 0.0..=30.0).text("spring"));
+    ui.separator();
     ui.label("These effects are compiled from an expression graph:");
     ui.label("random per-particle colour and a position-reading spring");
-    ui.label("force, neither of which the fixed emitter can express.");
+    ui.label("force whose stiffness is a live property, neither of which");
+    ui.label("the fixed emitter can express.");
 }
 
 /// Build this frame's submission for the selected preset.
 pub fn items(effect_ids: &[EffectId], state: &State, dt: f32) -> ParticleItems {
     let mut items = ParticleItems::new().with_dt(dt);
     if let Some(&id) = effect_ids.get(state.selected) {
-        let mut item = ParticleItem::new(id).at(state.position);
+        let mut item = ParticleItem::new(id)
+            .at(state.position)
+            .with_property("spring", PropertyValue::F32(state.spring));
         item.settings.hidden = state.paused;
         items.push(item);
     }

@@ -91,6 +91,17 @@ pub struct State {
     pub selected: usize,
     pub paused: bool,
     pub position: [f32; 3],
+    /// When true, the ramp is rebuilt from the sliders below and applied as a
+    /// per-frame gradient override (Phase 11 live gradient-key editing). When
+    /// false, the preset's baked ramp is used.
+    pub live_gradient: bool,
+    /// Colour ramp endpoints (hue) and their HDR intensity multipliers.
+    pub birth: [f32; 3],
+    pub birth_intensity: f32,
+    pub death: [f32; 3],
+    pub death_intensity: f32,
+    /// Mid-life size-scale peak.
+    pub size_peak: f32,
 }
 
 impl Default for State {
@@ -99,6 +110,12 @@ impl Default for State {
             selected: 0,
             paused: false,
             position: [0.0, 0.0, 0.0],
+            live_gradient: false,
+            birth: [1.0, 0.85, 0.4],
+            birth_intensity: 1.6,
+            death: [0.4, 0.06, 0.03],
+            death_intensity: 0.7,
+            size_peak: 1.2,
         }
     }
 }
@@ -118,8 +135,34 @@ pub fn controls(state: &mut State, ui: &mut egui::Ui) {
     ui.add(egui::Slider::new(&mut state.position[1], -5.0..=5.0).text("y"));
     ui.add(egui::Slider::new(&mut state.position[2], -2.0..=5.0).text("z"));
     ui.separator();
+    ui.checkbox(&mut state.live_gradient, "Live gradient keys");
+    ui.add_enabled_ui(state.live_gradient, |ui| {
+        ui.horizontal(|ui| {
+            ui.color_edit_button_rgb(&mut state.birth);
+            ui.label("birth");
+        });
+        ui.add(egui::Slider::new(&mut state.birth_intensity, 0.0..=3.0).text("birth glow"));
+        ui.horizontal(|ui| {
+            ui.color_edit_button_rgb(&mut state.death);
+            ui.label("death");
+        });
+        ui.add(egui::Slider::new(&mut state.death_intensity, 0.0..=3.0).text("death glow"));
+        ui.add(egui::Slider::new(&mut state.size_peak, 0.1..=2.5).text("size peak"));
+    });
+    ui.separator();
     ui.label("Colour and size follow a ramp over each particle's life,");
     ui.label("sampled from a lookup texture by normalized age.");
+}
+
+/// The ramp built from the live sliders (birth -> death colour, swelling size).
+fn live_ramp(state: &State) -> Gradient {
+    let scale = |c: [f32; 3], k: f32| [c[0] * k, c[1] * k, c[2] * k];
+    Gradient::new()
+        .with_colour(vec![
+            (0.0, scale(state.birth, state.birth_intensity)),
+            (1.0, scale(state.death, state.death_intensity)),
+        ])
+        .with_size(vec![(0.0, 0.5), (0.3, state.size_peak), (1.0, 0.15)])
 }
 
 /// Build this frame's submission for the selected preset.
@@ -127,6 +170,9 @@ pub fn items(effect_ids: &[EffectId], state: &State, dt: f32) -> ParticleItems {
     let mut items = ParticleItems::new().with_dt(dt);
     if let Some(&id) = effect_ids.get(state.selected) {
         let mut item = ParticleItem::new(id).at(state.position);
+        if state.live_gradient {
+            item = item.with_gradient(live_ramp(state));
+        }
         item.settings.hidden = state.paused;
         items.push(item);
     }

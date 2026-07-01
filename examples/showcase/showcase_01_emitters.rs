@@ -123,6 +123,11 @@ pub struct State {
     pub paused: bool,
     /// Emitter origin in world space (moved by the sliders).
     pub position: [f32; 3],
+    /// Live multipliers applied to the preset's base emitter each frame
+    /// (Phase 11 per-frame emitter override). All default to 1.0.
+    pub rate_mul: f32,
+    pub lifetime_mul: f32,
+    pub size_mul: f32,
 }
 
 impl Default for State {
@@ -131,6 +136,9 @@ impl Default for State {
             selected: 0,
             paused: false,
             position: [0.0, 0.0, 0.0],
+            rate_mul: 1.0,
+            lifetime_mul: 1.0,
+            size_mul: 1.0,
         }
     }
 }
@@ -150,16 +158,35 @@ pub fn controls(state: &mut State, ui: &mut egui::Ui) {
     ui.add(egui::Slider::new(&mut state.position[1], -5.0..=5.0).text("y"));
     ui.add(egui::Slider::new(&mut state.position[2], -2.0..=5.0).text("z"));
     ui.separator();
-    ui.label("Each preset is a separate registered effect.");
-    ui.label("Live emitter tuning (rate, lifetime, ...) needs per-frame");
-    ui.label("emitter params; see the plan.");
+    ui.label("Live emitter tuning (per-frame override):");
+    ui.add(egui::Slider::new(&mut state.rate_mul, 0.0..=4.0).text("rate ×"));
+    ui.add(egui::Slider::new(&mut state.lifetime_mul, 0.1..=4.0).text("lifetime ×"));
+    ui.add(egui::Slider::new(&mut state.size_mul, 0.1..=5.0).text("size ×"));
+    if ui.button("Reset tuning").clicked() {
+        state.rate_mul = 1.0;
+        state.lifetime_mul = 1.0;
+        state.size_mul = 1.0;
+    }
+}
+
+/// The selected preset's base emitter with the live multipliers applied.
+fn tuned_emitter(state: &State) -> Emitter {
+    let mut e = presets()[state.selected].1.emitter;
+    if let SpawnRate::PerSecond(r) = e.rate {
+        e.rate = SpawnRate::PerSecond(r * state.rate_mul);
+    }
+    e.lifetime = (e.lifetime.0 * state.lifetime_mul, e.lifetime.1 * state.lifetime_mul);
+    e.size *= state.size_mul;
+    e
 }
 
 /// Build this frame's submission for the selected preset.
 pub fn items(effect_ids: &[EffectId], state: &State, dt: f32) -> ParticleItems {
     let mut items = ParticleItems::new().with_dt(dt);
     if let Some(&id) = effect_ids.get(state.selected) {
-        let mut item = ParticleItem::new(id).at(state.position);
+        let mut item = ParticleItem::new(id)
+            .at(state.position)
+            .with_emitter(tuned_emitter(state));
         item.settings.hidden = state.paused;
         items.push(item);
     }

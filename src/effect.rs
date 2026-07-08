@@ -25,6 +25,59 @@ pub struct EffectId(pub(crate) u32);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub struct ParticleMeshId(pub(crate) u32);
 
+/// Handle to a texture uploaded to a [`ParticlePlugin`](crate::ParticlePlugin)
+/// for the billboard texture / flipbook routes. Returned by
+/// `ParticlePlugin::upload_texture`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct ParticleTextureId(pub(crate) u32);
+
+/// How an effect's texture modulates the per-particle colour in the billboard
+/// fragment shader. Mirrors Hanabi's `ImageSampleMapping`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+pub enum TextureMode {
+    /// Multiply both colour (rgb) and alpha by the sampled texel.
+    #[default]
+    Modulate,
+    /// Multiply only the colour (rgb); keep the particle's own alpha.
+    ModulateRgb,
+    /// Take alpha from the texel's red channel (a mask); keep the colour. The
+    /// masked-spark idiom.
+    ModulateAlphaFromR,
+}
+
+/// Flipbook (sprite-sheet) animation over a texture atlas. The texture is a grid
+/// of `columns` x `rows` animation frames; the billboard fragment picks a cell
+/// per particle and offsets its UVs into it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Flipbook {
+    /// Atlas columns.
+    pub columns: u32,
+    /// Atlas rows.
+    pub rows: u32,
+    /// Playback rate. `0` stretches the whole sheet once across each particle's
+    /// life (first frame at spawn, last near death); `> 0` loops the sheet at
+    /// this many frames per second driven by the particle's elapsed age.
+    pub fps: f32,
+}
+
+impl Flipbook {
+    /// A `columns` x `rows` sheet stretched once across particle life.
+    pub fn new(columns: u32, rows: u32) -> Self {
+        Self {
+            columns,
+            rows,
+            fps: 0.0,
+        }
+    }
+
+    /// Loop the sheet at `fps` frames per second instead of stretching it across
+    /// life.
+    pub fn with_fps(mut self, fps: f32) -> Self {
+        self.fps = fps;
+        self
+    }
+}
+
 /// How a mesh-route particle is oriented each frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MeshAlign {
@@ -493,6 +546,16 @@ pub struct EffectAsset {
     /// How live particles are drawn. Defaults to a round camera-facing
     /// billboard.
     pub render: ParticleRender,
+    /// Optional texture sampled by the billboard fragment. `None` draws the
+    /// procedural soft round dot. Uploaded via
+    /// `ParticlePlugin::upload_texture`. Applies to the billboard routes.
+    pub texture: Option<ParticleTextureId>,
+    /// How [`texture`](Self::texture) modulates the particle colour. Ignored
+    /// when no texture is set.
+    pub texture_mode: TextureMode,
+    /// Optional flipbook animation over [`texture`](Self::texture) treated as an
+    /// atlas. `None` samples the whole texture.
+    pub flipbook: Option<Flipbook>,
 }
 
 impl Default for EffectAsset {
@@ -506,6 +569,9 @@ impl Default for EffectAsset {
             program: None,
             gradient: None,
             render: ParticleRender::default(),
+            texture: None,
+            texture_mode: TextureMode::default(),
+            flipbook: None,
         }
     }
 }
@@ -560,6 +626,26 @@ impl EffectAsset {
     /// Set the render route (billboard with optional stretch, or mesh instances).
     pub fn with_render(mut self, render: ParticleRender) -> Self {
         self.render = render;
+        self
+    }
+
+    /// Sample `texture` in the billboard fragment, modulating colour per
+    /// [`TextureMode::Modulate`]. Combine with [`with_texture_mode`](Self::with_texture_mode)
+    /// or [`with_flipbook`](Self::with_flipbook).
+    pub fn with_texture(mut self, texture: ParticleTextureId) -> Self {
+        self.texture = Some(texture);
+        self
+    }
+
+    /// Set how the texture modulates the particle colour.
+    pub fn with_texture_mode(mut self, mode: TextureMode) -> Self {
+        self.texture_mode = mode;
+        self
+    }
+
+    /// Animate the texture as a flipbook atlas.
+    pub fn with_flipbook(mut self, flipbook: Flipbook) -> Self {
+        self.flipbook = Some(flipbook);
         self
     }
 }

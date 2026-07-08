@@ -41,8 +41,8 @@ use viewport_lib::wgpu as vwgpu;
 use crate::codegen;
 use crate::effect::{
     EffectAsset, EffectId, EffectProgram, Emitter, ForceModifier, Gradient, MeshAlign,
-    ParticleBlend, ParticleMeshId, ParticleRender, PropertyDecl, PropertyValue, SpawnRate,
-    SpawnShape, VelocityDist,
+    ParticleBlend, ParticleMeshId, ParticleRender, ParticleTextureId, PropertyDecl, PropertyValue,
+    SpawnRate, SpawnShape, TextureMode, VelocityDist,
 };
 
 /// MSAA sample count the plugin builds its pipelines for. A plugin cannot read
@@ -268,8 +268,18 @@ struct ParticleMesh {
     index_count: u32,
 }
 
+/// An uploaded texture for the billboard texture / flipbook routes: the texture
+/// and a default view, sampled in the billboard fragment (group 3).
+struct ParticleTexture {
+    #[allow(dead_code)]
+    texture: vwgpu::Texture,
+    view: vwgpu::TextureView,
+}
+
 /// Per-effect draw parameters (group 3). Matches `DrawParams` in the draw and
-/// mesh shaders. 16 bytes.
+/// mesh shaders. 32 bytes. The billboard shaders read all eight fields; the mesh
+/// and trail shaders read only the first four (their `DrawParams` struct is that
+/// 16-byte prefix, valid against the larger buffer).
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct DrawParams {
@@ -281,6 +291,15 @@ struct DrawParams {
     trail_width: f32,
     /// Trail segments swept (clamped to `HISTORY_LEN - 1`).
     trail_segments: u32,
+    /// Texture modulation: 0 = none (procedural dot), 1 = modulate rgb+a,
+    /// 2 = modulate rgb, 3 = alpha-from-red mask.
+    tex_mode: u32,
+    /// Flipbook atlas columns (0 = no flipbook, sample the whole texture).
+    flip_cols: u32,
+    /// Flipbook atlas rows.
+    flip_rows: u32,
+    /// Flipbook playback: 0 stretches the sheet across life; > 0 loops at fps.
+    flip_fps: f32,
 }
 
 /// Trail history parameters (group 1, binding 2 of the append and trail draw
@@ -534,6 +553,13 @@ pub struct ParticlePlugin {
     /// Meshes uploaded for the mesh render route, indexed by `ParticleMeshId`.
     meshes: Vec<ParticleMesh>,
 
+    /// Textures uploaded for the billboard texture / flipbook routes, indexed by
+    /// `ParticleTextureId`.
+    textures: Vec<ParticleTexture>,
+    /// A 1x1 white texture bound at group 3 for effects with no texture (so the
+    /// billboard fragment always has a valid sampler). Built lazily in `prepare`.
+    default_tex_view: Option<vwgpu::TextureView>,
+
     // Lifetime-ramp LUT (group 2 of the draw pipeline): the layout, the shared
     // linear sampler, and an identity LUT + bind group reused by effects with no
     // gradient. Built in `init_gpu`.
@@ -632,6 +658,57 @@ impl ParticlePlugin {
         id
     }
 
+    /// Upload an RGBA8 texture (sRGB) for the billboard texture / flipbook
+    /// routes, returning a handle to reference from `EffectAsset::with_texture`.
+    /// `rgba` is `width * height * 4` bytes, row-major, no padding. Upload
+    /// textures before handing the plugin to the renderer.
+    pub fn upload_texture(
+        &mut self,
+        device: &vwgpu::Device,
+        queue: &vwgpu::Queue,
+        width: u32,
+        height: u32,
+        rgba: &[u8],
+    ) -> ParticleTextureId {
+        let texture = device.create_texture(&vwgpu::TextureDescriptor {
+            label: Some("particle_texture"),
+            size: vwgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: vwgpu::TextureDimension::D2,
+            format: vwgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: vwgpu::TextureUsages::TEXTURE_BINDING | vwgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        });
+        queue.write_texture(
+            vwgpu::TexelCopyTextureInfo {
+                texture: &texture,
+                mip_level: 0,
+                origin: vwgpu::Origin3d::ZERO,
+                aspect: vwgpu::TextureAspect::All,
+            },
+            rgba,
+            vwgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(width * 4),
+                rows_per_image: Some(height),
+            },
+            vwgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+        let view = texture.create_view(&vwgpu::TextureViewDescriptor::default());
+        let id = ParticleTextureId(self.textures.len() as u32);
+        self.textures.push(ParticleTexture { texture, view });
+        id
+    }
+
     /// Build effect `idx`'s GPU state if it does not exist yet. Fixed-function
     /// effects get the shared Phase 2 pipelines; effects with a program compile
     /// (or reuse from the cache) their own emit/simulate pipelines.
@@ -654,6 +731,9 @@ impl ParticlePlugin {
         let gradient = self.effects[idx].asset.gradient.clone();
         let render = self.effects[idx].asset.render;
         let blend = self.effects[idx].asset.blend;
+        let texture = self.effects[idx].asset.texture;
+        let texture_mode = self.effects[idx].asset.texture_mode;
+        let flipbook = self.effects[idx].asset.flipbook;
 
         // Draw order buffer, padded to a power of two so the bitonic sort has a
         // clean length. Identity for now; sorted per frame for non-additive
@@ -676,31 +756,62 @@ impl ParticlePlugin {
             None => (self.identity_ramp_bg.clone().unwrap(), None),
         };
 
+        // Texture modulation + flipbook (group 3). Only meaningful with a
+        // texture bound; `tex_mode == 0` draws the procedural dot.
+        let tex_mode = if texture.is_some() {
+            match texture_mode {
+                TextureMode::Modulate => 1,
+                TextureMode::ModulateRgb => 2,
+                TextureMode::ModulateAlphaFromR => 3,
+            }
+        } else {
+            0
+        };
+        let (flip_cols, flip_rows, flip_fps) = match flipbook {
+            Some(fb) => (fb.columns, fb.rows, fb.fps),
+            None => (0, 0, 0.0),
+        };
+
         // Per-effect draw params (group 3), derived from the render mode.
-        let dp = match render {
-            ParticleRender::Billboard { stretch } => DrawParams {
-                stretch,
-                align: 0,
-                trail_width: 0.0,
-                trail_segments: 0,
-            },
-            ParticleRender::Mesh { align, .. } => DrawParams {
-                stretch: 0.0,
-                align: match align {
+        let (stretch, align, trail_width, trail_segments) = match render {
+            ParticleRender::Billboard { stretch } => (stretch, 0, 0.0, 0),
+            ParticleRender::Mesh { align, .. } => (
+                0.0,
+                match align {
                     MeshAlign::Velocity => 0,
                     MeshAlign::Random => 1,
                 },
-                trail_width: 0.0,
-                trail_segments: 0,
-            },
-            ParticleRender::Trail { width, segments } => DrawParams {
-                stretch: 0.0,
-                align: 0,
-                trail_width: width,
-                trail_segments: segments.clamp(1, HISTORY_LEN - 1),
-            },
+                0.0,
+                0,
+            ),
+            ParticleRender::Trail { width, segments } => {
+                (0.0, 0, width, segments.clamp(1, HISTORY_LEN - 1))
+            }
         };
-        let drawparams_bg = build_drawparams_bg(device, self.drawparams_bgl.as_ref().unwrap(), dp);
+        let dp = DrawParams {
+            stretch,
+            align,
+            trail_width,
+            trail_segments,
+            tex_mode,
+            flip_cols,
+            flip_rows,
+            flip_fps,
+        };
+        // Bind the effect's texture, or the shared 1x1 white default. The sprite
+        // sampler is the shared linear-clamp ramp sampler.
+        let sprite_view = match texture.and_then(|t| self.textures.get(t.0 as usize)) {
+            Some(t) => &t.view,
+            None => self.default_tex_view.as_ref().unwrap(),
+        };
+        let sprite_sampler = self.ramp_sampler.as_ref().unwrap();
+        let drawparams_bg = build_drawparams_bg(
+            device,
+            self.drawparams_bgl.as_ref().unwrap(),
+            dp,
+            sprite_view,
+            sprite_sampler,
+        );
 
         let gpu = match program {
             None => EffectGpu::Fixed(build_fixed_gpu(
@@ -911,20 +1022,42 @@ impl ItemTypePlugin for ParticlePlugin {
             ..Default::default()
         });
 
-        // Group 3: per-effect draw params (stretch / mesh align), read in the
-        // vertex stage of both the billboard and mesh pipelines.
+        // Group 3: per-effect draw params (binding 0, read in the vertex stage of
+        // every route and the fragment stage of the billboard routes) plus the
+        // billboard texture (binding 1) and its sampler (binding 2). Every
+        // effect binds a texture here (a 1x1 white default when it has none), so
+        // the billboard fragment always has a valid sampler; the mesh and trail
+        // shaders leave bindings 1/2 unused.
         let drawparams_bgl = device.create_bind_group_layout(&vwgpu::BindGroupLayoutDescriptor {
             label: Some("particle_drawparams_bgl"),
-            entries: &[vwgpu::BindGroupLayoutEntry {
-                binding: 0,
-                visibility: vwgpu::ShaderStages::VERTEX,
-                ty: vwgpu::BindingType::Buffer {
-                    ty: vwgpu::BufferBindingType::Uniform,
-                    has_dynamic_offset: false,
-                    min_binding_size: None,
+            entries: &[
+                vwgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: vwgpu::ShaderStages::VERTEX | vwgpu::ShaderStages::FRAGMENT,
+                    ty: vwgpu::BindingType::Buffer {
+                        ty: vwgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
                 },
-                count: None,
-            }],
+                vwgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: vwgpu::ShaderStages::FRAGMENT,
+                    ty: vwgpu::BindingType::Texture {
+                        sample_type: vwgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: vwgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                vwgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: vwgpu::ShaderStages::FRAGMENT,
+                    ty: vwgpu::BindingType::Sampler(vwgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
         });
 
         // Trail render route bind group layouts. The append pass (compute) reads
@@ -1600,6 +1733,12 @@ impl ItemTypePlugin for ParticlePlugin {
             }
         }
 
+        // Shared 1x1 white texture bound at group 3 for effects with no texture.
+        if self.default_tex_view.is_none() {
+            let tex = build_solid_texture(device, queue, [255, 255, 255, 255]);
+            self.default_tex_view = Some(tex.create_view(&vwgpu::TextureViewDescriptor::default()));
+        }
+
         let dt = items.dt.max(0.0);
 
         // First non-hidden instance per effect drives the simulation and supplies
@@ -2059,11 +2198,14 @@ fn buffer_with_data(
     buf
 }
 
-/// Uniform bind group (group 3) holding a `DrawParams`.
+/// Bind group (group 3): the `DrawParams` uniform (binding 0) plus the effect's
+/// billboard texture (binding 1) and sampler (binding 2).
 fn build_drawparams_bg(
     device: &vwgpu::Device,
     drawparams_bgl: &vwgpu::BindGroupLayout,
     params: DrawParams,
+    texture_view: &vwgpu::TextureView,
+    sampler: &vwgpu::Sampler,
 ) -> vwgpu::BindGroup {
     let buf = buffer_with_data(
         device,
@@ -2074,10 +2216,20 @@ fn build_drawparams_bg(
     device.create_bind_group(&vwgpu::BindGroupDescriptor {
         label: Some("particle_drawparams_bg"),
         layout: drawparams_bgl,
-        entries: &[vwgpu::BindGroupEntry {
-            binding: 0,
-            resource: buf.as_entire_binding(),
-        }],
+        entries: &[
+            vwgpu::BindGroupEntry {
+                binding: 0,
+                resource: buf.as_entire_binding(),
+            },
+            vwgpu::BindGroupEntry {
+                binding: 1,
+                resource: vwgpu::BindingResource::TextureView(texture_view),
+            },
+            vwgpu::BindGroupEntry {
+                binding: 2,
+                resource: vwgpu::BindingResource::Sampler(sampler),
+            },
+        ],
     })
 }
 
@@ -2196,6 +2348,49 @@ fn build_ramp_lut(
         },
         vwgpu::Extent3d {
             width: RAMP_WIDTH,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+    );
+    texture
+}
+
+/// Build a 1x1 `Rgba8UnormSrgb` texture of a single colour (the default sprite
+/// texture for untextured effects).
+fn build_solid_texture(
+    device: &vwgpu::Device,
+    queue: &vwgpu::Queue,
+    rgba: [u8; 4],
+) -> vwgpu::Texture {
+    let texture = device.create_texture(&vwgpu::TextureDescriptor {
+        label: Some("particle_default_texture"),
+        size: vwgpu::Extent3d {
+            width: 1,
+            height: 1,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: vwgpu::TextureDimension::D2,
+        format: vwgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: vwgpu::TextureUsages::TEXTURE_BINDING | vwgpu::TextureUsages::COPY_DST,
+        view_formats: &[],
+    });
+    queue.write_texture(
+        vwgpu::TexelCopyTextureInfo {
+            texture: &texture,
+            mip_level: 0,
+            origin: vwgpu::Origin3d::ZERO,
+            aspect: vwgpu::TextureAspect::All,
+        },
+        &rgba,
+        vwgpu::TexelCopyBufferLayout {
+            offset: 0,
+            bytes_per_row: Some(4),
+            rows_per_image: Some(1),
+        },
+        vwgpu::Extent3d {
+            width: 1,
             height: 1,
             depth_or_array_layers: 1,
         },

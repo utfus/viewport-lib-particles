@@ -62,6 +62,13 @@ pub enum Expr {
     Max(ExprHandle, ExprHandle),
     /// Clamp `x` to `[lo, hi]`.
     Clamp(ExprHandle, ExprHandle, ExprHandle),
+    /// 3D gradient value noise of a `vec3` sample point, roughly in `[-1, 1]`
+    /// (scalar).
+    Noise(ExprHandle),
+    /// Divergence-free curl noise of a `vec3` sample point (`vec3`). Smooth
+    /// turbulent flow; scale the sample point for frequency and the result for
+    /// strength.
+    CurlNoise(ExprHandle),
 }
 
 /// Owns the expression nodes for one effect and hands out [`ExprHandle`]s.
@@ -182,6 +189,16 @@ impl Module {
         self.push(Expr::Clamp(x, lo, hi))
     }
 
+    /// 3D gradient value noise (scalar) of a `vec3` sample point.
+    pub fn noise(&mut self, p: ExprHandle) -> ExprHandle {
+        self.push(Expr::Noise(p))
+    }
+
+    /// Divergence-free curl noise (`vec3`) of a `vec3` sample point.
+    pub fn curl_noise(&mut self, p: ExprHandle) -> ExprHandle {
+        self.push(Expr::CurlNoise(p))
+    }
+
     /// Read a node by handle.
     pub(crate) fn get(&self, handle: ExprHandle) -> &Expr {
         &self.nodes[handle.0 as usize]
@@ -221,7 +238,9 @@ impl Module {
                 | Expr::Cos(a)
                 | Expr::Splat3(a)
                 | Expr::Normalize(a)
-                | Expr::Length(a) => stack.push(a.0),
+                | Expr::Length(a)
+                | Expr::Noise(a)
+                | Expr::CurlNoise(a) => stack.push(a.0),
                 Expr::Clamp(x, lo, hi) => {
                     stack.push(x.0);
                     stack.push(lo.0);

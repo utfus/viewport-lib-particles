@@ -17,6 +17,7 @@ mod showcase_04_render_routes;
 mod showcase_05_refraction;
 mod showcase_06_interaction;
 mod showcase_07_textures;
+mod showcase_08_turbulence;
 mod viewport_callback;
 
 use eframe::egui;
@@ -42,6 +43,7 @@ enum ShowcaseMode {
     Refraction,
     Interaction,
     Textures,
+    Turbulence,
 }
 
 impl ShowcaseMode {
@@ -53,6 +55,7 @@ impl ShowcaseMode {
         ShowcaseMode::Refraction,
         ShowcaseMode::Interaction,
         ShowcaseMode::Textures,
+        ShowcaseMode::Turbulence,
     ];
 
     fn label(self) -> &'static str {
@@ -64,6 +67,7 @@ impl ShowcaseMode {
             ShowcaseMode::Refraction => "5: Refraction",
             ShowcaseMode::Interaction => "6: Interaction",
             ShowcaseMode::Textures => "7: Textures",
+            ShowcaseMode::Turbulence => "8: Turbulence",
         }
     }
 
@@ -124,6 +128,10 @@ fn main() -> eframe::Result {
                 .collect();
             let render_route_ids = showcase_04_render_routes::register(&mut plugin, device);
             let texture_ids = showcase_07_textures::register(&mut plugin, device, queue);
+            let turbulence_ids: Vec<EffectId> = showcase_08_turbulence::presets()
+                .into_iter()
+                .map(|(_, asset)| plugin.add_effect(device, asset))
+                .collect();
             let interaction_id = showcase_06_interaction::presets()
                 .into_iter()
                 .map(|(_, asset)| plugin.add_effect(device, asset))
@@ -162,6 +170,7 @@ fn main() -> eframe::Result {
                 gradient_ids,
                 render_route_ids,
                 texture_ids,
+                turbulence_ids,
                 emitters: showcase_01_emitters::State::default(),
                 expression: showcase_02_expression::State::default(),
                 gradients: showcase_03_gradients::State::default(),
@@ -171,6 +180,7 @@ fn main() -> eframe::Result {
                 ground_mesh,
                 interaction: showcase_06_interaction::State::default(),
                 textures: showcase_07_textures::State::default(),
+                turbulence: showcase_08_turbulence::State::default(),
             }))
         }),
     )
@@ -190,6 +200,7 @@ struct App {
     gradient_ids: Vec<EffectId>,
     render_route_ids: Vec<EffectId>,
     texture_ids: Vec<EffectId>,
+    turbulence_ids: Vec<EffectId>,
     emitters: showcase_01_emitters::State,
     expression: showcase_02_expression::State,
     gradients: showcase_03_gradients::State,
@@ -199,6 +210,7 @@ struct App {
     ground_mesh: MeshId,
     interaction: showcase_06_interaction::State,
     textures: showcase_07_textures::State,
+    turbulence: showcase_08_turbulence::State,
 }
 
 impl eframe::App for App {
@@ -260,6 +272,9 @@ impl eframe::App for App {
                     showcase_06_interaction::controls(&mut self.interaction, ui)
                 }
                 ShowcaseMode::Textures => showcase_07_textures::controls(&mut self.textures, ui),
+                ShowcaseMode::Turbulence => {
+                    showcase_08_turbulence::controls(&mut self.turbulence, ui)
+                }
             });
 
         // ---- Central panel: viewport ----
@@ -345,6 +360,9 @@ impl eframe::App for App {
                     ),
                     ShowcaseMode::Textures => {
                         showcase_07_textures::items(&self.texture_ids, &self.textures, dt)
+                    }
+                    ShowcaseMode::Turbulence => {
+                        showcase_08_turbulence::items(&self.turbulence_ids, &self.turbulence, dt)
                     }
                     ShowcaseMode::Refraction | ShowcaseMode::Interaction => {
                         unreachable!("handled above")

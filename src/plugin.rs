@@ -14,10 +14,10 @@
 //! camera-facing billboards in the HDR scene pass. No per-particle work happens
 //! on the CPU.
 //!
-//! Phase 2 is fixed-function: one simulation per registered effect, driven by
-//! the first non-hidden instance of that effect (its position is the emitter
-//! origin). Multiple instances of one effect, and per-effect expression codegen,
-//! come later.
+//! There is one simulation per registered effect, driven by the first non-hidden
+//! instance of that effect (its position is the emitter origin). Per-frame
+//! overrides on that instance tune the emitter, forces, gradient, and program
+//! properties without re-registering the effect.
 
 use std::any::Any;
 use std::collections::HashMap;
@@ -441,7 +441,7 @@ struct TrailGpu {
     draw_bg: vwgpu::BindGroup,
 }
 
-/// Fixed-function effect GPU state (Phase 2 emitter path).
+/// Fixed-function effect GPU state (the emitter path).
 struct FixedGpu {
     /// Persistent particle buffer; the bind groups alias it, so it is held but
     /// not read directly.
@@ -576,6 +576,10 @@ pub struct ParticlePlugin {
     /// Effects with live simulation this frame, drawn in `paint` and the
     /// interaction passes.
     draw_list: Vec<DrawEntry>,
+
+    /// Elapsed simulation time in seconds, accumulated from each frame's `dt`.
+    /// Scrolls time-varying fields such as the `CurlNoise` force.
+    time: f32,
 }
 
 /// One effect drawn this frame, with the driving item's interaction flags.
@@ -710,7 +714,7 @@ impl ParticlePlugin {
     }
 
     /// Build effect `idx`'s GPU state if it does not exist yet. Fixed-function
-    /// effects get the shared Phase 2 pipelines; effects with a program compile
+    /// effects get the shared fixed-function pipelines; effects with a program compile
     /// (or reuse from the cache) their own emit/simulate pipelines.
     fn ensure_effect_gpu(
         &mut self,
@@ -1130,12 +1134,14 @@ impl ItemTypePlugin for ParticlePlugin {
             "particle_emit",
             &emit_bgl,
         );
-        let sim_pipeline = compute(
-            include_str!("shaders/particle_sim.wgsl"),
-            "sim_main",
-            "particle_sim",
-            &sim_bgl,
+        // Prepend the shared curl-noise helpers so the CurlNoise force can call
+        // them (same source of truth as the codegen noise ops).
+        let sim_src = format!(
+            "{}\n{}",
+            codegen::NOISE_WGSL,
+            include_str!("shaders/particle_sim.wgsl")
         );
+        let sim_pipeline = compute(&sim_src, "sim_main", "particle_sim", &sim_bgl);
         let append_pipeline = compute(
             include_str!("shaders/particle_history.wgsl"),
             "history_main",
@@ -1740,6 +1746,10 @@ impl ItemTypePlugin for ParticlePlugin {
         }
 
         let dt = items.dt.max(0.0);
+        // Advance the shared simulation clock once per frame (drives time-varying
+        // fields such as the CurlNoise force).
+        self.time += dt;
+        let time = self.time;
 
         // First non-hidden instance per effect drives the simulation and supplies
         // the emitter origin, interaction flags (pick id / selected / cast
@@ -1818,7 +1828,7 @@ impl ItemTypePlugin for ParticlePlugin {
                     let forces = item.forces.as_deref().unwrap_or(&asset.forces);
                     let emit =
                         build_emit_params(emitter, origin, capacity, spawn_count, rng_seed);
-                    let sim = build_sim_params(forces, dt);
+                    let sim = build_sim_params(forces, dt, time);
                     queue.write_buffer(&g.emit_buf, 0, bytemuck::bytes_of(&emit));
                     queue.write_buffer(&g.sim_buf, 0, bytemuck::bytes_of(&sim));
                     queue.write_buffer(&g.budget_buf, 0, bytemuck::bytes_of(&0u32));
@@ -1835,7 +1845,7 @@ impl ItemTypePlugin for ParticlePlugin {
                     let gp = GenParams {
                         origin: [origin[0], origin[1], origin[2], 0.0],
                         dt,
-                        time: 0.0,
+                        time,
                         spawn_count,
                         capacity,
                         rng_seed,
@@ -2909,7 +2919,7 @@ fn build_emit_params(
     p
 }
 
-fn build_sim_params(forces: &[ForceModifier], dt: f32) -> SimParamsGpu {
+fn build_sim_params(forces: &[ForceModifier], dt: f32, time: f32) -> SimParamsGpu {
     let mut p = SimParamsGpu::zeroed();
     let n = forces.len().min(MAX_FORCES);
     for (i, f) in forces.iter().take(n).enumerate() {
@@ -2930,8 +2940,16 @@ fn build_sim_params(forces: &[ForceModifier], dt: f32) -> SimParamsGpu {
                 data0: [position[0], position[1], position[2], 2.0],
                 data1: [strength, falloff, 0.0, 0.0],
             },
+            ForceModifier::CurlNoise {
+                scale,
+                strength,
+                speed,
+            } => GpuForce {
+                data0: [0.0, 0.0, 0.0, 3.0],
+                data1: [scale, strength, speed, 0.0],
+            },
         };
     }
-    p.misc = [dt, 0.0, 0.0, n as f32];
+    p.misc = [dt, time, 0.0, n as f32];
     p
 }

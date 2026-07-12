@@ -1,11 +1,11 @@
 //! Effect assets: the authored description of one kind of effect.
 //!
-//! Phase 2 is fixed-function: an [`EffectAsset`] carries a concrete [`Emitter`]
-//! (spawn rate, shape, velocity, lifetime, colour, size) and a list of
-//! [`ForceModifier`]s, which the plugin runs directly as emit + simulate compute
-//! passes. There is no per-attribute expression logic yet; the expression graph
-//! ([`Module`](crate::Module) / [`Expr`](crate::Expr)) and modifier codegen are
-//! the Phase 3 path that will supersede this fixed set.
+//! An [`EffectAsset`] can be fixed-function: a concrete [`Emitter`] (spawn rate,
+//! shape, velocity, lifetime, colour, size) and a list of [`ForceModifier`]s,
+//! which the plugin runs directly as emit + simulate compute passes. For richer
+//! behaviour it can instead carry an [`EffectProgram`] built from the expression
+//! graph ([`Module`](crate::Module) / [`Expr`](crate::Expr)), which the modifier
+//! codegen lowers to per-effect kernels in place of the fixed set.
 //!
 //! An asset carries no GPU state. Register it with a
 //! [`ParticlePlugin`](crate::ParticlePlugin) to get an [`EffectId`]; the plugin
@@ -215,6 +215,18 @@ pub enum ForceModifier {
         strength: f32,
         /// Softening distance that tames the singularity at the center.
         falloff: f32,
+    },
+    /// Curl-noise turbulence: a divergence-free vector field sampled at the
+    /// particle's position and added as acceleration, giving smooth swirling
+    /// flow (smoke, fire). Divergence-free means particles never converge to
+    /// sinks or spread from sources, so the motion looks like a fluid.
+    CurlNoise {
+        /// Spatial frequency of the field. Higher is finer and more chaotic.
+        scale: f32,
+        /// Acceleration magnitude applied along the curl field.
+        strength: f32,
+        /// How fast the field scrolls over time (0 is a static field).
+        speed: f32,
     },
 }
 

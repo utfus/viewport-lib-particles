@@ -16,7 +16,9 @@ struct Particle {
 };
 
 // kind (data0.w): 0 = accel (data0.xyz), 1 = drag (data1.z),
-//                 2 = attractor (data0.xyz pos, data1.x strength, data1.y falloff)
+//                 2 = attractor (data0.xyz pos, data1.x strength, data1.y falloff),
+//                 3 = curl noise (data1.x scale, data1.y strength, data1.z speed).
+// Curl-noise helpers (value_noise / curl_noise) are prepended at pipeline build.
 struct Force {
     data0: vec4<f32>,
     data1: vec4<f32>,
@@ -42,6 +44,7 @@ fn sim_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     }
 
     let dt = params.misc.x;
+    let time = params.misc.y;
     let count = u32(params.misc.w);
     var accel = vec3<f32>(0.0, 0.0, 0.0);
     var drag = 0.0;
@@ -58,6 +61,9 @@ fn sim_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             let dist = length(to);
             let soft = dist + f.data1.y;
             accel += (to / max(dist, 1e-4)) * (f.data1.x / (soft * soft));
+        } else if (kind == 3u) {
+            let domain = p.position * f.data1.x + vec3<f32>(time * f.data1.z);
+            accel += curl_noise(domain) * f.data1.y;
         }
     }
 

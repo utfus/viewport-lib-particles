@@ -10,8 +10,8 @@
 //!
 //! The generated shaders bind the same layout as the fixed-function kernels
 //! (particles at binding 0, a params uniform at binding 1, and, for emit, the
-//! spawn-budget atomic at binding 2), so the plugin reuses the Phase 2 bind
-//! group layouts and only swaps the pipelines.
+//! spawn-budget atomic at binding 2), so the plugin reuses the fixed-function
+//! bind group layouts and only swaps the pipelines.
 
 use crate::effect::{Attribute, EffectProgram, PropertyDecl, PropertyValue, UpdateOp};
 use crate::expr::{Expr, ExprHandle, Module};
@@ -64,6 +64,52 @@ struct GenParams {
     pad1: u32,
     pad2: u32,
 };
+"#;
+
+/// 3D gradient (Perlin-style) value noise and divergence-free curl noise. Shared
+/// by the fixed-function `CurlNoise` force (prepended to `particle_sim.wgsl`) and
+/// the `noise` / `curl_noise` expression ops (prepended to generated kernels).
+pub(crate) const NOISE_WGSL: &str = r#"
+fn pn_hash33(p: vec3<f32>) -> vec3<f32> {
+    var p3 = fract(p * vec3<f32>(0.1031, 0.1030, 0.0973));
+    p3 += dot(p3, p3.yxz + 33.33);
+    return fract((p3.xxy + p3.yxx) * p3.zyx) * 2.0 - 1.0;
+}
+fn value_noise(p: vec3<f32>) -> f32 {
+    let i = floor(p);
+    let f = fract(p);
+    let u = f * f * (3.0 - 2.0 * f);
+    let g000 = dot(pn_hash33(i + vec3<f32>(0.0, 0.0, 0.0)), f - vec3<f32>(0.0, 0.0, 0.0));
+    let g100 = dot(pn_hash33(i + vec3<f32>(1.0, 0.0, 0.0)), f - vec3<f32>(1.0, 0.0, 0.0));
+    let g010 = dot(pn_hash33(i + vec3<f32>(0.0, 1.0, 0.0)), f - vec3<f32>(0.0, 1.0, 0.0));
+    let g110 = dot(pn_hash33(i + vec3<f32>(1.0, 1.0, 0.0)), f - vec3<f32>(1.0, 1.0, 0.0));
+    let g001 = dot(pn_hash33(i + vec3<f32>(0.0, 0.0, 1.0)), f - vec3<f32>(0.0, 0.0, 1.0));
+    let g101 = dot(pn_hash33(i + vec3<f32>(1.0, 0.0, 1.0)), f - vec3<f32>(1.0, 0.0, 1.0));
+    let g011 = dot(pn_hash33(i + vec3<f32>(0.0, 1.0, 1.0)), f - vec3<f32>(0.0, 1.0, 1.0));
+    let g111 = dot(pn_hash33(i + vec3<f32>(1.0, 1.0, 1.0)), f - vec3<f32>(1.0, 1.0, 1.0));
+    let x00 = mix(g000, g100, u.x);
+    let x10 = mix(g010, g110, u.x);
+    let x01 = mix(g001, g101, u.x);
+    let x11 = mix(g011, g111, u.x);
+    return mix(mix(x00, x10, u.y), mix(x01, x11, u.y), u.z);
+}
+fn pn_potential(p: vec3<f32>) -> vec3<f32> {
+    let o = vec3<f32>(31.416, 47.853, 12.793);
+    return vec3<f32>(value_noise(p), value_noise(p + o), value_noise(p + 2.0 * o));
+}
+fn curl_noise(p: vec3<f32>) -> vec3<f32> {
+    let e = 0.1;
+    let dx = vec3<f32>(e, 0.0, 0.0);
+    let dy = vec3<f32>(0.0, e, 0.0);
+    let dz = vec3<f32>(0.0, 0.0, e);
+    let x = (pn_potential(p + dy).z - pn_potential(p - dy).z)
+          - (pn_potential(p + dz).y - pn_potential(p - dz).y);
+    let y = (pn_potential(p + dz).x - pn_potential(p - dz).x)
+          - (pn_potential(p + dx).z - pn_potential(p - dx).z);
+    let z = (pn_potential(p + dx).y - pn_potential(p - dx).y)
+          - (pn_potential(p + dy).x - pn_potential(p - dy).x);
+    return vec3<f32>(x, y, z) / (2.0 * e);
+}
 "#;
 
 /// Random helpers, emit kernel only.
@@ -160,6 +206,8 @@ fn lower_node(module: &Module, i: u32, ctx: Ctx) -> String {
         Expr::Min(a, b) => format!("min(v{}, v{})", a.0, b.0),
         Expr::Max(a, b) => format!("max(v{}, v{})", a.0, b.0),
         Expr::Clamp(x, lo, hi) => format!("clamp(v{}, v{}, v{})", x.0, lo.0, hi.0),
+        Expr::Noise(a) => format!("value_noise(v{})", a.0),
+        Expr::CurlNoise(a) => format!("curl_noise(v{})", a.0),
     }
 }
 
@@ -233,6 +281,7 @@ struct Budget {{ count: atomic<u32> }};
 @group(0) @binding(2) var<storage, read_write> budget: Budget;
 @group(0) @binding(3) var<uniform> props: Properties;
 {RNG_HELPERS}
+{NOISE_WGSL}
 @compute @workgroup_size(64)
 fn emit_main(@builtin(global_invocation_id) gid: vec3<u32>) {{
     let i = gid.x;
@@ -289,7 +338,7 @@ fn generate_sim(program: &EffectProgram) -> String {
 @group(0) @binding(0) var<storage, read_write> particles: array<Particle>;
 @group(0) @binding(1) var<uniform> params: GenParams;
 @group(0) @binding(2) var<uniform> props: Properties;
-
+{NOISE_WGSL}
 @compute @workgroup_size(64)
 fn sim_main(@builtin(global_invocation_id) gid: vec3<u32>) {{
     let i = gid.x;

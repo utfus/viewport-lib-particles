@@ -3,7 +3,7 @@
 //! Particles that bend the scene behind them (shockwaves, heat haze) cannot be
 //! done in the [`ParticlePlugin`](crate::ParticlePlugin) draw: that pass has no
 //! readable copy of the scene colour. Refraction is a screen-space effect, so it
-//! belongs on the other plugin seam `viewport-lib` exposes: a [`GpuPlugin`] whose
+//! uses the other plugin type `viewport-lib` exposes: a [`GpuPlugin`] whose
 //! `post_paint` runs after the scene is painted and can sample the rendered
 //! colour.
 //!

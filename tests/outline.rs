@@ -1,4 +1,4 @@
-//! Phase 8 verification: a selected particle system drives the outline mask.
+//! A selected particle system drives the outline mask.
 //!
 //! With `interaction.outline_selected` on and the item marked `selected`, the lib
 //! runs its outline offscreen pass, which dispatches the plugin's `outline_mask`.

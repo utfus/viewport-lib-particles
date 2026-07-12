@@ -29,7 +29,7 @@
 //!
 //! Screen-space effects that bend the scene behind particles (shockwaves, heat
 //! haze) cannot be done in the particle draw, which has no readable copy of the
-//! scene colour. Those live on the other seam `viewport-lib` exposes: see
+//! scene colour. Those run on the other plugin type `viewport-lib` exposes: see
 //! [`RefractionPlugin`], a companion `GpuPlugin` that distorts the rendered
 //! colour in a `post_paint` pass.
 //!

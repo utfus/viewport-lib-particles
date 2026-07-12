@@ -1,4 +1,4 @@
-//! Showcase 7: Textures (Phase 12).
+//! Showcase 7: Textures.
 //!
 //! Three billboard effects driven by procedurally-synthesised textures (no asset
 //! files): a soft smoke puff (`TextureMode::Modulate`, alpha-blended), an

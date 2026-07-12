@@ -1,4 +1,4 @@
-//! Phase 5 verification: the trail render route draws.
+//! The trail render route draws.
 //!
 //! Registers a fountain whose particles are drawn as ribbon trails, runs enough
 //! frames for the position history to fill in, and reads back the center pixel to

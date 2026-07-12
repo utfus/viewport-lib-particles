@@ -1,4 +1,4 @@
-//! Phase 6 verification: the refraction GpuPlugin distorts the scene colour.
+//! The refraction GpuPlugin distorts the scene colour.
 //!
 //! Feeds the plugin a known horizontal gradient as the "scene colour", runs its
 //! `post_paint` with an expanding ring centered on the frame, and reads back the

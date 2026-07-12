@@ -1,4 +1,4 @@
-//! Phase 2 verification: the plugin emits, simulates, and draws real particles.
+//! The plugin emits, simulates, and draws real particles.
 //!
 //! Registers a point-spawn effect at the origin, runs several frames (each an
 //! emit + simulate + draw), and reads back the center pixel to confirm the

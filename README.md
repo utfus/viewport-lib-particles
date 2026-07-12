@@ -25,7 +25,7 @@ The heavy, fast-moving surface of a full VFX system (expression codegen, the
 modifier library, gradient assets, GPU sorting) does not belong in
 `viewport-lib`'s compatibility-frozen core API. Keeping it in a sibling crate
 lets it version and iterate independently while plugging into the renderer at
-the documented `ItemTypePlugin` seam. This mirrors how `viewport-lib-wind` and
+the documented `ItemTypePlugin` interface. This mirrors how `viewport-lib-wind` and
 the skinning plugin live outside core.
 
 ## Target usage

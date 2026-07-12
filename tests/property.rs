@@ -1,4 +1,4 @@
-//! Phase 11 verification: a runtime property read in the expression graph, and
+//! A runtime property read in the expression graph, and
 //! the per-frame value override channel on `ParticleItem`.
 //!
 //! Builds a program whose per-particle colour is a declared `vec3` property

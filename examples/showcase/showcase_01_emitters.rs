@@ -1,6 +1,6 @@
 //! Showcase 1: Emitters.
 //!
-//! Demonstrates the Phase 2 fixed-function feature set through a set of preset
+//! Demonstrates the fixed-function feature set through a set of preset
 //! effects: point / box / sphere spawn shapes, fixed / cone velocity, gravity /
 //! drag / attractor forces, and additive / alpha blend. Every preset is
 //! registered at startup (effects cannot be added after the plugin is handed to
@@ -123,8 +123,8 @@ pub struct State {
     pub paused: bool,
     /// Emitter origin in world space (moved by the sliders).
     pub position: [f32; 3],
-    /// Live multipliers applied to the preset's base emitter each frame
-    /// (Phase 11 per-frame emitter override). All default to 1.0.
+    /// Live multipliers applied to the preset's base emitter each frame via the
+    /// per-frame emitter override. All default to 1.0.
     pub rate_mul: f32,
     pub lifetime_mul: f32,
     pub size_mul: f32,

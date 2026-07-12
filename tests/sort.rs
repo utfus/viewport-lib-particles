@@ -1,4 +1,4 @@
-//! Phase 7 verification: the depth-sort path runs and draws.
+//! The depth-sort path runs and draws.
 //!
 //! A non-additive (alpha) effect triggers the per-frame key + bitonic sort in
 //! `prepare`, and the draw reads particles through the sorted order buffer. This

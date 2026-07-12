@@ -1,4 +1,4 @@
-//! Phase 8 verification: the shadow-cast pipeline encodes cleanly.
+//! The shadow-cast pipeline encodes cleanly.
 //!
 //! Enables a shadow-casting directional light and renders an effect whose items
 //! cast shadows (the default). This exercises `cast_shadow_pass` once per

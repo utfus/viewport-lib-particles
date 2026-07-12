@@ -1,4 +1,4 @@
-//! Phase 12 verification: a billboard texture modulates the particle colour.
+//! A billboard texture modulates the particle colour.
 //!
 //! Draws the same white-emitting effect twice with `TextureMode::Modulate`, once
 //! through a solid-red texture and once through a solid-green one. Both blend
@@ -60,9 +60,9 @@ fn frame_looking_at_origin() -> FrameData {
 }
 
 /// A sparse, low-alpha white-emitting billboard cloud held at the origin. Kept
-/// deliberately dim so additive accumulation stays well below saturation — the
-/// texture's colour then shows as a clear channel gap rather than everything
-/// clamping to ~255.
+/// deliberately dim so additive accumulation stays well below saturation, so the
+/// texture's colour shows as a clear channel gap rather than everything clamping
+/// to ~255.
 fn white_effect() -> EffectAsset {
     EffectAsset::new("tex")
         .with_capacity(4_000)
@@ -132,7 +132,7 @@ fn texture_modulates_colour() {
     let (gr, gg, _gb) = run(&device, &queue, [0, 255, 0, 255]);
 
     // The red-textured run must show more red than the green-textured run, and
-    // vice versa for green — proving the sampled texel drives the colour.
+    // vice versa for green, proving the sampled texel drives the colour.
     assert!(
         rr > gr + 40,
         "red texture not redder than green run: red-run r{rr}, green-run r{gr}"

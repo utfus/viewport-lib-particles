@@ -1,4 +1,4 @@
-//! Phase 5 verification: the mesh render route draws.
+//! The mesh render route draws.
 //!
 //! Uploads a cube mesh, registers an effect that instances it per particle at
 //! the origin, runs a few frames, and reads back the center pixel to confirm the

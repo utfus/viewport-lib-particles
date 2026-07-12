@@ -1,4 +1,4 @@
-//! Phase 4 verification: a colour-over-lifetime gradient drives the draw.
+//! A colour-over-lifetime gradient drives the draw.
 //!
 //! An effect with a white emitter colour and a green->red ramp is sampled by
 //! particle age. With fresh particles (age near 0) the center pixel reads green,

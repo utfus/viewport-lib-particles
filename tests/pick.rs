@@ -1,4 +1,4 @@
-//! Phase 8 verification: a particle system is GPU-pickable through `render_pick`.
+//! A particle system is GPU-pickable through `render_pick`.
 //!
 //! Registers a dense effect at the origin with a known pick id, renders a few
 //! frames to populate the particle buffer, then runs the renderer's GPU pick at

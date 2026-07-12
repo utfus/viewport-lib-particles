@@ -1,7 +1,7 @@
 //! Showcase 5: Refraction.
 //!
-//! The companion `RefractionPlugin` is a `GpuPlugin`, a different seam from the
-//! particle `ItemTypePlugin`: it runs after the scene is painted and samples the
+//! The companion `RefractionPlugin` is a `GpuPlugin`, a different plugin type
+//! from the particle `ItemTypePlugin`: it runs after the scene is painted and samples the
 //! rendered colour. This showcase drives it directly (eframe paints through the
 //! renderer's pass path, so there is no runtime `post_paint` call to hook): each
 //! frame it renders a textured backdrop into an offscreen target, runs the
@@ -364,5 +364,5 @@ pub fn controls(state: &mut State, ui: &mut egui::Ui) {
     ui.separator();
     ui.label("An expanding ring re-samples the scene colour, bending the");
     ui.label("backdrop like a heat haze. Runs as a GpuPlugin (post_paint),");
-    ui.label("a separate seam from the particle draw.");
+    ui.label("separate from the particle draw.");
 }

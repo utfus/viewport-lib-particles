@@ -1,4 +1,4 @@
-//! Phase 3 verification: an effect authored via the expression graph compiles
+//! An effect authored via the expression graph compiles
 //! to emit/simulate kernels and draws.
 //!
 //! Builds a program whose per-particle colour comes from a random draw (which

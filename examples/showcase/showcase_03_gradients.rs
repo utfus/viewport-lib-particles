@@ -92,7 +92,7 @@ pub struct State {
     pub paused: bool,
     pub position: [f32; 3],
     /// When true, the ramp is rebuilt from the sliders below and applied as a
-    /// per-frame gradient override (Phase 11 live gradient-key editing). When
+    /// per-frame gradient override (live gradient-key editing). When
     /// false, the preset's baked ramp is used.
     pub live_gradient: bool,
     /// Colour ramp endpoints (hue) and their HDR intensity multipliers.

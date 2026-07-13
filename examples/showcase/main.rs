@@ -18,6 +18,7 @@ mod showcase_05_refraction;
 mod showcase_06_interaction;
 mod showcase_07_textures;
 mod showcase_08_turbulence;
+mod showcase_09_subemitters;
 mod viewport_callback;
 
 use eframe::egui;
@@ -44,6 +45,7 @@ enum ShowcaseMode {
     Interaction,
     Textures,
     Turbulence,
+    SubEmitters,
 }
 
 impl ShowcaseMode {
@@ -56,6 +58,7 @@ impl ShowcaseMode {
         ShowcaseMode::Interaction,
         ShowcaseMode::Textures,
         ShowcaseMode::Turbulence,
+        ShowcaseMode::SubEmitters,
     ];
 
     fn label(self) -> &'static str {
@@ -68,6 +71,7 @@ impl ShowcaseMode {
             ShowcaseMode::Interaction => "6: Interaction",
             ShowcaseMode::Textures => "7: Textures",
             ShowcaseMode::Turbulence => "8: Turbulence",
+            ShowcaseMode::SubEmitters => "9: Sub-emitters",
         }
     }
 
@@ -132,6 +136,7 @@ fn main() -> eframe::Result {
                 .into_iter()
                 .map(|(_, asset)| plugin.add_effect(device, asset))
                 .collect();
+            let subemitter_ids = showcase_09_subemitters::register(&mut plugin, device);
             let interaction_id = showcase_06_interaction::presets()
                 .into_iter()
                 .map(|(_, asset)| plugin.add_effect(device, asset))
@@ -181,6 +186,8 @@ fn main() -> eframe::Result {
                 interaction: showcase_06_interaction::State::default(),
                 textures: showcase_07_textures::State::default(),
                 turbulence: showcase_08_turbulence::State::default(),
+                subemitter_ids,
+                subemitters: showcase_09_subemitters::State::default(),
             }))
         }),
     )
@@ -211,6 +218,8 @@ struct App {
     interaction: showcase_06_interaction::State,
     textures: showcase_07_textures::State,
     turbulence: showcase_08_turbulence::State,
+    subemitter_ids: showcase_09_subemitters::Ids,
+    subemitters: showcase_09_subemitters::State,
 }
 
 impl eframe::App for App {
@@ -274,6 +283,9 @@ impl eframe::App for App {
                 ShowcaseMode::Textures => showcase_07_textures::controls(&mut self.textures, ui),
                 ShowcaseMode::Turbulence => {
                     showcase_08_turbulence::controls(&mut self.turbulence, ui)
+                }
+                ShowcaseMode::SubEmitters => {
+                    showcase_09_subemitters::controls(&mut self.subemitters, ui)
                 }
             });
 
@@ -363,6 +375,9 @@ impl eframe::App for App {
                     }
                     ShowcaseMode::Turbulence => {
                         showcase_08_turbulence::items(&self.turbulence_ids, &self.turbulence, dt)
+                    }
+                    ShowcaseMode::SubEmitters => {
+                        showcase_09_subemitters::items(&self.subemitter_ids, &self.subemitters, dt)
                     }
                     ShowcaseMode::Refraction | ShowcaseMode::Interaction => {
                         unreachable!("handled above")

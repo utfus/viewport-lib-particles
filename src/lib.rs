@@ -65,9 +65,10 @@ mod plugin;
 mod refraction;
 
 pub use effect::{
-    Attribute, EffectAsset, EffectId, EffectProgram, Emitter, Flipbook, ForceModifier, Gradient,
-    MeshAlign, ParticleBlend, ParticleMeshId, ParticleRender, ParticleTextureId, PropertyDecl,
-    PropertyValue, SetAttribute, SpawnRate, SpawnShape, TextureMode, UpdateOp, VelocityDist,
+    Attribute, EffectAsset, EffectId, EffectProgram, Emitter, EventCondition, Flipbook,
+    ForceModifier, Gradient, MeshAlign, ParticleBlend, ParticleMeshId, ParticleRender,
+    ParticleTextureId, PropertyDecl, PropertyValue, SetAttribute, SpawnRate, SpawnShape,
+    SubEmitter, TextureMode, UpdateOp, VelocityDist,
 };
 pub use expr::{Expr, ExprHandle, Module};
 pub use plugin::{ParticleItem, ParticleItems, ParticlePlugin};

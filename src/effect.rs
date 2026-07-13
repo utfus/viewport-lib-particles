@@ -529,6 +529,63 @@ impl Default for Emitter {
     }
 }
 
+/// When a parent effect produces spawn events for its child.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EventCondition {
+    /// One trigger per live parent particle each simulation step. Suited to
+    /// continuous streams: a rocket laying down a smoke trail.
+    EveryStep,
+    /// One trigger when a parent particle dies (its lifetime crosses zero).
+    /// Suited to bursts: a firework shell breaking into sparks at its apex.
+    OnDeath,
+}
+
+/// Links a parent effect to a child effect so parent particles spawn child
+/// particles on the GPU.
+///
+/// The parent's simulate pass appends spawn events (the parent particle's
+/// position and velocity) into a shared buffer; the child's emit pass consumes
+/// them, seeding new particles at the event position. The child keeps its own
+/// spawn shape, velocity distribution, lifetime, colour, and size, so it shapes
+/// the burst; set the child emitter's rate to zero for a purely event-driven
+/// child.
+///
+/// Both effects must be fixed-function (no [`EffectProgram`]). Register the child
+/// before the parent so the parent can name it. The plugin orders the passes
+/// (parent simulate before child emit) automatically.
+#[derive(Clone, Copy, Debug)]
+pub struct SubEmitter {
+    /// The child effect that consumes this parent's events.
+    pub child: EffectId,
+    /// When the parent produces events.
+    pub condition: EventCondition,
+    /// Child particles spawned per trigger. Bounded by the child's capacity.
+    pub count: u32,
+    /// Fraction of the parent particle's velocity handed to each child particle,
+    /// added on top of the child's own velocity distribution. `0` ignores the
+    /// parent velocity; `1` matches it.
+    pub inherit_velocity: f32,
+}
+
+impl SubEmitter {
+    /// A sub-emitter that spawns `count` child particles per trigger under
+    /// `condition`, inheriting none of the parent velocity.
+    pub fn new(child: EffectId, condition: EventCondition, count: u32) -> Self {
+        Self {
+            child,
+            condition,
+            count,
+            inherit_velocity: 0.0,
+        }
+    }
+
+    /// Hand each child particle `fraction` of the parent particle's velocity.
+    pub fn with_inherit_velocity(mut self, fraction: f32) -> Self {
+        self.inherit_velocity = fraction;
+        self
+    }
+}
+
 /// The authored description of one effect.
 ///
 /// Carries no GPU state. Register it with a
@@ -568,6 +625,9 @@ pub struct EffectAsset {
     /// Optional flipbook animation over [`texture`](Self::texture) treated as an
     /// atlas. `None` samples the whole texture.
     pub flipbook: Option<Flipbook>,
+    /// Optional sub-emitter: this effect's particles spawn particles in a child
+    /// effect on the GPU. `None` for a leaf effect. Fixed-function only.
+    pub sub_emitter: Option<SubEmitter>,
 }
 
 impl Default for EffectAsset {
@@ -584,6 +644,7 @@ impl Default for EffectAsset {
             texture: None,
             texture_mode: TextureMode::default(),
             flipbook: None,
+            sub_emitter: None,
         }
     }
 }
@@ -658,6 +719,14 @@ impl EffectAsset {
     /// Animate the texture as a flipbook atlas.
     pub fn with_flipbook(mut self, flipbook: Flipbook) -> Self {
         self.flipbook = Some(flipbook);
+        self
+    }
+
+    /// Spawn particles in a child effect from this effect's particles. See
+    /// [`SubEmitter`]. Fixed-function only; ignored if either effect carries a
+    /// program.
+    pub fn with_sub_emitter(mut self, sub_emitter: SubEmitter) -> Self {
+        self.sub_emitter = Some(sub_emitter);
         self
     }
 }

@@ -40,9 +40,9 @@ use viewport_lib::wgpu as vwgpu;
 
 use crate::codegen;
 use crate::effect::{
-    EffectAsset, EffectId, EffectProgram, Emitter, ForceModifier, Gradient, MeshAlign,
-    ParticleBlend, ParticleMeshId, ParticleRender, ParticleTextureId, PropertyDecl, PropertyValue,
-    SpawnRate, SpawnShape, TextureMode, VelocityDist,
+    EffectAsset, EffectId, EffectProgram, Emitter, EventCondition, ForceModifier, Gradient,
+    MeshAlign, ParticleBlend, ParticleMeshId, ParticleRender, ParticleTextureId, PropertyDecl,
+    PropertyValue, SpawnRate, SpawnShape, TextureMode, VelocityDist,
 };
 
 /// MSAA sample count the plugin builds its pipelines for. A plugin cannot read
@@ -250,14 +250,35 @@ struct GpuForce {
     data1: [f32; 4],
 }
 
-/// Simulate-pass parameters. Matches `SimParams` in `particle_sim.wgsl`.
+/// Simulate-pass parameters. Matches `SimParams` in `particle_sim.wgsl` (and,
+/// with the extra `event` lane read, `particle_sim_parent.wgsl`). The `event`
+/// lane trails the forces array, so the non-parent sim shader, whose struct ends
+/// at `forces`, reads the same buffer unchanged.
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct SimParamsGpu {
     /// dt, time, _, force_count.
     misc: [f32; 4],
     forces: [GpuForce; MAX_FORCES],
+    /// Sub-emitter event control (parent effects only): condition
+    /// (0 = every step, 1 = on death), events per trigger, child capacity, and
+    /// an active flag (1 when this effect is a parent). All zero otherwise.
+    event: [u32; 4],
 }
+
+/// One GPU spawn event appended by a parent and consumed by its child. Matches
+/// `SpawnEvent` in the sub-emitter shaders. 32 bytes.
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
+struct SpawnEventGpu {
+    position: [f32; 4],
+    velocity: [f32; 4],
+}
+
+/// Bytes of the event buffer header (an atomic count plus padding to the 16-byte
+/// alignment the `SpawnEvent` array needs). Matches the `SpawnEvents` struct
+/// prefix in the sub-emitter shaders.
+const EVENT_HEADER_BYTES: u64 = 16;
 
 /// Per-effect GPU state, built lazily the first time an effect is simulated.
 /// An uploaded mesh for the mesh render route: local-space vertex positions and
@@ -441,6 +462,26 @@ struct TrailGpu {
     draw_bg: vwgpu::BindGroup,
 }
 
+/// Sub-emitter GPU state for one parent effect: the shared spawn-event buffer
+/// and the bind groups the parent sim (which appends events) and the child emit
+/// (which consumes them) use. Built once the parent is first driven.
+struct SubEmitterGpu {
+    /// When the parent produces events (matches the asset).
+    condition: EventCondition,
+    /// Events per trigger.
+    count: u32,
+    /// Fraction of parent velocity handed to each child particle.
+    inherit_velocity: f32,
+    /// The child's capacity, the cap on events held in the buffer.
+    child_capacity: u32,
+    /// `[count: atomic<u32>, pad*3, events: array<SpawnEvent>]`, reset each frame.
+    event_buf: vwgpu::Buffer,
+    /// Parent sim bind group (parent particles + sim params + event buffer).
+    parent_sim_bg: vwgpu::BindGroup,
+    /// Child emit bind group (child particles + emit params + budget + events).
+    child_emit_bg: vwgpu::BindGroup,
+}
+
 /// Fixed-function effect GPU state (the emitter path).
 struct FixedGpu {
     /// Persistent particle buffer; the bind groups alias it, so it is held but
@@ -513,6 +554,17 @@ pub struct ParticlePlugin {
     mesh_pipeline_over: Option<vwgpu::RenderPipeline>,
     emit_bgl: Option<vwgpu::BindGroupLayout>,
     sim_bgl: Option<vwgpu::BindGroupLayout>,
+    // Sub-emitter variants: a child emit that also reads a spawn-event buffer
+    // (binding 3) and a parent sim that also writes one (binding 2). Kept
+    // separate so leaf effects keep the plain fixed-function pipelines.
+    subemit_pipeline: Option<vwgpu::ComputePipeline>,
+    sim_parent_pipeline: Option<vwgpu::ComputePipeline>,
+    subemit_bgl: Option<vwgpu::BindGroupLayout>,
+    sim_parent_bgl: Option<vwgpu::BindGroupLayout>,
+    /// Per-parent sub-emitter GPU state (event buffer + the parent-sim and
+    /// child-emit bind groups), keyed by the parent effect index. Built lazily
+    /// the first frame a parent effect is driven.
+    subemitters: HashMap<usize, SubEmitterGpu>,
     // Codegen-path variants carry an extra property uniform (emit binding 3,
     // sim binding 2). Kept separate so the fixed-function pipelines and bind
     // groups are unchanged.
@@ -907,6 +959,83 @@ impl ParticlePlugin {
         self.pick_gpu.insert(idx, (pick_buf, pick_bg));
     }
 
+    /// Build parent `parent_idx`'s sub-emitter state if it does not exist yet:
+    /// the shared event buffer plus the parent-sim and child-emit bind groups.
+    /// Ensures both the parent and child effects have GPU state first. A no-op if
+    /// the parent has no sub-emitter, or if either end carries a program (the
+    /// feature is fixed-function only).
+    fn ensure_subemitter_gpu(
+        &mut self,
+        parent_idx: usize,
+        device: &vwgpu::Device,
+        queue: &vwgpu::Queue,
+        emit_bgl: &vwgpu::BindGroupLayout,
+        sim_bgl: &vwgpu::BindGroupLayout,
+        draw_bgl: &vwgpu::BindGroupLayout,
+    ) {
+        if self.subemitters.contains_key(&parent_idx) {
+            return;
+        }
+        let Some(sub) = self.effects[parent_idx].asset.sub_emitter else {
+            return;
+        };
+        let child_idx = sub.child.0 as usize;
+        if child_idx >= self.effects.len() {
+            return;
+        }
+        if self.effects[parent_idx].asset.program.is_some()
+            || self.effects[child_idx].asset.program.is_some()
+        {
+            return;
+        }
+
+        // Both effects need their GPU state so we can bind their buffers.
+        self.ensure_effect_gpu(parent_idx, device, queue, emit_bgl, sim_bgl, draw_bgl);
+        self.ensure_effect_gpu(child_idx, device, queue, emit_bgl, sim_bgl, draw_bgl);
+
+        let child_capacity = self.effects[child_idx].asset.capacity;
+        let event_buf = build_event_buffer(device, child_capacity);
+
+        let parent_sim_bg = {
+            let Some(EffectGpu::Fixed(g)) = self.effects[parent_idx].gpu.as_ref() else {
+                return;
+            };
+            build_sim_parent_bg(
+                device,
+                self.sim_parent_bgl.as_ref().unwrap(),
+                &g.particle_buf,
+                &g.sim_buf,
+                &event_buf,
+            )
+        };
+        let child_emit_bg = {
+            let Some(EffectGpu::Fixed(g)) = self.effects[child_idx].gpu.as_ref() else {
+                return;
+            };
+            build_subemit_bg(
+                device,
+                self.subemit_bgl.as_ref().unwrap(),
+                &g.particle_buf,
+                &g.emit_buf,
+                &g.budget_buf,
+                &event_buf,
+            )
+        };
+
+        self.subemitters.insert(
+            parent_idx,
+            SubEmitterGpu {
+                condition: sub.condition,
+                count: sub.count,
+                inherit_velocity: sub.inherit_velocity,
+                child_capacity,
+                event_buf,
+                parent_sim_bg,
+                child_emit_bg,
+            },
+        );
+    }
+
     /// Compile (or reuse) the emit/simulate pipelines for a program, keyed by
     /// the hash of its generated WGSL.
     fn gen_pipelines(
@@ -1142,6 +1271,36 @@ impl ItemTypePlugin for ParticlePlugin {
             include_str!("shaders/particle_sim.wgsl")
         );
         let sim_pipeline = compute(&sim_src, "sim_main", "particle_sim", &sim_bgl);
+
+        // Sub-emitter kernels: a child emit that also reads a spawn-event buffer,
+        // and a parent sim that also writes one.
+        let subemit_bgl = device.create_bind_group_layout(&vwgpu::BindGroupLayoutDescriptor {
+            label: Some("particle_subemit_bgl"),
+            entries: &[
+                storage_rw(0),
+                uniform(1),
+                storage_rw(2),
+                storage_ro_compute(3),
+            ],
+        });
+        let sim_parent_bgl = device.create_bind_group_layout(&vwgpu::BindGroupLayoutDescriptor {
+            label: Some("particle_sim_parent_bgl"),
+            entries: &[storage_rw(0), uniform(1), storage_rw(2)],
+        });
+        let subemit_pipeline = compute(
+            include_str!("shaders/particle_subemit.wgsl"),
+            "emit_main",
+            "particle_subemit",
+            &subemit_bgl,
+        );
+        let sim_parent_src = format!(
+            "{}\n{}",
+            codegen::NOISE_WGSL,
+            include_str!("shaders/particle_sim_parent.wgsl")
+        );
+        let sim_parent_pipeline =
+            compute(&sim_parent_src, "sim_main", "particle_sim_parent", &sim_parent_bgl);
+
         let append_pipeline = compute(
             include_str!("shaders/particle_history.wgsl"),
             "history_main",
@@ -1674,6 +1833,10 @@ impl ItemTypePlugin for ParticlePlugin {
 
         self.emit_pipeline = Some(emit_pipeline);
         self.sim_pipeline = Some(sim_pipeline);
+        self.subemit_pipeline = Some(subemit_pipeline);
+        self.sim_parent_pipeline = Some(sim_parent_pipeline);
+        self.subemit_bgl = Some(subemit_bgl);
+        self.sim_parent_bgl = Some(sim_parent_bgl);
         self.append_pipeline = Some(append_pipeline);
         self.sort_init_pipeline = Some(sort_init_pipeline);
         self.sort_stage_pipeline = Some(sort_stage_pipeline);
@@ -1719,6 +1882,8 @@ impl ItemTypePlugin for ParticlePlugin {
         // ends before the per-effect loop mutates `self.effects`.
         let (emit_bgl, sim_bgl, draw_bgl) = (emit_bgl.clone(), sim_bgl.clone(), draw_bgl.clone());
         let (emit_pipeline, sim_pipeline) = (emit_pipeline.clone(), sim_pipeline.clone());
+        let subemit_pipeline = self.subemit_pipeline.clone();
+        let sim_parent_pipeline = self.sim_parent_pipeline.clone();
         let append_pipeline = self.append_pipeline.clone();
         let sort_init_pipeline = self.sort_init_pipeline.clone();
         let sort_stage_pipeline = self.sort_stage_pipeline.clone();
@@ -1766,15 +1931,56 @@ impl ItemTypePlugin for ParticlePlugin {
             }
         }
 
+        // Sub-emitter wiring: which effect is whose child. Derived from the
+        // assets, independent of GPU state. Used to order passes and to pick the
+        // sub-emit / parent-sim pipelines below.
+        let mut parent_of: HashMap<usize, usize> = HashMap::new();
+        for (pi, eff) in self.effects.iter().enumerate() {
+            if let Some(sub) = eff.asset.sub_emitter {
+                let ci = sub.child.0 as usize;
+                if ci < self.effects.len() {
+                    parent_of.insert(ci, pi);
+                }
+            }
+        }
+        // Process driven effects parents-before-children, so a parent's simulate
+        // pass (which appends spawn events) is encoded before its child's emit
+        // pass (which consumes them) within this frame's command buffer. Ordering
+        // by ancestor depth keeps chains correct; the walk is bounded so a
+        // misconfigured cycle cannot loop forever.
+        let ancestor_depth = |mut idx: usize| -> usize {
+            let mut d = 0;
+            let mut guard = 0;
+            while let Some(&p) = parent_of.get(&idx) {
+                d += 1;
+                idx = p;
+                guard += 1;
+                if guard > self.effects.len() {
+                    break;
+                }
+            }
+            d
+        };
+        let mut order: Vec<usize> = (0..self.effects.len())
+            .filter(|i| driver[*i].is_some())
+            .collect();
+        order.sort_by_key(|&i| ancestor_depth(i));
+
+        // Reset every existing event buffer's append count to zero. Queue writes
+        // apply before this frame's command buffer runs, so parents append from a
+        // clean count and children consume only this frame's events. Buffers built
+        // later this frame start zeroed.
+        for se in self.subemitters.values() {
+            queue.write_buffer(&se.event_buf, 0, bytemuck::bytes_of(&0u32));
+        }
+
         let mut encoder = device.create_command_encoder(&vwgpu::CommandEncoderDescriptor {
             label: Some("particle_sim_encoder"),
         });
         let mut any = false;
 
-        for (idx, driver_idx) in driver.iter().enumerate() {
-            let Some(driver_idx) = *driver_idx else {
-                continue;
-            };
+        for &idx in &order {
+            let driver_idx = driver[idx].unwrap();
             let item = &items.items[driver_idx];
             let origin = item.position;
             let pick_id = item.settings.pick_id.0 as u32;
@@ -1783,6 +1989,13 @@ impl ItemTypePlugin for ParticlePlugin {
 
             // Lazily build this effect's GPU state (fixed or generated).
             self.ensure_effect_gpu(idx, device, queue, &emit_bgl, &sim_bgl, &draw_bgl);
+
+            // If this effect is a parent, wire its sub-emitter (event buffer plus
+            // the parent-sim and child-emit bind groups), building the child's GPU
+            // state too. Done here so the child, processed later, finds it ready.
+            if self.effects[idx].asset.sub_emitter.is_some() {
+                self.ensure_subemitter_gpu(idx, device, queue, &emit_bgl, &sim_bgl, &draw_bgl);
+            }
 
             // Per-frame gradient override: re-bake the ramp LUT and swap the draw
             // group-2 bind group. Cheap (a 64-texel upload) so it runs whenever an
@@ -1820,26 +2033,69 @@ impl ItemTypePlugin for ParticlePlugin {
                 .wrapping_add(idx as u32);
             let groups = capacity.div_ceil(64).max(1);
 
+            // Sub-emitter links (cloned out so the borrows end before the mutable
+            // work above and the buffer reads below). `child_link` present when
+            // this effect consumes a parent's events; `parent_link` when it
+            // produces events for a child.
+            let child_link = parent_of
+                .get(&idx)
+                .and_then(|p| self.subemitters.get(p))
+                .map(|se| (se.child_emit_bg.clone(), se.inherit_velocity));
+            let parent_link = self.subemitters.get(&idx).map(|se| {
+                (
+                    se.parent_sim_bg.clone(),
+                    se.condition,
+                    se.count,
+                    se.child_capacity,
+                )
+            });
+
             match self.effects[idx].gpu.as_ref().unwrap() {
                 EffectGpu::Fixed(g) => {
                     let asset = &self.effects[idx].asset;
                     // Per-frame emitter / force overrides fall back to the asset.
                     let emitter = item.emitter.as_ref().unwrap_or(&asset.emitter);
                     let forces = item.forces.as_deref().unwrap_or(&asset.forces);
-                    let emit =
-                        build_emit_params(emitter, origin, capacity, spawn_count, rng_seed);
-                    let sim = build_sim_params(forces, dt, time);
+                    let inherit = child_link.as_ref().map(|(_, s)| *s).unwrap_or(0.0);
+                    let emit = build_emit_params(
+                        emitter,
+                        origin,
+                        capacity,
+                        spawn_count,
+                        rng_seed,
+                        child_link.is_some(),
+                        inherit,
+                    );
+                    // Event control for a parent: condition, count, child cap, active.
+                    let event = match &parent_link {
+                        Some((_, condition, count, child_cap)) => [
+                            match condition {
+                                EventCondition::EveryStep => 0,
+                                EventCondition::OnDeath => 1,
+                            },
+                            *count,
+                            *child_cap,
+                            1,
+                        ],
+                        None => [0; 4],
+                    };
+                    let sim = build_sim_params(forces, dt, time, event);
                     queue.write_buffer(&g.emit_buf, 0, bytemuck::bytes_of(&emit));
                     queue.write_buffer(&g.sim_buf, 0, bytemuck::bytes_of(&sim));
                     queue.write_buffer(&g.budget_buf, 0, bytemuck::bytes_of(&0u32));
-                    dispatch_sim(
-                        &mut encoder,
-                        &emit_pipeline,
-                        &g.emit_bg,
-                        &sim_pipeline,
-                        &g.sim_bg,
-                        groups,
-                    );
+                    // Pick the emit / sim pipelines and bind groups: sub-emit when
+                    // consuming events, parent-sim when producing them.
+                    let (emit_pipe, emit_bg) = match (child_link.as_ref(), subemit_pipeline.as_ref())
+                    {
+                        (Some((bg, _)), Some(pipe)) => (pipe, bg),
+                        _ => (&emit_pipeline, &g.emit_bg),
+                    };
+                    let (sim_pipe, sim_bg) = match (parent_link.as_ref(), sim_parent_pipeline.as_ref())
+                    {
+                        (Some((bg, ..)), Some(pipe)) => (pipe, bg),
+                        _ => (&sim_pipeline, &g.sim_bg),
+                    };
+                    dispatch_sim(&mut encoder, emit_pipe, emit_bg, sim_pipe, sim_bg, groups);
                 }
                 EffectGpu::Gen(g) => {
                     let gp = GenParams {
@@ -2682,6 +2938,85 @@ fn build_trail_gpu(
     }
 }
 
+/// Allocate a zeroed spawn-event buffer sized to the child's capacity: a 16-byte
+/// header (the atomic append count) followed by `child_capacity` `SpawnEvent`s.
+fn build_event_buffer(device: &vwgpu::Device, child_capacity: u32) -> vwgpu::Buffer {
+    let bytes = EVENT_HEADER_BYTES
+        + (child_capacity.max(1) as u64) * std::mem::size_of::<SpawnEventGpu>() as u64;
+    let buf = device.create_buffer(&vwgpu::BufferDescriptor {
+        label: Some("particle_spawn_events"),
+        size: bytes,
+        usage: vwgpu::BufferUsages::STORAGE | vwgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: true,
+    });
+    buf.slice(..).get_mapped_range_mut().fill(0);
+    buf.unmap();
+    buf
+}
+
+/// Parent-sim bind group: parent particles (binding 0), sim params (1), and the
+/// event buffer the parent appends to (2).
+fn build_sim_parent_bg(
+    device: &vwgpu::Device,
+    bgl: &vwgpu::BindGroupLayout,
+    particle_buf: &vwgpu::Buffer,
+    sim_buf: &vwgpu::Buffer,
+    event_buf: &vwgpu::Buffer,
+) -> vwgpu::BindGroup {
+    device.create_bind_group(&vwgpu::BindGroupDescriptor {
+        label: Some("particle_sim_parent_bg"),
+        layout: bgl,
+        entries: &[
+            vwgpu::BindGroupEntry {
+                binding: 0,
+                resource: particle_buf.as_entire_binding(),
+            },
+            vwgpu::BindGroupEntry {
+                binding: 1,
+                resource: sim_buf.as_entire_binding(),
+            },
+            vwgpu::BindGroupEntry {
+                binding: 2,
+                resource: event_buf.as_entire_binding(),
+            },
+        ],
+    })
+}
+
+/// Child sub-emit bind group: child particles (binding 0), emit params (1), the
+/// spawn budget atomic (2), and the event buffer the child consumes (3).
+fn build_subemit_bg(
+    device: &vwgpu::Device,
+    bgl: &vwgpu::BindGroupLayout,
+    particle_buf: &vwgpu::Buffer,
+    emit_buf: &vwgpu::Buffer,
+    budget_buf: &vwgpu::Buffer,
+    event_buf: &vwgpu::Buffer,
+) -> vwgpu::BindGroup {
+    device.create_bind_group(&vwgpu::BindGroupDescriptor {
+        label: Some("particle_subemit_bg"),
+        layout: bgl,
+        entries: &[
+            vwgpu::BindGroupEntry {
+                binding: 0,
+                resource: particle_buf.as_entire_binding(),
+            },
+            vwgpu::BindGroupEntry {
+                binding: 1,
+                resource: emit_buf.as_entire_binding(),
+            },
+            vwgpu::BindGroupEntry {
+                binding: 2,
+                resource: budget_buf.as_entire_binding(),
+            },
+            vwgpu::BindGroupEntry {
+                binding: 3,
+                resource: event_buf.as_entire_binding(),
+            },
+        ],
+    })
+}
+
 /// Build a non-additive effect's depth-sort state: the key buffer, the per-frame
 /// init uniform, the fixed bitonic stage constants, and the init/stage bind
 /// groups over the effect's particle and order buffers.
@@ -2872,11 +3207,18 @@ fn build_emit_params(
     capacity: u32,
     spawn_count: u32,
     rng_seed: u32,
+    has_events: bool,
+    inherit_velocity: f32,
 ) -> EmitParamsGpu {
     let mut p = EmitParamsGpu::zeroed();
     p.origin = [origin[0], origin[1], origin[2], 0.0];
     p.colour = emitter.colour;
-    p.misc = [emitter.lifetime.0, emitter.lifetime.1, emitter.size, 0.0];
+    p.misc = [
+        emitter.lifetime.0,
+        emitter.lifetime.1,
+        emitter.size,
+        inherit_velocity,
+    ];
     p.ctrl = [rng_seed, spawn_count, capacity, 0];
 
     let (spawn_kind, spawn_a, spawn_b) = match emitter.spawn {
@@ -2915,12 +3257,18 @@ fn build_emit_params(
     };
     p.vel_a = vel_a;
     p.vel_b = vel_b;
-    p.kinds = [spawn_kind, vel_kind, 0, 0];
+    p.kinds = [spawn_kind, vel_kind, has_events as u32, 0];
     p
 }
 
-fn build_sim_params(forces: &[ForceModifier], dt: f32, time: f32) -> SimParamsGpu {
+fn build_sim_params(
+    forces: &[ForceModifier],
+    dt: f32,
+    time: f32,
+    event: [u32; 4],
+) -> SimParamsGpu {
     let mut p = SimParamsGpu::zeroed();
+    p.event = event;
     let n = forces.len().min(MAX_FORCES);
     for (i, f) in forces.iter().take(n).enumerate() {
         p.forces[i] = match *f {

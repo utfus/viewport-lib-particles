@@ -158,6 +158,119 @@ fn parent_events_spawn_child_particles() {
     );
 }
 
+/// A three-level chain (shell -> sparks -> glitter) where the shell and sparks
+/// also draw as ribbon trails. The sparks effect is at once a sub-emit child (of
+/// the shell), a parent (of the glitter), and a trail effect, so this exercises
+/// that those pipelines compose without a bind-group or validation error, and
+/// that the depth-ordered passes still light the scene.
+#[test]
+fn three_level_trailed_chain_renders() {
+    use viewport_lib_particles::ParticleRender;
+
+    let Some((device, queue)) = headless_device() else {
+        eprintln!("skipping: no GPU adapter available");
+        return;
+    };
+
+    let mut renderer = ViewportRenderer::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
+    let mut plugin = ParticlePlugin::new();
+
+    // Grandchild: a brief sparkle, spawned only from spark deaths.
+    let glitter = plugin.add_effect(
+        &device,
+        EffectAsset::new("glitter")
+            .with_capacity(10_000)
+            .with_blend(ParticleBlend::Additive)
+            .with_emitter(Emitter {
+                rate: SpawnRate::PerSecond(0.0),
+                lifetime: (0.2, 0.4),
+                spawn: SpawnShape::Point,
+                velocity: VelocityDist::Fixed([0.0, 0.0, 0.0]),
+                colour: [1.0, 1.0, 1.0, 1.0],
+                size: 0.6,
+            }),
+    );
+    // Child + parent + trail: sparks hover near the origin (so they glow at the
+    // centre) and break into glitter on death.
+    let sparks = plugin.add_effect(
+        &device,
+        EffectAsset::new("sparks")
+            .with_capacity(10_000)
+            .with_blend(ParticleBlend::Additive)
+            .with_emitter(Emitter {
+                rate: SpawnRate::PerSecond(0.0),
+                lifetime: (0.3, 0.5),
+                spawn: SpawnShape::Point,
+                velocity: VelocityDist::Fixed([0.0, 0.0, 0.0]),
+                colour: [1.0, 0.8, 0.4, 1.0],
+                size: 1.2,
+            })
+            .with_render(ParticleRender::Trail {
+                width: 0.05,
+                segments: 8,
+            })
+            .with_sub_emitter(SubEmitter::new(glitter, EventCondition::OnDeath, 4)),
+    );
+    // Parent + trail: a stream of short-lived shells at the origin that break
+    // into sparks on death.
+    let shell = plugin.add_effect(
+        &device,
+        EffectAsset::new("shell")
+            .with_capacity(256)
+            .with_blend(ParticleBlend::Additive)
+            .with_emitter(Emitter {
+                rate: SpawnRate::PerSecond(120.0),
+                lifetime: (0.15, 0.2),
+                spawn: SpawnShape::Point,
+                velocity: VelocityDist::Fixed([0.0, 0.0, 0.0]),
+                colour: [0.5, 0.5, 0.5, 1.0],
+                size: 0.2,
+            })
+            .with_render(ParticleRender::Trail {
+                width: 0.05,
+                segments: 8,
+            })
+            .with_sub_emitter(SubEmitter::new(sparks, EventCondition::OnDeath, 8)),
+    );
+    renderer.with_item_type_plugin(&device, Box::new(plugin));
+
+    let target = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("particles-test-target"),
+        size: wgpu::Extent3d {
+            width: SIZE,
+            height: SIZE,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+
+    // Enough frames for shells to die into sparks (and sparks into glitter).
+    for _ in 0..16 {
+        let mut frame = frame_looking_at_origin();
+        let mut items = ParticleItems::new().with_dt(1.0 / 30.0);
+        items.push(ParticleItem::new(shell).at([0.0, 0.0, 0.0]));
+        items.push(ParticleItem::new(sparks).at([0.0, 0.0, 0.0]));
+        items.push(ParticleItem::new(glitter).at([0.0, 0.0, 0.0]));
+        frame.scene.submit_plugin_items(ParticlePlugin::TYPE_NAME, items);
+
+        let cmd = renderer.owned().render(&device, &queue, &view, &frame);
+        queue.submit(std::iter::once(cmd));
+    }
+
+    let pixels = read_back(&device, &queue, &target);
+    let i = (((SIZE / 2) * SIZE + (SIZE / 2)) * 4) as usize;
+    let center = pixels[i] as i32 + pixels[i + 1] as i32 + pixels[i + 2] as i32;
+    // The shells break into hovering sparks, so the centre lights up. (The plain
+    // check is that the trailed multi-level chain renders at all without error.)
+    assert!(center > 80, "trailed three-level chain did not light the centre: {center}");
+}
+
 fn read_back(device: &wgpu::Device, queue: &wgpu::Queue, target: &wgpu::Texture) -> Vec<u8> {
     let row_bytes = SIZE * 4;
     let staging = device.create_buffer(&wgpu::BufferDescriptor {

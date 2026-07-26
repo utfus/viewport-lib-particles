@@ -41,18 +41,11 @@ fn headless_device() -> Option<(wgpu::Device, wgpu::Queue)> {
 fn frame_looking_at_origin() -> FrameData {
     let cam = Camera::default();
     let mut frame = FrameData::default();
-    frame.camera.render_camera = RenderCamera {
-        view: cam.view_matrix(),
-        projection: cam.proj_matrix(),
-        eye_position: cam.eye_position().to_array(),
-        forward: [0.0, 0.0, -1.0],
-        orientation: cam.orientation,
-        near: cam.effective_znear(),
-        far: cam.zfar,
-        distance: cam.distance,
-        fov: cam.fov_y,
-        aspect: 1.0,
-    };
+    let mut render_camera = RenderCamera::from_camera(&cam);
+    render_camera.forward = [0.0, 0.0, -1.0];
+    render_camera.far = cam.zfar;
+    render_camera.aspect = 1.0;
+    frame.camera.render_camera = render_camera;
     frame.camera.viewport_size = [SIZE as f32, SIZE as f32];
     frame.viewport.show_grid = false;
     frame.viewport.show_axes_indicator = false;

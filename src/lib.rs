@@ -58,12 +58,14 @@
 //! frame.scene.submit_plugin_items(ParticlePlugin::TYPE_NAME, items);
 //! ```
 
-mod codegen;
-mod effect;
-mod expr;
-mod plugin;
-mod refraction;
-mod registry;
+mod authoring;
+mod runtime;
+
+// The crate is grouped into an `authoring` half (CPU model + compiler) and a
+// `runtime` half (the GPU plugins). Re-export their submodules at the crate root
+// so intra-crate paths stay `crate::effect`, `crate::plugin`, etc.
+pub(crate) use authoring::{codegen, effect, expr, registry};
+pub(crate) use runtime::{plugin, refraction};
 
 pub use effect::{
     Attribute, EffectAsset, EffectId, EffectProgram, Emitter, EventCondition, Flipbook,

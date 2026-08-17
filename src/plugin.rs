@@ -63,16 +63,28 @@ const HISTORY_LEN: u32 = 24;
 /// Carries the emitter origin and per-item settings; the authored behavior
 /// lives in the [`EffectAsset`] the [`EffectId`] points at.
 ///
+/// Each submitted item with a distinct [`key`](Self::key) simulates as its own
+/// independent particle set at its own position (many braziers from one brazier
+/// effect), so a host holding a stable key can move / hide / retire one instance
+/// across frames without disturbing the others. Items sharing an `(effect, key)`
+/// collapse to one instance driven by the first; the default key is `0`, so the
+/// common single-instance case is unchanged. (Sub-emitter parent/child effects
+/// stay single-instance — their key is forced to `0`.)
+///
 /// Per-frame overrides tune the driving instance without re-registering the
 /// effect: [`with_emitter`](Self::with_emitter) / [`with_forces`](Self::with_forces)
 /// replace the fixed-function emitter and forces for live sliders,
 /// [`with_gradient`](Self::with_gradient) re-bakes the lifetime ramp, and
-/// [`with_property`](Self::with_property) sets a codegen property's value. All
-/// are read from the first non-hidden instance of the effect (its driver).
+/// [`with_property`](Self::with_property) sets a codegen property's value. They
+/// are read from the driving item of each `(effect, key)` instance.
 #[derive(Clone, Debug)]
 pub struct ParticleItem {
     /// Which registered effect to simulate and draw.
     pub effect: EffectId,
+    /// Stable per-instance identity within an effect. Items of the same effect
+    /// with different keys simulate independently; the same key across frames is
+    /// the same live particle set. Defaults to `0`.
+    pub key: u64,
     /// World-space emitter origin, added to the effect's spawn shape.
     pub position: [f32; 3],
     /// Shared per-item flags (hidden, selected, pick id, opacity, ...).
@@ -96,6 +108,7 @@ impl ParticleItem {
     pub fn new(effect: EffectId) -> Self {
         Self {
             effect,
+            key: 0,
             position: [0.0, 0.0, 0.0],
             settings: ItemSettings::default(),
             emitter: None,
@@ -108,6 +121,15 @@ impl ParticleItem {
     /// Place the emitter at `position`.
     pub fn at(mut self, position: [f32; 3]) -> Self {
         self.position = position;
+        self
+    }
+
+    /// Give this instance a stable per-effect identity. Different keys simulate
+    /// as independent particle sets; the same key across frames is the same
+    /// live set (so the host can move / hide / retire one of many). No effect on
+    /// sub-emitter parent/child effects, which stay single-instance.
+    pub fn with_key(mut self, key: u64) -> Self {
+        self.key = key;
         self
     }
 
@@ -531,16 +553,42 @@ struct GenGpu {
     sim_pipeline: vwgpu::ComputePipeline,
 }
 
-/// A registered effect plus its CPU-side emission bookkeeping.
+/// A registered effect: the authored asset. Per-instance GPU and emission state
+/// lives in [`EffectInstance`], keyed by [`InstanceKey`], since one effect can
+/// drive many independent instances.
 struct RegisteredEffect {
     asset: EffectAsset,
-    gpu: Option<EffectGpu>,
+}
+
+/// Identifies one live instance: a registered effect plus the host's stable
+/// per-instance key ([`ParticleItem::key`]). Sub-emitter parent/child effects
+/// always use key `0` (single instance).
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+struct InstanceKey {
+    effect: u32,
+    key: u64,
+}
+
+/// One live instance of an effect: its own particle buffer + pipelines' bind
+/// groups ([`EffectGpu`]), optional trail / sort state over that buffer, its
+/// pick-id uniform, and its CPU emission bookkeeping. Built lazily the first
+/// frame the instance is driven, and persists (a hidden instance keeps its
+/// particles). Independent instances of one effect each own one of these.
+struct EffectInstance {
+    gpu: EffectGpu,
+    /// Trail history state, present only for `ParticleRender::Trail` effects.
+    trail: Option<TrailGpu>,
+    /// Depth-sort state, present only for non-additive effects.
+    sort: Option<SortGpu>,
+    /// This instance's pick-id uniform (group 2 of the pick pipeline) and its
+    /// bind group, written each frame from the driving item's pick id.
+    pick_buf: vwgpu::Buffer,
+    pick_bg: vwgpu::BindGroup,
     /// Fractional spawn accumulator for `SpawnRate::PerSecond`.
     spawn_accum: f32,
     /// Whether a `SpawnRate::Burst` has already fired.
     burst_done: bool,
-    /// The driving instance's origin last frame, for the local-space translation
-    /// delta. `None` until the effect is first driven.
+    /// This instance's origin last frame, for the local-space translation delta.
     last_origin: Option<[f32; 3]>,
 }
 
@@ -590,18 +638,12 @@ pub struct ParticlePlugin {
     trail_pipeline_over: Option<vwgpu::RenderPipeline>,
     history_bgl: Option<vwgpu::BindGroupLayout>,
     trail_draw_bgl: Option<vwgpu::BindGroupLayout>,
-    /// Per-effect trail state, keyed by effect index. Present only for effects
-    /// whose render route is `ParticleRender::Trail`.
-    trails: HashMap<usize, TrailGpu>,
 
     // Depth sort: the setup (key + identity order) pass and one bitonic stage.
     sort_init_pipeline: Option<vwgpu::ComputePipeline>,
     sort_stage_pipeline: Option<vwgpu::ComputePipeline>,
     sort_init_bgl: Option<vwgpu::BindGroupLayout>,
     sort_stage_bgl: Option<vwgpu::BindGroupLayout>,
-    /// Per-effect sort state, keyed by effect index. Present only for
-    /// non-additive effects, whose draw order needs back-to-front sorting.
-    sorts: HashMap<usize, SortGpu>,
 
     // Interaction: pick-id, outline-mask, and shadow-cast pipelines.
     pick_pipeline: Option<vwgpu::RenderPipeline>,
@@ -609,9 +651,11 @@ pub struct ParticlePlugin {
     shadow_pipeline: Option<vwgpu::RenderPipeline>,
     pick_bgl: Option<vwgpu::BindGroupLayout>,
     shadow_group0_bgl: Option<vwgpu::BindGroupLayout>,
-    /// Per-effect pick-id uniform + bind group (group 2 of the pick pipeline),
-    /// keyed by effect index. Written each frame from the driving item's id.
-    pick_gpu: HashMap<usize, (vwgpu::Buffer, vwgpu::BindGroup)>,
+
+    /// Live per-instance GPU + emission state, keyed by `(effect, key)`. Each
+    /// entry owns an independent particle buffer, trail / sort state, and pick
+    /// uniform. Built lazily the first frame an instance is driven.
+    instances: HashMap<InstanceKey, EffectInstance>,
 
     /// Meshes uploaded for the mesh render route, indexed by `ParticleMeshId`.
     meshes: Vec<ParticleMesh>,
@@ -645,10 +689,10 @@ pub struct ParticlePlugin {
     time: f32,
 }
 
-/// One effect drawn this frame, with the driving item's interaction flags.
+/// One instance drawn this frame, with the driving item's interaction flags.
 #[derive(Copy, Clone)]
 struct DrawEntry {
-    idx: usize,
+    key: InstanceKey,
     /// Pick id of the driving item (0 = `PickId::NONE`, not pickable).
     pick_id: u32,
     selected: bool,
@@ -680,13 +724,7 @@ impl ParticlePlugin {
     /// first frame the effect is simulated.
     pub fn add_effect(&mut self, _device: &vwgpu::Device, asset: EffectAsset) -> EffectId {
         let id = EffectId(self.effects.len() as u32);
-        self.effects.push(RegisteredEffect {
-            asset,
-            gpu: None,
-            spawn_accum: 0.0,
-            burst_done: false,
-            last_origin: None,
-        });
+        self.effects.push(RegisteredEffect { asset });
         id
     }
 
@@ -780,16 +818,21 @@ impl ParticlePlugin {
     /// Build effect `idx`'s GPU state if it does not exist yet. Fixed-function
     /// effects get the shared fixed-function pipelines; effects with a program compile
     /// (or reuse from the cache) their own emit/simulate pipelines.
-    fn ensure_effect_gpu(
+    fn ensure_instance_gpu(
         &mut self,
         idx: usize,
+        key: u64,
         device: &vwgpu::Device,
         queue: &vwgpu::Queue,
         emit_bgl: &vwgpu::BindGroupLayout,
         sim_bgl: &vwgpu::BindGroupLayout,
         draw_bgl: &vwgpu::BindGroupLayout,
     ) {
-        if self.effects[idx].gpu.is_some() {
+        let ikey = InstanceKey {
+            effect: idx as u32,
+            key,
+        };
+        if self.instances.contains_key(&ikey) {
             return;
         }
         let capacity = self.effects[idx].asset.capacity;
@@ -914,45 +957,43 @@ impl ParticlePlugin {
                 ))
             }
         };
-        self.effects[idx].gpu = Some(gpu);
-
         // Trail effects also get a per-particle history ring plus the append and
         // ribbon bind groups, built over the particle buffer just allocated.
-        if let ParticleRender::Trail { .. } = render {
+        let trail = if let ParticleRender::Trail { .. } = render {
             let history_bgl = self.history_bgl.clone().unwrap();
             let trail_draw_bgl = self.trail_draw_bgl.clone().unwrap();
-            let particle_buf = self.effects[idx].gpu.as_ref().unwrap().particle_buf();
-            let trail = build_trail_gpu(
+            Some(build_trail_gpu(
                 device,
                 capacity,
-                particle_buf,
+                gpu.particle_buf(),
                 &order_buf,
                 &history_bgl,
                 &trail_draw_bgl,
-            );
-            self.trails.insert(idx, trail);
-        }
+            ))
+        } else {
+            None
+        };
 
         // Non-additive effects need back-to-front draw order for correct alpha,
         // so they get the sort key + bitonic state over the particle and order
         // buffers. Additive effects are order-independent and keep identity.
-        if !matches!(blend, ParticleBlend::Additive) {
+        let sort = if !matches!(blend, ParticleBlend::Additive) {
             let sort_init_bgl = self.sort_init_bgl.clone().unwrap();
             let sort_stage_bgl = self.sort_stage_bgl.clone().unwrap();
-            let particle_buf = self.effects[idx].gpu.as_ref().unwrap().particle_buf();
-            let sort = build_sort_gpu(
+            Some(build_sort_gpu(
                 device,
                 n,
-                particle_buf,
+                gpu.particle_buf(),
                 &order_buf,
                 &sort_init_bgl,
                 &sort_stage_bgl,
-            );
-            self.sorts.insert(idx, sort);
-        }
+            ))
+        } else {
+            None
+        };
 
-        // Per-effect pick-id uniform (group 2 of the pick pipeline). Written each
-        // frame from the driving item's pick id.
+        // Per-instance pick-id uniform (group 2 of the pick pipeline). Written
+        // each frame from the driving item's pick id.
         let pick_bgl = self.pick_bgl.clone().unwrap();
         let pick_buf = device.create_buffer(&vwgpu::BufferDescriptor {
             label: Some("particle_pick_id"),
@@ -968,7 +1009,20 @@ impl ParticlePlugin {
                 resource: pick_buf.as_entire_binding(),
             }],
         });
-        self.pick_gpu.insert(idx, (pick_buf, pick_bg));
+
+        self.instances.insert(
+            ikey,
+            EffectInstance {
+                gpu,
+                trail,
+                sort,
+                pick_buf,
+                pick_bg,
+                spawn_accum: 0.0,
+                burst_done: false,
+                last_origin: None,
+            },
+        );
     }
 
     /// Build parent `parent_idx`'s sub-emitter state if it does not exist yet:
@@ -1001,15 +1055,24 @@ impl ParticlePlugin {
             return;
         }
 
-        // Both effects need their GPU state so we can bind their buffers.
-        self.ensure_effect_gpu(parent_idx, device, queue, emit_bgl, sim_bgl, draw_bgl);
-        self.ensure_effect_gpu(child_idx, device, queue, emit_bgl, sim_bgl, draw_bgl);
+        // Both effects need their (single, key-0) instance GPU state so we can
+        // bind their buffers. Sub-emitter effects are always single-instance.
+        self.ensure_instance_gpu(parent_idx, 0, device, queue, emit_bgl, sim_bgl, draw_bgl);
+        self.ensure_instance_gpu(child_idx, 0, device, queue, emit_bgl, sim_bgl, draw_bgl);
+        let parent_ikey = InstanceKey {
+            effect: parent_idx as u32,
+            key: 0,
+        };
+        let child_ikey = InstanceKey {
+            effect: child_idx as u32,
+            key: 0,
+        };
 
         let child_capacity = self.effects[child_idx].asset.capacity;
         let event_buf = build_event_buffer(device, child_capacity);
 
         let parent_sim_bg = {
-            let Some(EffectGpu::Fixed(g)) = self.effects[parent_idx].gpu.as_ref() else {
+            let Some(EffectGpu::Fixed(g)) = self.instances.get(&parent_ikey).map(|i| &i.gpu) else {
                 return;
             };
             build_sim_parent_bg(
@@ -1021,7 +1084,7 @@ impl ParticlePlugin {
             )
         };
         let child_emit_bg = {
-            let Some(EffectGpu::Fixed(g)) = self.effects[child_idx].gpu.as_ref() else {
+            let Some(EffectGpu::Fixed(g)) = self.instances.get(&child_ikey).map(|i| &i.gpu) else {
                 return;
             };
             build_subemit_bg(
@@ -1928,21 +1991,6 @@ impl ItemTypePlugin for ParticlePlugin {
         self.time += dt;
         let time = self.time;
 
-        // First non-hidden instance per effect drives the simulation and supplies
-        // the emitter origin, interaction flags (pick id / selected / cast
-        // shadows), and any per-frame overrides. We store its item index so the
-        // loop can read the full override set from it.
-        let mut driver: Vec<Option<usize>> = vec![None; self.effects.len()];
-        for (i, it) in items.items.iter().enumerate() {
-            if it.settings.hidden {
-                continue;
-            }
-            let idx = it.effect.0 as usize;
-            if idx < driver.len() && driver[idx].is_none() {
-                driver[idx] = Some(i);
-            }
-        }
-
         // Sub-emitter wiring: which effect is whose child. Derived from the
         // assets, independent of GPU state. Used to order passes and to pick the
         // sub-emit / parent-sim pipelines below.
@@ -1955,7 +2003,38 @@ impl ItemTypePlugin for ParticlePlugin {
                 }
             }
         }
-        // Process driven effects parents-before-children, so a parent's simulate
+
+        // Collect this frame's driven instances: the first non-hidden item of
+        // each distinct `(effect, key)`. Effects involved in sub-emitters (a
+        // parent or a child) stay single-instance — their event buffers and
+        // parent/child bind groups bind one particle set — so their key is forced
+        // to 0; every other effect simulates one independent instance per key.
+        let num_effects = self.effects.len();
+        let subemitter_children: std::collections::HashSet<usize> =
+            parent_of.keys().copied().collect();
+        let mut driven: Vec<(InstanceKey, usize)> = Vec::new();
+        let mut seen: std::collections::HashSet<InstanceKey> = std::collections::HashSet::new();
+        for (i, it) in items.items.iter().enumerate() {
+            if it.settings.hidden {
+                continue;
+            }
+            let idx = it.effect.0 as usize;
+            if idx >= num_effects {
+                continue;
+            }
+            let single = self.effects[idx].asset.sub_emitter.is_some()
+                || subemitter_children.contains(&idx);
+            let key = if single { 0 } else { it.key };
+            let ikey = InstanceKey {
+                effect: idx as u32,
+                key,
+            };
+            if seen.insert(ikey) {
+                driven.push((ikey, i));
+            }
+        }
+
+        // Process driven instances parents-before-children, so a parent's simulate
         // pass (which appends spawn events) is encoded before its child's emit
         // pass (which consumes them) within this frame's command buffer. Ordering
         // by ancestor depth keeps chains correct; the walk is bounded so a
@@ -1967,16 +2046,13 @@ impl ItemTypePlugin for ParticlePlugin {
                 d += 1;
                 idx = p;
                 guard += 1;
-                if guard > self.effects.len() {
+                if guard > num_effects {
                     break;
                 }
             }
             d
         };
-        let mut order: Vec<usize> = (0..self.effects.len())
-            .filter(|i| driver[*i].is_some())
-            .collect();
-        order.sort_by_key(|&i| ancestor_depth(i));
+        driven.sort_by_key(|(ik, _)| ancestor_depth(ik.effect as usize));
 
         // Reset every existing event buffer's append count to zero. Queue writes
         // apply before this frame's command buffer runs, so parents append from a
@@ -1991,35 +2067,35 @@ impl ItemTypePlugin for ParticlePlugin {
         });
         let mut any = false;
 
-        for &idx in &order {
-            let driver_idx = driver[idx].unwrap();
-            let item = &items.items[driver_idx];
+        for &(ikey, item_idx) in &driven {
+            let idx = ikey.effect as usize;
+            let item = &items.items[item_idx];
             let origin = item.position;
             let pick_id = item.settings.pick_id.0 as u32;
             let selected = item.settings.selected;
             let cast_shadows = item.settings.cast_shadows;
 
-            // Local-space translation delta: how far the driving instance moved
-            // since last frame. Under `Local`, this rigidly carries every live
-            // particle with the emitter; under `Global` it stays zero.
+            // Build this instance's GPU state (fixed or generated) if new.
+            self.ensure_instance_gpu(idx, ikey.key, device, queue, &emit_bgl, &sim_bgl, &draw_bgl);
+
+            // If this effect is a parent, wire its sub-emitter over the key-0
+            // instances (event buffer + parent-sim and child-emit bind groups),
+            // building the child's instance too. Done here so the child, processed
+            // later, finds it ready.
+            if self.effects[idx].asset.sub_emitter.is_some() {
+                self.ensure_subemitter_gpu(idx, device, queue, &emit_bgl, &sim_bgl, &draw_bgl);
+            }
+
+            // Local-space translation delta: how far this instance moved since
+            // last frame. Under `Local`, this rigidly carries every live particle
+            // with the emitter; under `Global` it stays zero.
             let space_delta = match self.effects[idx].asset.sim_space {
                 SimulationSpace::Local => {
-                    let last = self.effects[idx].last_origin.unwrap_or(origin);
+                    let last = self.instances.get(&ikey).unwrap().last_origin.unwrap_or(origin);
                     [origin[0] - last[0], origin[1] - last[1], origin[2] - last[2]]
                 }
                 SimulationSpace::Global => [0.0; 3],
             };
-            self.effects[idx].last_origin = Some(origin);
-
-            // Lazily build this effect's GPU state (fixed or generated).
-            self.ensure_effect_gpu(idx, device, queue, &emit_bgl, &sim_bgl, &draw_bgl);
-
-            // If this effect is a parent, wire its sub-emitter (event buffer plus
-            // the parent-sim and child-emit bind groups), building the child's GPU
-            // state too. Done here so the child, processed later, finds it ready.
-            if self.effects[idx].asset.sub_emitter.is_some() {
-                self.ensure_subemitter_gpu(idx, device, queue, &emit_bgl, &sim_bgl, &draw_bgl);
-            }
 
             // Per-frame gradient override: re-bake the ramp LUT and swap the draw
             // group-2 bind group. Cheap (a 64-texel upload) so it runs whenever an
@@ -2029,16 +2105,7 @@ impl ItemTypePlugin for ParticlePlugin {
             {
                 let lut = build_ramp_lut(device, queue, g);
                 let bg = make_ramp_bg(device, ramp_bgl, ramp_sampler, &lut);
-                self.effects[idx].gpu.as_mut().unwrap().set_ramp(bg, lut);
-            }
-
-            // Publish the driving item's pick id for the pick pass.
-            if let Some((buf, _)) = self.pick_gpu.get(&idx) {
-                let pu = PickUniform {
-                    id: pick_id,
-                    _pad: [0; 3],
-                };
-                queue.write_buffer(buf, 0, bytemuck::bytes_of(&pu));
+                self.instances.get_mut(&ikey).unwrap().gpu.set_ramp(bg, lut);
             }
 
             // Effective spawn rate: a program takes its rate from the program; a
@@ -2050,17 +2117,35 @@ impl ItemTypePlugin for ParticlePlugin {
                     .map(|e| e.rate)
                     .unwrap_or(self.effects[idx].asset.emitter.rate),
             };
-            let spawn_count = next_spawn_count(&mut self.effects[idx], rate, dt);
             let capacity = self.effects[idx].asset.capacity;
             let rng_seed = (ctx.frame_index as u32)
                 .wrapping_mul(2654435761)
-                .wrapping_add(idx as u32);
+                .wrapping_add(idx as u32)
+                .wrapping_add((ikey.key as u32).wrapping_mul(40503));
             let groups = capacity.div_ceil(64).max(1);
 
-            // Sub-emitter links (cloned out so the borrows end before the mutable
-            // work above and the buffer reads below). `child_link` present when
-            // this effect consumes a parent's events; `parent_link` when it
-            // produces events for a child.
+            // Advance this instance's own spawn state and record its origin (for
+            // the next frame's local-space delta).
+            let spawn_count = {
+                let inst = self.instances.get_mut(&ikey).unwrap();
+                inst.last_origin = Some(origin);
+                next_spawn_count(&mut inst.spawn_accum, &mut inst.burst_done, rate, dt)
+            };
+
+            // Publish this instance's pick id for the pick pass.
+            {
+                let inst = self.instances.get(&ikey).unwrap();
+                let pu = PickUniform {
+                    id: pick_id,
+                    _pad: [0; 3],
+                };
+                queue.write_buffer(&inst.pick_buf, 0, bytemuck::bytes_of(&pu));
+            }
+
+            // Sub-emitter links (cloned out so the borrows end before the buffer
+            // reads below). `child_link` present when this effect consumes a
+            // parent's events; `parent_link` when it produces events for a child.
+            // Only key-0 instances participate (sub-emitter effects are single).
             let child_link = parent_of
                 .get(&idx)
                 .and_then(|p| self.subemitters.get(p))
@@ -2074,7 +2159,7 @@ impl ItemTypePlugin for ParticlePlugin {
                 )
             });
 
-            match self.effects[idx].gpu.as_ref().unwrap() {
+            match &self.instances.get(&ikey).unwrap().gpu {
                 EffectGpu::Fixed(g) => {
                     let asset = &self.effects[idx].asset;
                     // Per-frame emitter / force overrides fall back to the asset.
@@ -2158,9 +2243,10 @@ impl ItemTypePlugin for ParticlePlugin {
             // Trail effects record this frame's positions into the history ring,
             // after the simulate pass has moved the particles.
             if let ParticleRender::Trail { .. } = self.effects[idx].asset.render {
-                if let (Some(append_pipeline), Some(trail)) =
-                    (append_pipeline.as_ref(), self.trails.get(&idx))
-                {
+                if let (Some(append_pipeline), Some(trail)) = (
+                    append_pipeline.as_ref(),
+                    self.instances.get(&ikey).and_then(|i| i.trail.as_ref()),
+                ) {
                     let head = (ctx.frame_index as u32) % HISTORY_LEN;
                     let hp = HistoryParams {
                         head,
@@ -2186,7 +2272,7 @@ impl ItemTypePlugin for ParticlePlugin {
                 if let (Some(init_pipeline), Some(stage_pipeline), Some(sort)) = (
                     sort_init_pipeline.as_ref(),
                     sort_stage_pipeline.as_ref(),
-                    self.sorts.get(&idx),
+                    self.instances.get(&ikey).and_then(|i| i.sort.as_ref()),
                 ) {
                     let eye = ctx.camera.eye_position;
                     let ip = SortInitParams {
@@ -2201,7 +2287,7 @@ impl ItemTypePlugin for ParticlePlugin {
             }
 
             self.draw_list.push(DrawEntry {
-                idx,
+                key: ikey,
                 pick_id,
                 selected,
                 cast_shadows,
@@ -2233,11 +2319,11 @@ impl ItemTypePlugin for ParticlePlugin {
         };
         // Group 0 (camera + scene) is already bound by the lib.
         for entry in &self.draw_list {
-            let idx = entry.idx;
-            let eff = &self.effects[idx];
-            let Some(gpu) = eff.gpu.as_ref() else {
+            let eff = &self.effects[entry.key.effect as usize];
+            let Some(inst) = self.instances.get(&entry.key) else {
                 continue;
             };
+            let gpu = &inst.gpu;
             let additive = matches!(eff.asset.blend, ParticleBlend::Additive);
             // Groups 2 (ramp) and 3 (draw params) are shared by every route;
             // group 1 is route-specific (particles, or the trail bindings).
@@ -2266,7 +2352,7 @@ impl ItemTypePlugin for ParticlePlugin {
                     pass.draw_indexed(0..m.index_count, 0, 0..eff.asset.capacity);
                 }
                 ParticleRender::Trail { segments, .. } => {
-                    let Some(trail) = self.trails.get(&idx) else {
+                    let Some(trail) = inst.trail.as_ref() else {
                         continue;
                     };
                     pass.set_pipeline(if additive { trail_add } else { trail_over });
@@ -2294,11 +2380,11 @@ impl ItemTypePlugin for ParticlePlugin {
         // mesh/trail routes stay in the main HDR draw (paint).
         pass.set_pipeline(oit);
         for entry in &self.draw_list {
-            let idx = entry.idx;
-            let eff = &self.effects[idx];
-            let Some(gpu) = eff.gpu.as_ref() else {
+            let eff = &self.effects[entry.key.effect as usize];
+            let Some(inst) = self.instances.get(&entry.key) else {
                 continue;
             };
+            let gpu = &inst.gpu;
             if matches!(eff.asset.blend, ParticleBlend::Additive) {
                 continue;
             }
@@ -2327,16 +2413,13 @@ impl ItemTypePlugin for ParticlePlugin {
             if entry.pick_id == 0 {
                 continue;
             }
-            let eff = &self.effects[entry.idx];
-            let Some(gpu) = eff.gpu.as_ref() else {
-                continue;
-            };
-            let Some((_, pick_bg)) = self.pick_gpu.get(&entry.idx) else {
+            let eff = &self.effects[entry.key.effect as usize];
+            let Some(inst) = self.instances.get(&entry.key) else {
                 continue;
             };
             pass.set_pipeline(pipeline);
-            pass.set_bind_group(1, gpu.draw_bg(), &[]);
-            pass.set_bind_group(2, pick_bg, &[]);
+            pass.set_bind_group(1, inst.gpu.draw_bg(), &[]);
+            pass.set_bind_group(2, &inst.pick_bg, &[]);
             pass.draw(0..6, 0..eff.asset.capacity);
         }
     }
@@ -2356,12 +2439,12 @@ impl ItemTypePlugin for ParticlePlugin {
             if !entry.selected {
                 continue;
             }
-            let eff = &self.effects[entry.idx];
-            let Some(gpu) = eff.gpu.as_ref() else {
+            let eff = &self.effects[entry.key.effect as usize];
+            let Some(inst) = self.instances.get(&entry.key) else {
                 continue;
             };
             pass.set_pipeline(pipeline);
-            pass.set_bind_group(1, gpu.draw_bg(), &[]);
+            pass.set_bind_group(1, inst.gpu.draw_bg(), &[]);
             pass.draw(0..6, 0..eff.asset.capacity);
         }
     }
@@ -2382,12 +2465,12 @@ impl ItemTypePlugin for ParticlePlugin {
             if !entry.cast_shadows {
                 continue;
             }
-            let eff = &self.effects[entry.idx];
-            let Some(gpu) = eff.gpu.as_ref() else {
+            let eff = &self.effects[entry.key.effect as usize];
+            let Some(inst) = self.instances.get(&entry.key) else {
                 continue;
             };
             pass.set_pipeline(pipeline);
-            pass.set_bind_group(1, gpu.draw_bg(), &[]);
+            pass.set_bind_group(1, inst.gpu.draw_bg(), &[]);
             pass.draw(0..6, 0..eff.asset.capacity);
         }
     }
@@ -3183,19 +3266,19 @@ fn dispatch_sort(
 /// How many particles to spawn this frame, advancing the effect's accumulator.
 /// The caller resolves the effective `rate` (program, per-frame emitter
 /// override, or the registered emitter).
-fn next_spawn_count(effect: &mut RegisteredEffect, rate: SpawnRate, dt: f32) -> u32 {
+fn next_spawn_count(spawn_accum: &mut f32, burst_done: &mut bool, rate: SpawnRate, dt: f32) -> u32 {
     match rate {
         SpawnRate::PerSecond(rate) => {
-            effect.spawn_accum += rate.max(0.0) * dt;
-            let count = effect.spawn_accum.floor();
-            effect.spawn_accum -= count;
+            *spawn_accum += rate.max(0.0) * dt;
+            let count = spawn_accum.floor();
+            *spawn_accum -= count;
             count as u32
         }
         SpawnRate::Burst { count } => {
-            if effect.burst_done {
+            if *burst_done {
                 0
             } else {
-                effect.burst_done = true;
+                *burst_done = true;
                 count
             }
         }

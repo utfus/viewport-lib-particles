@@ -39,6 +39,10 @@ struct DrawParams {
     flip_cols: u32,
     flip_rows: u32,
     flip_fps: f32,
+    orient: u32,
+    orient_param: f32,
+    screen_size: u32,
+    _pad: u32,
 };
 @group(3) @binding(0) var<uniform> draw_params: DrawParams;
 // Billboard texture + sampler (a 1x1 white default when the effect has none).
@@ -72,6 +76,58 @@ struct VsOut {
     @location(4) age_sec: f32,
 };
 
+// Place billboard corner `c` (in [-1,1]) for particle `p`, honouring the
+// orientation mode, screen-space size, and velocity stretch (Phase 15). Mirrors
+// `billboard_world` in particle_draw.wgsl.
+fn billboard_world(p: Particle, c: vec2<f32>, size_scale: f32) -> vec3<f32> {
+    var half = p.size * 0.5 * size_scale;
+    if (p.lifetime <= 0.0) {
+        half = 0.0;
+    }
+
+    var bx = vec3<f32>(camera.view[0][0], camera.view[1][0], camera.view[2][0]);
+    var by = vec3<f32>(camera.view[0][1], camera.view[1][1], camera.view[2][1]);
+
+    let orient = draw_params.orient;
+    if (orient == 1u) {
+        let toeye = normalize(camera.eye_pos - p.position);
+        bx = normalize(cross(by, toeye));
+        by = cross(toeye, bx);
+    } else if (orient == 3u) {
+        let ca = cos(draw_params.orient_param);
+        let sa = sin(draw_params.orient_param);
+        let nx = bx * ca + by * sa;
+        let ny = by * ca - bx * sa;
+        bx = nx;
+        by = ny;
+    }
+
+    var hsize = half;
+    if (draw_params.screen_size == 1u) {
+        let wclip = (camera.view_proj * vec4<f32>(p.position, 1.0)).w;
+        hsize = half * max(wclip, 1e-3);
+    }
+
+    let vplane = vec2<f32>(dot(p.velocity, bx), dot(p.velocity, by));
+    let speed2d = length(vplane);
+    if (draw_params.stretch > 0.0 && speed2d > 1e-4) {
+        let dirx = vplane / speed2d;
+        let diry = vec2<f32>(-dirx.y, dirx.x);
+        let speed = length(p.velocity);
+        let len = hsize * (1.0 + draw_params.stretch * speed);
+        let ax = bx * dirx.x + by * dirx.y;
+        let ay = bx * diry.x + by * diry.y;
+        return p.position + ax * (c.x * len) + ay * (c.y * hsize);
+    } else if (orient == 2u && speed2d > 1e-4) {
+        let dirx = vplane / speed2d;
+        let diry = vec2<f32>(-dirx.y, dirx.x);
+        let ax = bx * dirx.x + by * dirx.y;
+        let ay = bx * diry.x + by * diry.y;
+        return p.position + ax * (c.x * hsize) + ay * (c.y * hsize);
+    }
+    return p.position + bx * (c.x * hsize) + by * (c.y * hsize);
+}
+
 @vertex
 fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VsOut {
     var corners = array<vec2<f32>, 6>(
@@ -85,39 +141,16 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VsOut
     let c = corners[vi];
     let p = particles[order[ii]];
 
-    // Normalized age (0 at spawn, 1 at death) drives the ramp lookup.
+    // Row 0 (v = 0.25) colour + size; row 1 (v = 0.75) alpha ramp (Phase 15).
     let age = clamp(1.0 - p.lifetime / max(p.max_lifetime, 1e-4), 0.0, 1.0);
-    let ramp = textureSampleLevel(ramp_tex, ramp_samp, vec2<f32>(age, 0.5), 0.0);
+    let ramp0 = textureSampleLevel(ramp_tex, ramp_samp, vec2<f32>(age, 0.25), 0.0);
+    let ramp1 = textureSampleLevel(ramp_tex, ramp_samp, vec2<f32>(age, 0.75), 0.0);
 
-    // Collapse dead particles to zero area (no fragments).
-    var half = p.size * 0.5 * ramp.a;
-    if (p.lifetime <= 0.0) {
-        half = 0.0;
-    }
-
-    let right = vec3<f32>(camera.view[0][0], camera.view[1][0], camera.view[2][0]);
-    let up = vec3<f32>(camera.view[0][1], camera.view[1][1], camera.view[2][1]);
-
-    // Screen-plane offset of this corner. Round by default; when stretched,
-    // orient the long axis along the velocity projected into the camera plane.
-    var off = vec2<f32>(c.x * half, c.y * half);
-    let vplane = vec2<f32>(dot(p.velocity, right), dot(p.velocity, up));
-    let speed2d = length(vplane);
-    if (draw_params.stretch > 0.0 && speed2d > 1e-4) {
-        let dirx = vplane / speed2d;
-        let diry = vec2<f32>(-dirx.y, dirx.x);
-        let speed = length(p.velocity);
-        let len = half * (1.0 + draw_params.stretch * speed);
-        off = dirx * (c.x * len) + diry * (c.y * half);
-    }
-
-    let world = p.position + right * off.x + up * off.y;
-
-    let fade = clamp(p.lifetime / max(p.max_lifetime, 1e-4), 0.0, 1.0);
+    let world = billboard_world(p, c, ramp0.a);
 
     var out: VsOut;
     out.pos = camera.view_proj * vec4<f32>(world, 1.0);
-    out.color = vec4<f32>(p.colour.rgb * ramp.rgb, p.colour.a * fade);
+    out.color = vec4<f32>(p.colour.rgb * ramp0.rgb, p.colour.a * ramp1.r);
     out.uv = c * 0.5 + vec2<f32>(0.5, 0.5);
     // View-space Z (negative in front of the camera) weights the OIT blend.
     out.view_z = (camera.view * vec4<f32>(world, 1.0)).z;

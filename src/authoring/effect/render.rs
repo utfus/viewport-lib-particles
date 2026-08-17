@@ -59,6 +59,33 @@ pub enum MeshAlign {
     Random,
 }
 
+/// How a camera-facing billboard is oriented each frame (Phase 15). Applies to
+/// the [`ParticleRender::Billboard`] route, set on the effect via
+/// [`EffectAsset::with_orient`](crate::EffectAsset::with_orient). Mirrors
+/// Hanabi's `OrientMode`.
+#[derive(Clone, Copy, Debug, PartialEq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum Orient {
+    /// Parallel to the camera's near plane (the cheap default): every billboard
+    /// shares the camera's right/up axes, so they stay axis-aligned on screen.
+    #[default]
+    ParallelCameraPlane,
+    /// Face the camera *position*: each billboard builds its own basis pointing
+    /// at the eye, a true spherical billboard (correct at wide field of view and
+    /// screen edges, slightly costlier).
+    FaceCamera,
+    /// Orient the quad's local X along the particle's screen-projected velocity
+    /// (without the length change [`Billboard::stretch`](ParticleRender::Billboard)
+    /// adds), so a textured sprite reads as travelling along its motion.
+    AlongVelocity,
+    /// A fixed screen-space roll: rotate the camera-plane basis by `radians`
+    /// about the view direction. A constant tilt for every particle.
+    Fixed {
+        /// Roll angle in radians.
+        radians: f32,
+    },
+}
+
 /// How an effect's live particles are drawn.
 #[derive(Clone, Copy, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -106,18 +133,35 @@ impl Default for ParticleRender {
 #[derive(Clone, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Gradient {
-    /// Colour keys `(t, rgb)`. Multiplies the particle colour.
+    /// Colour keys `(t, rgb)`. Multiplies the particle colour. Values may exceed
+    /// `1.0` for HDR emissive output that blooms on a bloom-enabled renderer
+    /// (Phase 15).
     pub colour: Vec<(f32, [f32; 3])>,
     /// Size-scale keys `(t, scale)`. Multiplies the particle size.
     pub size: Vec<(f32, f32)>,
+    /// Alpha keys `(t, a)` over lifetime (Phase 15). Multiplies the particle
+    /// alpha, replacing the old lifetime-fade-only path so an effect can fade
+    /// *in* as well as out. The default `[(0, 1), (1, 0)]` reproduces the
+    /// previous linear fade-to-zero. Billboard route only; the mesh and trail
+    /// routes keep the plain lifetime fade.
+    #[cfg_attr(feature = "serde", serde(default = "default_alpha_keys"))]
+    pub alpha: Vec<(f32, f32)>,
+}
+
+/// The default alpha ramp: a linear fade from full at spawn to zero at death,
+/// matching the pre-Phase-15 lifetime fade.
+fn default_alpha_keys() -> Vec<(f32, f32)> {
+    vec![(0.0, 1.0), (1.0, 0.0)]
 }
 
 impl Default for Gradient {
     fn default() -> Self {
-        // Identity: no colour or size change over life.
+        // Identity colour/size (no change over life); alpha fades out linearly
+        // to match the historical lifetime fade.
         Self {
             colour: vec![(0.0, [1.0, 1.0, 1.0]), (1.0, [1.0, 1.0, 1.0])],
             size: vec![(0.0, 1.0), (1.0, 1.0)],
+            alpha: default_alpha_keys(),
         }
     }
 }
@@ -144,6 +188,15 @@ impl Gradient {
         self
     }
 
+    /// Set the alpha ramp keys (ascending `t`) (Phase 15). Lets the effect fade
+    /// in and out over life instead of only fading out. Billboard route only.
+    pub fn with_alpha(mut self, keys: Vec<(f32, f32)>) -> Self {
+        if !keys.is_empty() {
+            self.alpha = keys;
+        }
+        self
+    }
+
     /// Sample the colour ramp at normalized age `t`.
     pub(crate) fn sample_colour(&self, t: f32) -> [f32; 3] {
         sample_keys3(&self.colour, t)
@@ -152,6 +205,11 @@ impl Gradient {
     /// Sample the size ramp at normalized age `t`.
     pub(crate) fn sample_size(&self, t: f32) -> f32 {
         sample_keys1(&self.size, t)
+    }
+
+    /// Sample the alpha ramp at normalized age `t` (Phase 15).
+    pub(crate) fn sample_alpha(&self, t: f32) -> f32 {
+        sample_keys1(&self.alpha, t)
     }
 }
 
@@ -232,5 +290,37 @@ pub enum ParticleBlend {
 impl Default for ParticleBlend {
     fn default() -> Self {
         ParticleBlend::Additive
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_alpha_reproduces_lifetime_fade() {
+        // Phase 15: the default alpha ramp is a linear fade from 1 at spawn to 0
+        // at death, matching the historical lifetime-fade behaviour.
+        let g = Gradient::default();
+        assert!((g.sample_alpha(0.0) - 1.0).abs() < 1e-6);
+        assert!((g.sample_alpha(0.5) - 0.5).abs() < 1e-6);
+        assert!((g.sample_alpha(1.0) - 0.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn custom_alpha_ramp_fades_in_and_out() {
+        // A fade-in-then-out curve peaks in the middle of life.
+        let g = Gradient::new().with_alpha(vec![(0.0, 0.0), (0.5, 1.0), (1.0, 0.0)]);
+        assert!(g.sample_alpha(0.0) < 0.01, "starts transparent");
+        assert!((g.sample_alpha(0.5) - 1.0).abs() < 1e-6, "opaque mid-life");
+        assert!(g.sample_alpha(1.0) < 0.01, "ends transparent");
+    }
+
+    #[test]
+    fn colour_ramp_carries_hdr_values() {
+        // Phase 15: colour keys above 1.0 pass through unclamped for HDR bloom.
+        let g = Gradient::new().with_colour(vec![(0.0, [4.0, 2.0, 0.5]), (1.0, [0.0, 0.0, 0.0])]);
+        let c = g.sample_colour(0.0);
+        assert!(c[0] > 3.9 && c[1] > 1.9, "HDR colour is not clamped to 1.0");
     }
 }

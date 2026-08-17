@@ -12,8 +12,8 @@ use viewport_lib::wgpu as vwgpu;
 
 use crate::codegen;
 use crate::effect::{
-    EffectAsset, EffectId, EffectProgram, MeshAlign, ParticleBlend, ParticleMeshId,
-    ParticleRender, ParticleTextureId, TextureMode,
+    EffectAsset, EffectId, EffectProgram, MeshAlign, Orient, ParticleBlend, ParticleMeshId,
+    ParticleRender, ParticleTextureId, SpawnShape, TextureMode,
 };
 
 use super::*;
@@ -33,11 +33,31 @@ impl ParticlePlugin {
     /// Register every effect before handing the plugin to the renderer; the
     /// renderer owns the plugin afterward. GPU buffers are allocated lazily the
     /// first frame the effect is simulated.
-    pub fn add_effect(&mut self, _device: &vwgpu::Device, asset: EffectAsset) -> EffectId {
+    pub fn add_effect(&mut self, device: &vwgpu::Device, asset: EffectAsset) -> EffectId {
+        // Phase 22: bake a spawn-sample pool if the (fixed-function) emitter draws
+        // its positions from an uploaded mesh's surface or vertices. Meshes must
+        // be uploaded before the effect is registered.
+        let (spawn_samples, spawn_sample_count) = match (&asset.program, asset.emitter.spawn) {
+            (None, SpawnShape::MeshSurface { mesh, .. }) => self
+                .meshes
+                .get(mesh.0 as usize)
+                .and_then(|m| build_spawn_samples(device, &m.positions, &m.indices, false))
+                .map(|(b, n)| (Some(b), n))
+                .unwrap_or((None, 0)),
+            (None, SpawnShape::PointCloud { mesh, .. }) => self
+                .meshes
+                .get(mesh.0 as usize)
+                .and_then(|m| build_spawn_samples(device, &m.positions, &m.indices, true))
+                .map(|(b, n)| (Some(b), n))
+                .unwrap_or((None, 0)),
+            _ => (None, 0),
+        };
         let id = EffectId(self.effects.len() as u32);
         self.effects.push(RegisteredEffect {
             asset,
             removed: false,
+            spawn_samples,
+            spawn_sample_count,
         });
         id
     }
@@ -139,6 +159,9 @@ impl ParticlePlugin {
             vertex_buf,
             index_buf,
             index_count: indices.len() as u32,
+            // CPU copies for Phase 22 mesh-surface / point-cloud spawn sampling.
+            positions: positions.to_vec(),
+            indices: indices.to_vec(),
         });
         id
     }
@@ -224,6 +247,8 @@ impl ParticlePlugin {
         let texture = self.effects[idx].asset.texture;
         let texture_mode = self.effects[idx].asset.texture_mode;
         let flipbook = self.effects[idx].asset.flipbook;
+        let orient_mode = self.effects[idx].asset.orient;
+        let screen_space_size = self.effects[idx].asset.screen_space_size;
 
         // Draw order buffer, padded to a power of two so the bitonic sort has a
         // clean length. Identity for now; sorted per frame for non-additive
@@ -278,6 +303,20 @@ impl ParticlePlugin {
                 (0.0, 0, width, segments.clamp(1, HISTORY_LEN - 1))
             }
         };
+        // Billboard orientation + screen-space size (Phase 15). Only the billboard
+        // route reads these; the mesh and trail shaders ignore them.
+        let is_billboard = matches!(render, ParticleRender::Billboard { .. });
+        let (orient, orient_param) = if is_billboard {
+            match orient_mode {
+                Orient::ParallelCameraPlane => (0u32, 0.0),
+                Orient::FaceCamera => (1u32, 0.0),
+                Orient::AlongVelocity => (2u32, 0.0),
+                Orient::Fixed { radians } => (3u32, radians),
+            }
+        } else {
+            (0u32, 0.0)
+        };
+        let screen_size = if is_billboard && screen_space_size { 1u32 } else { 0u32 };
         let dp = DrawParams {
             stretch,
             align,
@@ -287,6 +326,10 @@ impl ParticlePlugin {
             flip_cols,
             flip_rows,
             flip_fps,
+            orient,
+            orient_param,
+            screen_size,
+            _pad: 0,
         };
         // Bind the effect's texture, or the shared 1x1 white default. The sprite
         // sampler is the shared linear-clamp ramp sampler.
@@ -304,17 +347,28 @@ impl ParticlePlugin {
         );
 
         let gpu = match program {
-            None => EffectGpu::Fixed(build_fixed_gpu(
-                device,
-                capacity,
-                &order_buf,
-                emit_bgl,
-                sim_bgl,
-                draw_bgl,
-                ramp_bg,
-                ramp_lut,
-                drawparams_bg,
-            )),
+            None => {
+                // Phase 22: bind this effect's baked spawn-sample pool, or the
+                // shared 1-entry default when it has none. Borrow is confined to
+                // this arm (the `Some` arm needs `&mut self` for the pipeline cache).
+                let default_samples = self.default_spawn_samples.as_ref().unwrap();
+                let spawn_samples = self.effects[idx]
+                    .spawn_samples
+                    .as_ref()
+                    .unwrap_or(default_samples);
+                EffectGpu::Fixed(build_fixed_gpu(
+                    device,
+                    capacity,
+                    &order_buf,
+                    emit_bgl,
+                    sim_bgl,
+                    draw_bgl,
+                    ramp_bg,
+                    ramp_lut,
+                    drawparams_bg,
+                    spawn_samples,
+                ))
+            }
             Some(program) => {
                 let gen_emit_bgl = self.gen_emit_bgl.clone().unwrap();
                 let gen_sim_bgl = self.gen_sim_bgl.clone().unwrap();
@@ -568,9 +622,21 @@ impl ParticlePlugin {
             count: None,
         };
 
+        // Binding 3 (Phase 22): the read-only mesh spawn-sample pool. Every fixed
+        // emit bind group binds one (a shared 1-entry default when unused).
+        let storage_ro = |binding| vwgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: vwgpu::ShaderStages::COMPUTE,
+            ty: vwgpu::BindingType::Buffer {
+                ty: vwgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        };
         let emit_bgl = device.create_bind_group_layout(&vwgpu::BindGroupLayoutDescriptor {
             label: Some("particle_emit_bgl"),
-            entries: &[storage_rw(0), uniform(1), storage_rw(2)],
+            entries: &[storage_rw(0), uniform(1), storage_rw(2), storage_ro(3)],
         });
         let sim_bgl = device.create_bind_group_layout(&vwgpu::BindGroupLayoutDescriptor {
             label: Some("particle_sim_bgl"),
@@ -1333,6 +1399,7 @@ impl ParticlePlugin {
         self.sort_stage_bgl = Some(sort_stage_bgl);
         self.ramp_bgl = Some(ramp_bgl);
         self.ramp_sampler = Some(ramp_sampler);
+        self.default_spawn_samples = Some(build_default_spawn_samples(device));
     }
 
 }

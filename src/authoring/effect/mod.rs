@@ -13,5 +13,6 @@ pub use program::{
     Attribute, EffectProgram, PropertyDecl, PropertyValue, SetAttribute, UpdateOp,
 };
 pub use render::{
-    Flipbook, Gradient, MeshAlign, ParticleBlend, ParticleRender, SimulationSpace, TextureMode,
+    Flipbook, Gradient, MeshAlign, Orient, ParticleBlend, ParticleRender, SimulationSpace,
+    TextureMode,
 };

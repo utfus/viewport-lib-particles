@@ -115,7 +115,8 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VsOut
 
     let world = base + wdir * (side * w);
 
-    let ramp = textureSampleLevel(ramp_tex, ramp_samp, vec2<f32>(t, 0.5), 0.0);
+    // Row 0 (v = 0.25) holds colour + size; the ramp LUT is 2 rows tall (Phase 15).
+    let ramp = textureSampleLevel(ramp_tex, ramp_samp, vec2<f32>(t, 0.25), 0.0);
     let fade = (1.0 - t) * clamp(p.lifetime / max(p.max_lifetime, 1e-4), 0.0, 1.0);
 
     out.pos = camera.view_proj * vec4<f32>(world, 1.0);

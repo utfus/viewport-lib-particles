@@ -23,6 +23,8 @@ pub(crate) fn structural_sig(asset: &EffectAsset) -> u64 {
     asset.capacity.hash(&mut h);
     format!("{:?}", asset.blend).hash(&mut h);
     format!("{:?}", asset.render).hash(&mut h);
+    format!("{:?}", asset.orient).hash(&mut h);
+    asset.screen_space_size.hash(&mut h);
     asset.texture.map(|t| t.0).hash(&mut h);
     format!("{:?}", asset.texture_mode).hash(&mut h);
     format!("{:?}", asset.flipbook).hash(&mut h);
@@ -125,6 +127,9 @@ pub(crate) fn effect_cull_radius(asset: &EffectAsset) -> f32 {
             height,
             ..
         } => base_radius.max(top_radius).max(height),
+        // Mesh-surface / point-cloud extent is unknown here without the geometry;
+        // use a generous default so a mesh spawn is not culled prematurely.
+        SpawnShape::MeshSurface { .. } | SpawnShape::PointCloud { .. } => 5.0,
     };
     speed * life + spawn_extent + e.size + 0.5
 }
@@ -152,6 +157,149 @@ pub(crate) fn build_budget_buffer(device: &vwgpu::Device) -> vwgpu::Buffer {
         usage: vwgpu::BufferUsages::STORAGE | vwgpu::BufferUsages::COPY_DST,
         mapped_at_creation: false,
     })
+}
+
+/// A `[0, 1)` draw from a SplitMix64 stream, advancing `state`.
+fn sample_rand(state: &mut u64) -> f32 {
+    *state = splitmix64(*state);
+    ((*state >> 40) as f32) / ((1u64 << 24) as f32)
+}
+
+fn vsub(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+}
+fn vcross(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    ]
+}
+fn vnorm(a: [f32; 3]) -> [f32; 3] {
+    let l = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt();
+    if l > 1e-6 {
+        [a[0] / l, a[1] / l, a[2] / l]
+    } else {
+        [0.0, 0.0, 1.0]
+    }
+}
+
+/// Bake a `MESH_SAMPLE_POOL`-entry spawn-sample buffer for the `MeshSurface` /
+/// `PointCloud` spawn shapes (Phase 22). For a triangle mesh, samples are
+/// area-weighted (larger triangles get proportionally more) with a face normal
+/// per sample. For a point cloud (`point_cloud` set, or no triangles), the
+/// vertices are cycled through and the normal points radially outward from the
+/// local origin. Returns `None` when there is no geometry to sample. Sampling is
+/// deterministic (a fixed SplitMix64 stream) so registration is reproducible.
+pub(crate) fn build_spawn_samples(
+    device: &vwgpu::Device,
+    positions: &[[f32; 3]],
+    indices: &[u32],
+    point_cloud: bool,
+) -> Option<(vwgpu::Buffer, u32)> {
+    let samples = compute_spawn_samples(positions, indices, point_cloud)?;
+    let buf = buffer_with_data(
+        device,
+        "particle_spawn_samples",
+        bytemuck::cast_slice(&samples),
+        vwgpu::BufferUsages::STORAGE | vwgpu::BufferUsages::COPY_DST,
+    );
+    let n = samples.len() as u32;
+    Some((buf, n))
+}
+
+/// The device-free core of [`build_spawn_samples`]: bake the sample pool from
+/// geometry. Split out so the area-weighting is unit-testable without a GPU.
+pub(crate) fn compute_spawn_samples(
+    positions: &[[f32; 3]],
+    indices: &[u32],
+    point_cloud: bool,
+) -> Option<Vec<SpawnSampleGpu>> {
+    if positions.is_empty() {
+        return None;
+    }
+    let mut samples: Vec<SpawnSampleGpu> = Vec::with_capacity(MESH_SAMPLE_POOL as usize);
+    let use_points = point_cloud || indices.len() < 3;
+
+    if use_points {
+        for i in 0..MESH_SAMPLE_POOL as usize {
+            let p = positions[i % positions.len()];
+            let n = vnorm(p);
+            samples.push(SpawnSampleGpu {
+                position: [p[0], p[1], p[2], 0.0],
+                normal: [n[0], n[1], n[2], 0.0],
+            });
+        }
+    } else {
+        let tris = indices.len() / 3;
+        let tri = |t: usize| -> ([f32; 3], [f32; 3], [f32; 3]) {
+            (
+                positions[indices[t * 3] as usize],
+                positions[indices[t * 3 + 1] as usize],
+                positions[indices[t * 3 + 2] as usize],
+            )
+        };
+        // Cumulative triangle areas for area-weighted picking.
+        let mut cum = Vec::with_capacity(tris);
+        let mut total = 0.0f32;
+        for t in 0..tris {
+            let (a, b, c) = tri(t);
+            let area = 0.5 * {
+                let cr = vcross(vsub(b, a), vsub(c, a));
+                (cr[0] * cr[0] + cr[1] * cr[1] + cr[2] * cr[2]).sqrt()
+            };
+            total += area;
+            cum.push(total);
+        }
+        if total <= 0.0 {
+            return None;
+        }
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        for _ in 0..MESH_SAMPLE_POOL {
+            let r = sample_rand(&mut state) * total;
+            // Binary search into the CDF for the picked triangle.
+            let (mut lo, mut hi) = (0usize, tris - 1);
+            while lo < hi {
+                let mid = (lo + hi) / 2;
+                if cum[mid] < r {
+                    lo = mid + 1;
+                } else {
+                    hi = mid;
+                }
+            }
+            let (a, b, c) = tri(lo);
+            // Uniform barycentric sample over the triangle.
+            let (mut u, mut v) = (sample_rand(&mut state), sample_rand(&mut state));
+            if u + v > 1.0 {
+                u = 1.0 - u;
+                v = 1.0 - v;
+            }
+            let w = 1.0 - u - v;
+            let pos = [
+                a[0] * w + b[0] * u + c[0] * v,
+                a[1] * w + b[1] * u + c[1] * v,
+                a[2] * w + b[2] * u + c[2] * v,
+            ];
+            let n = vnorm(vcross(vsub(b, a), vsub(c, a)));
+            samples.push(SpawnSampleGpu {
+                position: [pos[0], pos[1], pos[2], 0.0],
+                normal: [n[0], n[1], n[2], 0.0],
+            });
+        }
+    }
+
+    Some(samples)
+}
+
+/// A shared 1-entry spawn-sample buffer bound at fixed-emit binding 3 for effects
+/// that do not use a mesh spawn shape (they never index it).
+pub(crate) fn build_default_spawn_samples(device: &vwgpu::Device) -> vwgpu::Buffer {
+    buffer_with_data(
+        device,
+        "particle_spawn_samples_default",
+        bytemuck::bytes_of(&SpawnSampleGpu::zeroed()),
+        vwgpu::BufferUsages::STORAGE | vwgpu::BufferUsages::COPY_DST,
+    )
 }
 
 /// Encode this frame's emit and simulate compute passes for one effect.
@@ -325,14 +473,18 @@ pub(crate) fn f32_to_f16(value: f32) -> u16 {
     sign | ((exp as u16) << 10) | ((mantissa >> 13) as u16)
 }
 
-/// Bake a gradient into a `RAMP_WIDTH` x 1 `Rgba16Float` LUT: rgb = colour,
-/// a = size scale, sampled by normalized age.
+/// Bake a gradient into a `RAMP_WIDTH` x 2 `Rgba16Float` LUT sampled by
+/// normalized age. Row 0 (v = 0.25) holds rgb = colour, a = size scale; row 1
+/// (v = 0.75) holds r = alpha (Phase 15). The billboard shaders sample both
+/// rows; the mesh and trail shaders sample row 0 only. Two rows so the alpha
+/// ramp gets its own channel without disturbing the colour/size packing.
 pub(crate) fn build_ramp_lut(
     device: &vwgpu::Device,
     queue: &vwgpu::Queue,
     gradient: &crate::effect::Gradient,
 ) -> vwgpu::Texture {
-    let mut texels: Vec<u16> = Vec::with_capacity(RAMP_WIDTH as usize * 4);
+    // Row 0: colour + size. Row 1: alpha in r, zero elsewhere.
+    let mut texels: Vec<u16> = Vec::with_capacity(RAMP_WIDTH as usize * 4 * 2);
     for i in 0..RAMP_WIDTH {
         let t = i as f32 / (RAMP_WIDTH - 1) as f32;
         let c = gradient.sample_colour(t);
@@ -342,12 +494,20 @@ pub(crate) fn build_ramp_lut(
         texels.push(f32_to_f16(c[2]));
         texels.push(f32_to_f16(s));
     }
+    for i in 0..RAMP_WIDTH {
+        let t = i as f32 / (RAMP_WIDTH - 1) as f32;
+        let a = gradient.sample_alpha(t);
+        texels.push(f32_to_f16(a));
+        texels.push(0);
+        texels.push(0);
+        texels.push(0);
+    }
 
     let texture = device.create_texture(&vwgpu::TextureDescriptor {
         label: Some("particle_ramp_lut"),
         size: vwgpu::Extent3d {
             width: RAMP_WIDTH,
-            height: 1,
+            height: 2,
             depth_or_array_layers: 1,
         },
         mip_level_count: 1,
@@ -368,11 +528,11 @@ pub(crate) fn build_ramp_lut(
         vwgpu::TexelCopyBufferLayout {
             offset: 0,
             bytes_per_row: Some(RAMP_WIDTH * 4 * 2),
-            rows_per_image: Some(1),
+            rows_per_image: Some(2),
         },
         vwgpu::Extent3d {
             width: RAMP_WIDTH,
-            height: 1,
+            height: 2,
             depth_or_array_layers: 1,
         },
     );
@@ -552,6 +712,7 @@ pub(crate) fn build_fixed_gpu(
     ramp_bg: vwgpu::BindGroup,
     ramp_lut: Option<vwgpu::Texture>,
     drawparams_bg: vwgpu::BindGroup,
+    spawn_samples: &vwgpu::Buffer,
 ) -> FixedGpu {
     let particle_buf = build_particle_buffer(device, capacity);
     let budget_buf = build_budget_buffer(device);
@@ -584,6 +745,10 @@ pub(crate) fn build_fixed_gpu(
             vwgpu::BindGroupEntry {
                 binding: 2,
                 resource: budget_buf.as_entire_binding(),
+            },
+            vwgpu::BindGroupEntry {
+                binding: 3,
+                resource: spawn_samples.as_entire_binding(),
             },
         ],
     });
@@ -967,6 +1132,7 @@ pub(crate) fn build_emit_params(
     rng_seed: u32,
     has_events: bool,
     inherit_velocity: f32,
+    sample_count: u32,
 ) -> EmitParamsGpu {
     let mut p = EmitParamsGpu::zeroed();
     p.origin = [origin[0], origin[1], origin[2], 0.0];
@@ -977,7 +1143,8 @@ pub(crate) fn build_emit_params(
         emitter.size,
         inherit_velocity,
     ];
-    p.ctrl = [rng_seed, spawn_count, capacity, 0];
+    // ctrl.w carries the mesh spawn-sample pool size (0 for non-mesh shapes).
+    p.ctrl = [rng_seed, spawn_count, capacity, sample_count];
 
     let (spawn_kind, spawn_a, spawn_b) = match emitter.spawn {
         SpawnShape::Point => (0u32, [0.0; 4], [0.0; 4]),
@@ -1011,6 +1178,14 @@ pub(crate) fn build_emit_params(
             ],
             [0.0; 4],
         ),
+        // Mesh-surface / point-cloud (Phase 22): the emit kernel indexes the
+        // spawn-sample pool; spawn_a.x is the normal lift-off speed.
+        SpawnShape::MeshSurface {
+            normal_velocity, ..
+        }
+        | SpawnShape::PointCloud {
+            normal_velocity, ..
+        } => (5u32, [normal_velocity, 0.0, 0.0, 0.0], [0.0; 4]),
     };
     p.spawn_a = spawn_a;
     p.spawn_b = spawn_b;
@@ -1116,5 +1291,45 @@ mod tests {
             instance_rng_seed(None, 1, 3, 7, 5),
             instance_rng_seed(None, 2, 3, 7, 5),
         );
+    }
+
+    #[test]
+    fn point_cloud_samples_cycle_vertices_with_radial_normals() {
+        // Phase 22: a point cloud reuses its vertices, normals point outward.
+        let pts = vec![[1.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, -3.0]];
+        let s = compute_spawn_samples(&pts, &[], true).unwrap();
+        assert_eq!(s.len() as u32, MESH_SAMPLE_POOL);
+        // First three samples are the three vertices in order.
+        assert_eq!(&s[0].position[..3], &[1.0, 0.0, 0.0]);
+        assert_eq!(&s[1].position[..3], &[0.0, 2.0, 0.0]);
+        // Normal of vertex 0 is +X (radial from origin).
+        assert!((s[0].normal[0] - 1.0).abs() < 1e-5);
+        // Vertex 1's radial normal is +Y.
+        assert!((s[1].normal[1] - 1.0).abs() < 1e-5);
+    }
+
+    #[test]
+    fn mesh_surface_sampling_is_area_weighted() {
+        // Two triangles sharing a plane: triangle A is far larger than B, so it
+        // should receive the large majority of area-weighted samples.
+        // Triangle A: big, in +X. Triangle B: tiny, in -X.
+        let positions = vec![
+            [0.0, 0.0, 0.0],
+            [10.0, 0.0, 0.0],
+            [0.0, 10.0, 0.0], // A (area 50)
+            [-1.0, 0.0, 0.0],
+            [-1.1, 0.0, 0.0],
+            [-1.0, 0.1, 0.0], // B (area ~0.005)
+        ];
+        let indices = vec![0, 1, 2, 3, 4, 5];
+        let s = compute_spawn_samples(&positions, &indices, false).unwrap();
+        assert_eq!(s.len() as u32, MESH_SAMPLE_POOL);
+        let in_a = s.iter().filter(|x| x.position[0] > -0.5).count();
+        // Overwhelmingly from the large triangle; normals are +Z (or -Z) face.
+        assert!(
+            in_a as f32 / s.len() as f32 > 0.98,
+            "area weighting should favour the large triangle, got {in_a}"
+        );
+        assert!(s[0].normal[2].abs() > 0.99, "face normal is along Z");
     }
 }

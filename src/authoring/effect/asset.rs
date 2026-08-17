@@ -106,6 +106,16 @@ pub struct EffectAsset {
     /// is the default; [`SimulationSpace::Local`] makes live particles follow the
     /// emitting instance's translation.
     pub sim_space: SimulationSpace,
+    /// Billboard orientation mode (Phase 15). Applies to the
+    /// [`ParticleRender::Billboard`] route; ignored by the mesh and trail routes.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub orient: Orient,
+    /// Size the billboard in screen space (Phase 15): when `true`, a particle
+    /// keeps a constant apparent size regardless of distance (the `size` becomes
+    /// its world size at unit camera distance). `false` is world-space size.
+    /// Billboard route only.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub screen_space_size: bool,
 }
 
 impl Default for EffectAsset {
@@ -124,6 +134,8 @@ impl Default for EffectAsset {
             flipbook: None,
             sub_emitter: None,
             sim_space: SimulationSpace::Global,
+            orient: Orient::ParallelCameraPlane,
+            screen_space_size: false,
         }
     }
 }
@@ -213,6 +225,19 @@ impl EffectAsset {
     /// follow the emitting instance's translation each frame.
     pub fn with_simulation_space(mut self, space: SimulationSpace) -> Self {
         self.sim_space = space;
+        self
+    }
+
+    /// Set the billboard orientation mode (Phase 15). Billboard route only.
+    pub fn with_orient(mut self, orient: Orient) -> Self {
+        self.orient = orient;
+        self
+    }
+
+    /// Size billboards in screen space so distant particles keep a constant
+    /// apparent size (Phase 15). Billboard route only.
+    pub fn with_screen_size(mut self, enable: bool) -> Self {
+        self.screen_space_size = enable;
         self
     }
 }

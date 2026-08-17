@@ -25,6 +25,8 @@ mod showcase_12_instances;
 mod showcase_13_bursts;
 mod showcase_14_lifecycle;
 mod showcase_15_fire;
+mod showcase_16_rendering;
+mod showcase_17_meshspawn;
 mod viewport_callback;
 
 use eframe::egui;
@@ -58,6 +60,8 @@ enum ShowcaseMode {
     Bursts,
     Lifecycle,
     Fire,
+    Rendering,
+    MeshSpawn,
 }
 
 impl ShowcaseMode {
@@ -77,6 +81,8 @@ impl ShowcaseMode {
         ShowcaseMode::Bursts,
         ShowcaseMode::Lifecycle,
         ShowcaseMode::Fire,
+        ShowcaseMode::Rendering,
+        ShowcaseMode::MeshSpawn,
     ];
 
     fn label(self) -> &'static str {
@@ -96,6 +102,8 @@ impl ShowcaseMode {
             ShowcaseMode::Bursts => "13: Bursts",
             ShowcaseMode::Lifecycle => "14: Lifecycle",
             ShowcaseMode::Fire => "15: Fire",
+            ShowcaseMode::Rendering => "16: Rendering",
+            ShowcaseMode::MeshSpawn => "17: Mesh spawn",
         }
     }
 
@@ -185,6 +193,8 @@ fn main() -> eframe::Result {
                 .into_iter()
                 .map(|(_, asset)| plugin.add_effect(device, asset))
                 .collect();
+            let rendering_ids = showcase_16_rendering::register(&mut plugin, device, queue);
+            let meshspawn_ids = showcase_17_meshspawn::register(&mut plugin, device);
             let interaction_id = showcase_06_interaction::presets()
                 .into_iter()
                 .map(|(_, asset)| plugin.add_effect(device, asset))
@@ -248,6 +258,10 @@ fn main() -> eframe::Result {
                 lifecycle: showcase_14_lifecycle::State::default(),
                 fire_ids,
                 fire: showcase_15_fire::State::default(),
+                rendering_ids,
+                rendering: showcase_16_rendering::State::default(),
+                meshspawn_ids,
+                meshspawn: showcase_17_meshspawn::State::default(),
             }))
         }),
     )
@@ -292,6 +306,10 @@ struct App {
     lifecycle: showcase_14_lifecycle::State,
     fire_ids: Vec<EffectId>,
     fire: showcase_15_fire::State,
+    rendering_ids: showcase_16_rendering::Ids,
+    rendering: showcase_16_rendering::State,
+    meshspawn_ids: showcase_17_meshspawn::Ids,
+    meshspawn: showcase_17_meshspawn::State,
 }
 
 impl eframe::App for App {
@@ -375,6 +393,12 @@ impl eframe::App for App {
                     showcase_14_lifecycle::controls(&mut self.lifecycle, ui)
                 }
                 ShowcaseMode::Fire => showcase_15_fire::controls(&mut self.fire, ui),
+                ShowcaseMode::Rendering => {
+                    showcase_16_rendering::controls(&mut self.rendering, ui)
+                }
+                ShowcaseMode::MeshSpawn => {
+                    showcase_17_meshspawn::controls(&mut self.meshspawn, ui)
+                }
             });
 
         // ---- Central panel: viewport ----
@@ -488,6 +512,12 @@ impl eframe::App for App {
                         showcase_14_lifecycle::items(&self.lifecycle_ids, &self.lifecycle, dt)
                     }
                     ShowcaseMode::Fire => showcase_15_fire::items(&self.fire_ids, &self.fire, dt),
+                    ShowcaseMode::Rendering => {
+                        showcase_16_rendering::items(&self.rendering_ids, &self.rendering, dt)
+                    }
+                    ShowcaseMode::MeshSpawn => {
+                        showcase_17_meshspawn::items(&self.meshspawn_ids, &self.meshspawn, dt)
+                    }
                     ShowcaseMode::Refraction | ShowcaseMode::Interaction => {
                         unreachable!("handled above")
                     }

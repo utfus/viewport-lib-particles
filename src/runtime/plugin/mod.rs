@@ -50,3 +50,7 @@ pub(crate) const SORT_STAGE_STRIDE: u64 = 256;
 
 /// Width of the lifetime-ramp LUT texture in texels.
 pub(crate) const RAMP_WIDTH: u32 = 64;
+
+/// Number of samples baked into a `MeshSurface` / `PointCloud` spawn pool
+/// (Phase 22). The emit kernel picks a random index into this pool per spawn.
+pub(crate) const MESH_SAMPLE_POOL: u32 = 8192;

@@ -223,6 +223,9 @@ impl ItemTypePlugin for ParticlePlugin {
                         .and_then(|it| it.forces.as_deref())
                         .unwrap_or(&asset.forces);
                     let inherit = child_link.as_ref().map(|(_, s)| *s).unwrap_or(0.0);
+                    // Phase 22: size of this effect's baked spawn-sample pool
+                    // (0 for non-mesh shapes; the emit kernel skips the mesh path).
+                    let sample_count = self.effects[idx].spawn_sample_count;
                     let emit = build_emit_params(
                         emitter,
                         origin,
@@ -231,6 +234,7 @@ impl ItemTypePlugin for ParticlePlugin {
                         rng_seed,
                         child_link.is_some(),
                         inherit,
+                        sample_count,
                     );
                     // Event control for a parent: condition, count, child cap, active.
                     let event = match &parent_link {

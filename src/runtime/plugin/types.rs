@@ -87,6 +87,23 @@ pub(crate) struct ParticleMesh {
     pub(crate) vertex_buf: vwgpu::Buffer,
     pub(crate) index_buf: vwgpu::Buffer,
     pub(crate) index_count: u32,
+    /// CPU copy of the local-space vertex positions, kept so `MeshSurface` /
+    /// `PointCloud` spawn shapes (Phase 22) can bake an area-weighted sample pool
+    /// at effect-registration time.
+    pub(crate) positions: Vec<[f32; 3]>,
+    /// CPU copy of the triangle indices (empty for a pure point cloud).
+    pub(crate) indices: Vec<u32>,
+}
+
+/// One baked spawn sample for the `MeshSurface` / `PointCloud` shapes (Phase 22).
+/// Matches `SpawnSample` in `particle_emit.wgsl`. 32 bytes.
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
+pub(crate) struct SpawnSampleGpu {
+    /// Instance-relative sample position (xyz; w unused).
+    pub(crate) position: [f32; 4],
+    /// Surface (or radial) normal at the sample (xyz; w unused).
+    pub(crate) normal: [f32; 4],
 }
 
 /// An uploaded texture for the billboard texture / flipbook routes: the texture
@@ -98,9 +115,10 @@ pub(crate) struct ParticleTexture {
 }
 
 /// Per-effect draw parameters (group 3). Matches `DrawParams` in the draw and
-/// mesh shaders. 32 bytes. The billboard shaders read all eight fields; the mesh
-/// and trail shaders read only the first four (their `DrawParams` struct is that
-/// 16-byte prefix, valid against the larger buffer).
+/// mesh shaders. 48 bytes. The billboard shaders read all twelve fields; the
+/// mesh and trail shaders read only the first four (their `DrawParams` struct is
+/// that 16-byte prefix, valid against the larger buffer). The size stays a
+/// multiple of 16 so the uniform layout is valid.
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 pub(crate) struct DrawParams {
@@ -121,6 +139,15 @@ pub(crate) struct DrawParams {
     pub(crate) flip_rows: u32,
     /// Flipbook playback: 0 stretches the sheet across life; > 0 loops at fps.
     pub(crate) flip_fps: f32,
+    /// Billboard orientation (Phase 15): 0 = parallel camera plane, 1 = face
+    /// camera position, 2 = along velocity, 3 = fixed screen roll.
+    pub(crate) orient: u32,
+    /// Orientation parameter: the fixed roll angle (radians) for orient == 3.
+    pub(crate) orient_param: f32,
+    /// Screen-space size flag (Phase 15): 1 keeps constant apparent size.
+    pub(crate) screen_size: u32,
+    /// Padding to a 16-byte multiple.
+    pub(crate) _pad: u32,
 }
 
 /// Trail history parameters (group 1, binding 2 of the append and trail draw
@@ -329,6 +356,13 @@ pub(crate) struct RegisteredEffect {
     /// Set by `remove_effect` (Phase 27): the slot is tombstoned (its
     /// `EffectId` index stays stable) and no longer simulated or drawn.
     pub(crate) removed: bool,
+    /// Baked `MeshSurface` / `PointCloud` spawn-sample pool (Phase 22), built at
+    /// registration when the emitter's spawn shape needs it. Bound at fixed-emit
+    /// binding 3; effects without a mesh spawn shape use the shared 1-entry
+    /// default and never index it.
+    pub(crate) spawn_samples: Option<vwgpu::Buffer>,
+    /// Number of samples in `spawn_samples` (0 when it is the shared default).
+    pub(crate) spawn_sample_count: u32,
 }
 
 /// Identifies one live instance: a registered effect plus the host's stable
@@ -472,6 +506,10 @@ pub struct ParticlePlugin {
     /// A 1x1 white texture bound at group 3 for effects with no texture (so the
     /// billboard fragment always has a valid sampler). Built lazily in `prepare`.
     pub(crate) default_tex_view: Option<vwgpu::TextureView>,
+    /// A 1-entry spawn-sample buffer bound at fixed-emit binding 3 for effects
+    /// that do not use a `MeshSurface` / `PointCloud` spawn shape (Phase 22), so
+    /// the emit bind group always has a valid buffer there. Built in `build_gpu`.
+    pub(crate) default_spawn_samples: Option<vwgpu::Buffer>,
 
     // Lifetime-ramp LUT (group 2 of the draw pipeline): the layout, the shared
     // linear sampler, and an identity LUT + bind group reused by effects with no

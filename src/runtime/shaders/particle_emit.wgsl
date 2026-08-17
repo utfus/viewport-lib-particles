@@ -23,9 +23,15 @@ struct EmitParams {
     vel_a:   vec4<f32>,  // fixed vel xyz | box vel min xyz | cone axis xyz
     vel_b:   vec4<f32>,  // box vel max xyz | cone (half_angle, min_speed, max_speed, _)
     colour:  vec4<f32>,
-    misc:    vec4<f32>,  // lifetime_min, lifetime_max, size, _
-    ctrl:    vec4<u32>,  // rng_seed, spawn_count, capacity, _
+    misc:    vec4<f32>,  // lifetime_min, lifetime_max, size, _ | mesh: spawn_a.x = normal_velocity
+    ctrl:    vec4<u32>,  // rng_seed, spawn_count, capacity, mesh_sample_count
     kinds:   vec4<u32>,  // spawn_kind, vel_kind, _, _
+};
+
+// One baked mesh-surface / point-cloud spawn sample (Phase 22).
+struct SpawnSample {
+    position: vec4<f32>,
+    normal:   vec4<f32>,
 };
 
 struct Budget { count: atomic<u32> };
@@ -33,6 +39,8 @@ struct Budget { count: atomic<u32> };
 @group(0) @binding(0) var<storage, read_write> particles: array<Particle>;
 @group(0) @binding(1) var<uniform> params: EmitParams;
 @group(0) @binding(2) var<storage, read_write> budget: Budget;
+// Mesh spawn-sample pool (a 1-entry default when the effect has no mesh shape).
+@group(0) @binding(3) var<storage, read> spawn_samples: array<SpawnSample>;
 
 fn hash_u32(x: u32) -> u32 {
     var v = x;
@@ -74,6 +82,7 @@ fn emit_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     // Position.
     var pos = params.origin.xyz;
+    var sample_normal = vec3<f32>(0.0, 0.0, 0.0);
     let spawn_kind = params.kinds.x;
     if (spawn_kind == 1u) {
         pos += vec3<f32>(
@@ -109,6 +118,15 @@ fn emit_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             r = ring_r * sqrt(rand01(&rng)); // fill the cross-section
         }
         pos += vec3<f32>(r * cos(ang), r * sin(ang), t * height);
+    } else if (spawn_kind == 5u) {
+        // Mesh-surface / point-cloud: index the baked sample pool (Phase 22).
+        let n = params.ctrl.w;
+        if (n > 0u) {
+            let si = hash_u32(rng * 2654435761u + 1u) % n;
+            let s = spawn_samples[si];
+            pos += s.position.xyz;
+            sample_normal = s.normal.xyz;
+        }
     }
 
     // Velocity.
@@ -135,6 +153,13 @@ fn emit_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         let dir = axis * cos_a + (t * cos(phi) + b * sin(phi)) * sin_a;
         let speed = mix(params.vel_b.y, params.vel_b.z, rand01(&rng));
         vel = dir * speed;
+    }
+
+    // Mesh spawn normal lift-off (Phase 22): push the particle off the surface
+    // along its sample normal, on top of the emitter's own velocity.
+    if (spawn_kind == 5u) {
+        let normal_speed = params.spawn_a.x;
+        vel += sample_normal * normal_speed;
     }
 
     let life = mix(params.misc.x, params.misc.y, rand01(&rng));

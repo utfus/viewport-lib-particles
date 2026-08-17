@@ -69,7 +69,7 @@ pub(crate) use runtime::{plugin, refraction};
 
 pub use effect::{
     Attribute, EffectAsset, EffectId, EffectProgram, Emitter, EventCondition, Flipbook,
-    ForceModifier, Gradient, MeshAlign, ParticleBlend, ParticleMeshId, ParticleRender,
+    ForceModifier, Gradient, MeshAlign, Orient, ParticleBlend, ParticleMeshId, ParticleRender,
     ParticleTextureId, PropertyDecl, PropertyValue, SetAttribute, SimulationSpace, SpawnRate,
     SpawnShape, SubEmitter, TextureMode, UpdateOp, VelocityDist,
 };

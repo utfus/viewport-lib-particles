@@ -1,3 +1,4 @@
+use super::*;
 
 /// How many particles an effect spawns per second.
 #[derive(Clone, Copy, Debug)]
@@ -60,6 +61,31 @@ pub enum SpawnShape {
         height: f32,
         /// `true` fills the solid cone; `false` places on the lateral surface.
         volume: bool,
+    },
+    /// Spawn over the surface of an uploaded mesh (Phase 22), area-weighted so
+    /// large triangles receive proportionally more particles. Positions are
+    /// instance-relative (offset by the emitting instance's position). Sampled
+    /// from a fixed pool baked at registration time from the mesh's triangles;
+    /// the fixed-function path only. Useful for dissolve / assembly effects.
+    MeshSurface {
+        /// The uploaded mesh (`ParticlePlugin::upload_mesh`) whose triangles are
+        /// sampled. Must be uploaded before the effect is registered.
+        mesh: ParticleMeshId,
+        /// Speed added along each sample's surface normal at spawn (Phase 22), so
+        /// particles lift off the surface. `0` spawns on the surface with only
+        /// the emitter's own velocity distribution.
+        normal_velocity: f32,
+    },
+    /// Spawn from the vertices of an uploaded point set (Phase 22): the mesh's
+    /// vertex positions are treated as points and its indices ignored. Positions
+    /// are instance-relative. Fixed-function only.
+    PointCloud {
+        /// The uploaded mesh whose *vertices* are the point set (upload with an
+        /// empty index slice for a pure point cloud).
+        mesh: ParticleMeshId,
+        /// Speed added along each point's outward (radial-from-origin) direction
+        /// at spawn. `0` uses only the emitter's velocity distribution.
+        normal_velocity: f32,
     },
 }
 

@@ -71,7 +71,8 @@ fn vs(@location(0) v_pos: vec3<f32>, @builtin(instance_index) ii: u32) -> VsOut 
     let p = particles[order[ii]];
 
     let age = clamp(1.0 - p.lifetime / max(p.max_lifetime, 1e-4), 0.0, 1.0);
-    let ramp = textureSampleLevel(ramp_tex, ramp_samp, vec2<f32>(age, 0.5), 0.0);
+    // Row 0 (v = 0.25) holds colour + size; the ramp LUT is 2 rows tall (Phase 15).
+    let ramp = textureSampleLevel(ramp_tex, ramp_samp, vec2<f32>(age, 0.25), 0.0);
 
     var scale = p.size * ramp.a;
     if (p.lifetime <= 0.0) {

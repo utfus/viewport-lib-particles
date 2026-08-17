@@ -37,6 +37,7 @@ use viewport_lib::resources::{
 };
 use viewport_lib::scene::material::ItemSettings;
 use viewport_lib::wgpu as vwgpu;
+use viewport_lib::Frustum;
 
 use crate::codegen;
 use crate::effect::{
@@ -49,6 +50,14 @@ use crate::effect::{
 /// the renderer's configured sample count from `SharedBindings` today, so this
 /// assumes the default single-sampled HDR pass (see the plan).
 const SAMPLE_COUNT: u32 = 1;
+
+/// High bit of an [`InstanceKey`]'s `key`, reserved for internal transient
+/// (burst) instances (Phase 25) so they never collide with host-supplied keys.
+/// Host keys must stay below this (node ids / indices always do).
+const TRANSIENT_KEY_BIT: u64 = 1 << 63;
+
+/// Default cap on concurrent transient (burst) instances per effect.
+const DEFAULT_MAX_TRANSIENTS: usize = 64;
 
 /// Max forces per effect, matching the fixed array in `particle_sim.wgsl`.
 const MAX_FORCES: usize = 8;
@@ -101,6 +110,11 @@ pub struct ParticleItem {
     /// Per-frame property values, applied over the program's declared defaults by
     /// name. Empty leaves every property at its default.
     pub properties: Vec<(&'static str, PropertyValue)>,
+    /// When `true`, this is a fire-and-forget transient burst: submit it once at
+    /// a world point and the plugin plays it in a pooled transient slot, then
+    /// self-retires it when its particles have aged out — no need to keep
+    /// submitting it. See [`burst`](Self::burst). Ignored for sub-emitter effects.
+    pub one_shot: bool,
 }
 
 impl ParticleItem {
@@ -115,12 +129,23 @@ impl ParticleItem {
             forces: None,
             gradient: None,
             properties: Vec::new(),
+            one_shot: false,
         }
     }
 
     /// Place the emitter at `position`.
     pub fn at(mut self, position: [f32; 3]) -> Self {
         self.position = position;
+        self
+    }
+
+    /// Mark this as a fire-and-forget transient burst: submit it once (e.g. a
+    /// muzzle flash on a shot) and the plugin plays it in a pooled transient
+    /// slot and self-retires it when its particles die. No need to keep
+    /// submitting it or hold a key. Best paired with `SpawnRate::Burst`. Ignored
+    /// for sub-emitter effects.
+    pub fn burst(mut self) -> Self {
+        self.one_shot = true;
         self
     }
 
@@ -177,6 +202,25 @@ pub struct ParticleItems {
     /// never sorted. Defaults to `true`; set `false` to see the ordering
     /// artefact.
     pub sort_transparent: bool,
+    /// Distance cull (Phase 26): instances whose emitter origin is farther than
+    /// this from the camera are not emitted, simulated, or drawn, and drop their
+    /// live particles (resuming fresh when back in range). `None` disables the
+    /// distance cull. Sub-emitter effects are never distance-culled.
+    pub cull_distance: Option<f32>,
+    /// Frustum cull (Phase 26): when `true`, instances whose (approximate)
+    /// bounding sphere is fully outside the camera frustum are culled like the
+    /// distance cull. The bound is estimated from the effect (spawn extent +
+    /// particle travel), so it is conservative. `false` disables it.
+    pub frustum_cull: bool,
+    /// Simulation budget (Phase 26): cap on the number of instances simulated
+    /// this frame. When more are visible, the nearest are kept and the rest are
+    /// frozen (not simulated or drawn; particles retained). Sub-emitter instances
+    /// are always kept. `None` is unlimited.
+    pub max_sim_instances: Option<usize>,
+    /// Per-effect cap on concurrent transient (burst) instances (Phase 25). When
+    /// a new burst would exceed it, the oldest transient of that effect is
+    /// recycled. `None` uses the default (64).
+    pub max_transients: Option<usize>,
 }
 
 impl Default for ParticleItems {
@@ -185,6 +229,10 @@ impl Default for ParticleItems {
             items: Vec::new(),
             dt: 1.0 / 60.0,
             sort_transparent: true,
+            cull_distance: None,
+            frustum_cull: false,
+            max_sim_instances: None,
+            max_transients: None,
         }
     }
 }
@@ -205,6 +253,32 @@ impl ParticleItems {
     /// this frame.
     pub fn with_sort_transparent(mut self, sort: bool) -> Self {
         self.sort_transparent = sort;
+        self
+    }
+
+    /// Set the distance cull: instances farther than `distance` from the camera
+    /// are not simulated or drawn (Phase 26).
+    pub fn with_cull_distance(mut self, distance: f32) -> Self {
+        self.cull_distance = Some(distance);
+        self
+    }
+
+    /// Enable frustum culling of off-screen instances this frame (Phase 26).
+    pub fn with_frustum_cull(mut self, enable: bool) -> Self {
+        self.frustum_cull = enable;
+        self
+    }
+
+    /// Cap the number of instances simulated this frame; the nearest are kept
+    /// (Phase 26).
+    pub fn with_max_sim_instances(mut self, max: usize) -> Self {
+        self.max_sim_instances = Some(max);
+        self
+    }
+
+    /// Cap concurrent transient (burst) instances per effect (Phase 25).
+    pub fn with_max_transients(mut self, max: usize) -> Self {
+        self.max_transients = Some(max);
         self
     }
 
@@ -590,6 +664,27 @@ struct EffectInstance {
     burst_done: bool,
     /// This instance's origin last frame, for the local-space translation delta.
     last_origin: Option<[f32; 3]>,
+    /// Set when a distance/frustum cull has zeroed this instance's particle
+    /// buffer, so the drop happens once per cull episode (not every frame).
+    dropped: bool,
+}
+
+/// A live transient (burst) instance (Phase 25): a pooled particle set playing a
+/// one-shot effect at a fixed world point, aged each frame and recycled when its
+/// particles have died. Tracked separately from steady instances because the host
+/// submits it once and the plugin advances it thereafter.
+struct TransientInstance {
+    /// Its `(effect, key)` in `instances`; the key carries [`TRANSIENT_KEY_BIT`].
+    ikey: InstanceKey,
+    /// Fixed world spawn point.
+    origin: [f32; 3],
+    /// Whether it casts shadows (captured from the spawning item).
+    cast_shadows: bool,
+    /// Seconds since spawn.
+    age: f32,
+    /// Age at which the instance is retired and its slot recycled (the effect's
+    /// max particle lifetime plus a margin).
+    retire_at: f32,
 }
 
 /// The particle system plugin.
@@ -657,6 +752,15 @@ pub struct ParticlePlugin {
     /// uniform. Built lazily the first frame an instance is driven.
     instances: HashMap<InstanceKey, EffectInstance>,
 
+    /// Active transient (burst) instances (Phase 25), advanced every frame and
+    /// recycled when they age out. Their GPU state lives in `instances` under
+    /// `TRANSIENT_KEY_BIT` keys.
+    transients: Vec<TransientInstance>,
+    /// Recycled transient slot indices per effect (a free list).
+    transient_free: HashMap<usize, Vec<u64>>,
+    /// Next fresh transient slot index per effect (the pool high-water mark).
+    transient_next: HashMap<usize, u64>,
+
     /// Meshes uploaded for the mesh render route, indexed by `ParticleMeshId`.
     meshes: Vec<ParticleMesh>,
 
@@ -697,6 +801,20 @@ struct DrawEntry {
     pick_id: u32,
     selected: bool,
     cast_shadows: bool,
+}
+
+/// One instance to consider simulating this frame, before culling / budget.
+/// Steady instances carry `item_idx` (the source of per-frame overrides);
+/// transient (burst) instances carry `None` and use the registered asset.
+#[derive(Copy, Clone)]
+struct DrivenInstance {
+    ikey: InstanceKey,
+    origin: [f32; 3],
+    pick_id: u32,
+    selected: bool,
+    cast_shadows: bool,
+    /// `Some(index)` for a steady submitted item; `None` for a transient.
+    item_idx: Option<usize>,
 }
 
 /// Per-effect pick-id uniform (group 2 of the pick pipeline). 16 bytes.
@@ -1021,6 +1139,7 @@ impl ParticlePlugin {
                 spawn_accum: 0.0,
                 burst_done: false,
                 last_origin: None,
+                dropped: false,
             },
         );
     }
@@ -1109,6 +1228,35 @@ impl ParticlePlugin {
                 child_emit_bg,
             },
         );
+    }
+
+    /// Acquire a transient (burst) slot index for `effect`: a recycled free slot,
+    /// else a fresh one while under `max`, else the slot of the oldest active
+    /// transient of this effect (drop-oldest). Returns `None` only when `max` is
+    /// 0. The caller retires any dropped transient's tracking.
+    fn acquire_transient_slot(&mut self, effect: usize, max: usize) -> Option<u64> {
+        if let Some(slot) = self.transient_free.get_mut(&effect).and_then(|v| v.pop()) {
+            return Some(slot);
+        }
+        let next = self.transient_next.entry(effect).or_insert(0);
+        if (*next as usize) < max {
+            let slot = *next;
+            *next += 1;
+            return Some(slot);
+        }
+        // Pool full: recycle the oldest active transient of this effect.
+        let oldest = self
+            .transients
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| t.ikey.effect as usize == effect)
+            .max_by(|a, b| {
+                a.1.age
+                    .partial_cmp(&b.1.age)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+            })
+            .map(|(i, _)| i);
+        oldest.map(|i| self.transients.remove(i).ikey.key & !TRANSIENT_KEY_BIT)
     }
 
     /// Compile (or reuse) the emit/simulate pipelines for a program, keyed by
@@ -2004,41 +2152,171 @@ impl ItemTypePlugin for ParticlePlugin {
             }
         }
 
-        // Collect this frame's driven instances: the first non-hidden item of
-        // each distinct `(effect, key)`. Effects involved in sub-emitters (a
-        // parent or a child) stay single-instance — their event buffers and
-        // parent/child bind groups bind one particle set — so their key is forced
-        // to 0; every other effect simulates one independent instance per key.
         let num_effects = self.effects.len();
-        let subemitter_children: std::collections::HashSet<usize> =
+        // Effects involved in a sub-emitter (parent or child) stay single-instance
+        // (key 0) and are exempt from culling / budget / transients — their event
+        // buffers bind one particle set. Precomputed into a set (not a closure
+        // over `self`) so the per-instance loops below can mutate `self` freely.
+        let mut single_effects: std::collections::HashSet<usize> =
             parent_of.keys().copied().collect();
-        let mut driven: Vec<(InstanceKey, usize)> = Vec::new();
+        for (ei, e) in self.effects.iter().enumerate() {
+            if e.asset.sub_emitter.is_some() {
+                single_effects.insert(ei);
+            }
+        }
+        let is_single = |idx: usize| single_effects.contains(&idx);
+
+        // Steady instances: first non-hidden, non-one-shot item of each distinct
+        // `(effect, key)`. One-shot items become transients below.
+        let mut driven: Vec<DrivenInstance> = Vec::new();
         let mut seen: std::collections::HashSet<InstanceKey> = std::collections::HashSet::new();
         for (i, it) in items.items.iter().enumerate() {
-            if it.settings.hidden {
+            if it.settings.hidden || it.one_shot {
                 continue;
             }
             let idx = it.effect.0 as usize;
             if idx >= num_effects {
                 continue;
             }
-            let single = self.effects[idx].asset.sub_emitter.is_some()
-                || subemitter_children.contains(&idx);
-            let key = if single { 0 } else { it.key };
+            let key = if is_single(idx) { 0 } else { it.key };
             let ikey = InstanceKey {
                 effect: idx as u32,
                 key,
             };
             if seen.insert(ikey) {
-                driven.push((ikey, i));
+                driven.push(DrivenInstance {
+                    ikey,
+                    origin: it.position,
+                    pick_id: it.settings.pick_id.0 as u32,
+                    selected: it.settings.selected,
+                    cast_shadows: it.settings.cast_shadows,
+                    item_idx: Some(i),
+                });
             }
         }
 
-        // Process driven instances parents-before-children, so a parent's simulate
-        // pass (which appends spawn events) is encoded before its child's emit
-        // pass (which consumes them) within this frame's command buffer. Ordering
-        // by ancestor depth keeps chains correct; the walk is bounded so a
-        // misconfigured cycle cannot loop forever.
+        // Transient (burst) instances (Phase 25): age the live ones and retire
+        // those past their lifetime (freeing pooled slots), then spawn a fresh
+        // transient for each one-shot item submitted this frame.
+        let mut ti = 0;
+        while ti < self.transients.len() {
+            self.transients[ti].age += dt;
+            if self.transients[ti].age >= self.transients[ti].retire_at {
+                let t = self.transients.remove(ti);
+                let slot = t.ikey.key & !TRANSIENT_KEY_BIT;
+                self.transient_free
+                    .entry(t.ikey.effect as usize)
+                    .or_default()
+                    .push(slot);
+            } else {
+                ti += 1;
+            }
+        }
+        let max_transients = items.max_transients.unwrap_or(DEFAULT_MAX_TRANSIENTS);
+        for it in &items.items {
+            if !it.one_shot || it.settings.hidden {
+                continue;
+            }
+            let idx = it.effect.0 as usize;
+            if idx >= num_effects || is_single(idx) {
+                continue;
+            }
+            let Some(slot) = self.acquire_transient_slot(idx, max_transients) else {
+                continue;
+            };
+            let ikey = InstanceKey {
+                effect: idx as u32,
+                key: TRANSIENT_KEY_BIT | slot,
+            };
+            self.ensure_instance_gpu(idx, ikey.key, device, queue, &emit_bgl, &sim_bgl, &draw_bgl);
+            let capacity = self.effects[idx].asset.capacity;
+            {
+                let inst = self.instances.get_mut(&ikey).unwrap();
+                zero_particle_buffer(queue, inst.gpu.particle_buf(), capacity);
+                inst.spawn_accum = 0.0;
+                inst.burst_done = false;
+                inst.last_origin = None;
+                inst.dropped = false;
+            }
+            let retire_at = transient_lifetime(&self.effects[idx].asset);
+            self.transients.push(TransientInstance {
+                ikey,
+                origin: it.position,
+                cast_shadows: it.settings.cast_shadows,
+                age: 0.0,
+                retire_at,
+            });
+        }
+        for t in &self.transients {
+            driven.push(DrivenInstance {
+                ikey: t.ikey,
+                origin: t.origin,
+                pick_id: 0,
+                selected: false,
+                cast_shadows: t.cast_shadows,
+                item_idx: None,
+            });
+        }
+
+        // Culling + simulation budget (Phase 26). Distance/frustum-cull instances
+        // (sub-emitter effects exempt), dropping culled instances' particles; then
+        // keep the nearest `max_sim_instances`.
+        let eye = glam::Vec3::from(ctx.camera.eye_position);
+        let frustum = if items.frustum_cull {
+            Some(Frustum::from_view_proj(&ctx.camera.view_proj()))
+        } else {
+            None
+        };
+        let cull_dist_sq = items.cull_distance.map(|d| d * d);
+        if cull_dist_sq.is_some() || frustum.is_some() {
+            let mut kept = Vec::with_capacity(driven.len());
+            for di in driven.drain(..) {
+                let idx = di.ikey.effect as usize;
+                if is_single(idx) {
+                    kept.push(di);
+                    continue;
+                }
+                let pos = glam::Vec3::from(di.origin);
+                let too_far = cull_dist_sq.is_some_and(|c| (pos - eye).length_squared() > c);
+                let off_screen = frustum
+                    .as_ref()
+                    .is_some_and(|f| f.cull_sphere(pos, effect_cull_radius(&self.effects[idx].asset)));
+                if too_far || off_screen {
+                    // Drop this instance's particles once per cull episode.
+                    if let Some(inst) = self.instances.get_mut(&di.ikey) {
+                        if !inst.dropped {
+                            let cap = self.effects[idx].asset.capacity;
+                            zero_particle_buffer(queue, inst.gpu.particle_buf(), cap);
+                            inst.dropped = true;
+                            inst.spawn_accum = 0.0;
+                            inst.burst_done = false;
+                            inst.last_origin = None;
+                        }
+                    }
+                } else {
+                    kept.push(di);
+                }
+            }
+            driven = kept;
+        }
+        if let Some(max) = items.max_sim_instances {
+            if driven.len() > max {
+                // Sub-emitter instances first, then nearest-first; keep `max`.
+                driven.sort_by(|a, b| {
+                    let sa = is_single(a.ikey.effect as usize);
+                    let sb = is_single(b.ikey.effect as usize);
+                    let da = (glam::Vec3::from(a.origin) - eye).length_squared();
+                    let db = (glam::Vec3::from(b.origin) - eye).length_squared();
+                    sb.cmp(&sa)
+                        .then(da.partial_cmp(&db).unwrap_or(std::cmp::Ordering::Equal))
+                });
+                driven.truncate(max);
+            }
+        }
+
+        // Order parents-before-children so a parent's simulate (which appends
+        // spawn events) is encoded before its child's emit within one command
+        // buffer. Bounded walk; a misconfigured cycle cannot loop forever.
         let ancestor_depth = |mut idx: usize| -> usize {
             let mut d = 0;
             let mut guard = 0;
@@ -2052,7 +2330,7 @@ impl ItemTypePlugin for ParticlePlugin {
             }
             d
         };
-        driven.sort_by_key(|(ik, _)| ancestor_depth(ik.effect as usize));
+        driven.sort_by_key(|di| ancestor_depth(di.ikey.effect as usize));
 
         // Reset every existing event buffer's append count to zero. Queue writes
         // apply before this frame's command buffer runs, so parents append from a
@@ -2067,13 +2345,16 @@ impl ItemTypePlugin for ParticlePlugin {
         });
         let mut any = false;
 
-        for &(ikey, item_idx) in &driven {
+        for &di in &driven {
+            let ikey = di.ikey;
             let idx = ikey.effect as usize;
-            let item = &items.items[item_idx];
-            let origin = item.position;
-            let pick_id = item.settings.pick_id.0 as u32;
-            let selected = item.settings.selected;
-            let cast_shadows = item.settings.cast_shadows;
+            // Steady instances read per-frame overrides from their item; transient
+            // (burst) instances have none and use the registered asset.
+            let item = di.item_idx.map(|i| &items.items[i]);
+            let origin = di.origin;
+            let pick_id = di.pick_id;
+            let selected = di.selected;
+            let cast_shadows = di.cast_shadows;
 
             // Build this instance's GPU state (fixed or generated) if new.
             self.ensure_instance_gpu(idx, ikey.key, device, queue, &emit_bgl, &sim_bgl, &draw_bgl);
@@ -2100,9 +2381,11 @@ impl ItemTypePlugin for ParticlePlugin {
             // Per-frame gradient override: re-bake the ramp LUT and swap the draw
             // group-2 bind group. Cheap (a 64-texel upload) so it runs whenever an
             // override is present, no diffing.
-            if let (Some(g), Some(ramp_bgl), Some(ramp_sampler)) =
-                (&item.gradient, ramp_bgl.as_ref(), ramp_sampler.as_ref())
-            {
+            if let (Some(g), Some(ramp_bgl), Some(ramp_sampler)) = (
+                item.and_then(|it| it.gradient.as_ref()),
+                ramp_bgl.as_ref(),
+                ramp_sampler.as_ref(),
+            ) {
                 let lut = build_ramp_lut(device, queue, g);
                 let bg = make_ramp_bg(device, ramp_bgl, ramp_sampler, &lut);
                 self.instances.get_mut(&ikey).unwrap().gpu.set_ramp(bg, lut);
@@ -2113,7 +2396,7 @@ impl ItemTypePlugin for ParticlePlugin {
             let rate = match &self.effects[idx].asset.program {
                 Some(p) => p.rate,
                 None => item
-                    .emitter
+                    .and_then(|it| it.emitter)
                     .map(|e| e.rate)
                     .unwrap_or(self.effects[idx].asset.emitter.rate),
             };
@@ -2125,10 +2408,12 @@ impl ItemTypePlugin for ParticlePlugin {
             let groups = capacity.div_ceil(64).max(1);
 
             // Advance this instance's own spawn state and record its origin (for
-            // the next frame's local-space delta).
+            // the next frame's local-space delta). Simulating clears the culled
+            // "dropped" flag so a future cull drops its particles again.
             let spawn_count = {
                 let inst = self.instances.get_mut(&ikey).unwrap();
                 inst.last_origin = Some(origin);
+                inst.dropped = false;
                 next_spawn_count(&mut inst.spawn_accum, &mut inst.burst_done, rate, dt)
             };
 
@@ -2163,8 +2448,12 @@ impl ItemTypePlugin for ParticlePlugin {
                 EffectGpu::Fixed(g) => {
                     let asset = &self.effects[idx].asset;
                     // Per-frame emitter / force overrides fall back to the asset.
-                    let emitter = item.emitter.as_ref().unwrap_or(&asset.emitter);
-                    let forces = item.forces.as_deref().unwrap_or(&asset.forces);
+                    let emitter = item
+                        .and_then(|it| it.emitter.as_ref())
+                        .unwrap_or(&asset.emitter);
+                    let forces = item
+                        .and_then(|it| it.forces.as_deref())
+                        .unwrap_or(&asset.forces);
                     let inherit = child_link.as_ref().map(|(_, s)| *s).unwrap_or(0.0);
                     let emit = build_emit_params(
                         emitter,
@@ -2226,7 +2515,10 @@ impl ItemTypePlugin for ParticlePlugin {
                         .as_ref()
                         .map(|p| p.properties.as_slice())
                         .unwrap_or(&[]);
-                    let props = build_props_data(decls, &item.properties);
+                    let props = build_props_data(
+                        decls,
+                        item.map(|it| it.properties.as_slice()).unwrap_or(&[]),
+                    );
                     queue.write_buffer(&g.props_buf, 0, bytemuck::cast_slice(&props));
                     queue.write_buffer(&g.budget_buf, 0, bytemuck::bytes_of(&0u32));
                     dispatch_sim(
@@ -2474,6 +2766,61 @@ impl ItemTypePlugin for ParticlePlugin {
             pass.draw(0..6, 0..eff.asset.capacity);
         }
     }
+}
+
+/// Overwrite a particle buffer with zeros, killing every slot (used to drop a
+/// culled instance's particles so it resumes fresh when back in range).
+fn zero_particle_buffer(queue: &vwgpu::Queue, buf: &vwgpu::Buffer, capacity: u32) {
+    let bytes = (capacity as usize) * std::mem::size_of::<GpuParticle>();
+    queue.write_buffer(buf, 0, &vec![0u8; bytes]);
+}
+
+/// The age at which a transient (burst) instance of `asset` is retired: the
+/// effect's maximum particle lifetime plus a small margin, so all burst
+/// particles have died.
+fn transient_lifetime(asset: &EffectAsset) -> f32 {
+    let life = match &asset.program {
+        Some(p) => p.lifetime.1,
+        None => asset.emitter.lifetime.1,
+    };
+    life.max(0.05) + 0.1
+}
+
+/// A conservative bounding radius for an effect's live particles about its
+/// emitter origin, for frustum culling. Estimated from how far a particle can
+/// travel (max speed x lifetime) plus the spawn extent and particle size — the
+/// codegen path is unknown, so it gets a generous default.
+fn effect_cull_radius(asset: &EffectAsset) -> f32 {
+    if asset.program.is_some() {
+        return 20.0;
+    }
+    let e = &asset.emitter;
+    let life = e.lifetime.1.max(0.0);
+    let speed = match e.velocity {
+        VelocityDist::Fixed(v) => (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt(),
+        VelocityDist::UniformBox { min, max } => {
+            let m = |a: f32, b: f32| a.abs().max(b.abs());
+            (m(min[0], max[0]).powi(2) + m(min[1], max[1]).powi(2) + m(min[2], max[2]).powi(2))
+                .sqrt()
+        }
+        VelocityDist::UniformCone { max_speed, .. } => max_speed,
+    };
+    let spawn_extent = match e.spawn {
+        SpawnShape::Point => 0.0,
+        SpawnShape::Box { min, max } => {
+            let d = |a: f32, b: f32| (a - b).abs();
+            0.5 * (d(min[0], max[0]).powi(2) + d(min[1], max[1]).powi(2) + d(min[2], max[2]).powi(2))
+                .sqrt()
+        }
+        SpawnShape::Sphere { radius, .. } | SpawnShape::Circle { radius, .. } => radius,
+        SpawnShape::Cone {
+            base_radius,
+            top_radius,
+            height,
+            ..
+        } => base_radius.max(top_radius).max(height),
+    };
+    speed * life + spawn_extent + e.size + 0.5
 }
 
 /// Allocate a zeroed persistent particle buffer of `capacity` slots.

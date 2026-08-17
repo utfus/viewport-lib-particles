@@ -54,6 +54,14 @@ pub struct State {
     pub hide_one: bool,
     /// Sweep the first instance back and forth (it carries its own particles).
     pub move_one: bool,
+    /// Phase 26: distance-cull instances beyond `cull_distance` from the camera.
+    pub cull: bool,
+    /// Cull radius in world units.
+    pub cull_distance: f32,
+    /// Phase 26: cap the number of instances simulated per frame (nearest kept).
+    pub budget: bool,
+    /// The simulation budget when `budget` is on.
+    pub max_instances: usize,
     /// Internal clock, advanced by the app each frame.
     pub t: f32,
 }
@@ -65,6 +73,10 @@ impl Default for State {
             spacing: 1.6,
             hide_one: false,
             move_one: false,
+            cull: false,
+            cull_distance: 8.0,
+            budget: false,
+            max_instances: 8,
             t: 0.0,
         }
     }
@@ -79,11 +91,27 @@ pub fn controls(state: &mut State, ui: &mut egui::Ui) {
     ui.separator();
     ui.checkbox(&mut state.hide_one, "Hide one (others burn on)");
     ui.checkbox(&mut state.move_one, "Move one (neighbours undisturbed)");
+    ui.separator();
+    ui.label("Phase 26 — culling / budget:");
+    ui.checkbox(&mut state.cull, "Distance cull");
+    if state.cull {
+        ui.add(egui::Slider::new(&mut state.cull_distance, 2.0..=20.0).text("cull dist"));
+    }
+    ui.checkbox(&mut state.budget, "Simulation budget");
+    if state.budget {
+        ui.add(egui::Slider::new(&mut state.max_instances, 1..=36).text("max sims"));
+    }
 }
 
 /// Build this frame's grid submission — one keyed instance per anchor.
 pub fn items(effect_ids: &[EffectId], state: &State, dt: f32) -> ParticleItems {
     let mut items = ParticleItems::new().with_dt(dt);
+    if state.cull {
+        items = items.with_cull_distance(state.cull_distance);
+    }
+    if state.budget {
+        items = items.with_max_sim_instances(state.max_instances);
+    }
     let Some(&id) = effect_ids.first() else {
         return items;
     };

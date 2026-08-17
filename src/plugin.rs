@@ -115,6 +115,15 @@ pub struct ParticleItem {
     /// self-retires it when its particles have aged out — no need to keep
     /// submitting it. See [`burst`](Self::burst). Ignored for sub-emitter effects.
     pub one_shot: bool,
+    /// Optional host RNG seed for deterministic spawning (Phase 28). When set,
+    /// this instance's per-frame emit seed is a fixed function of the seed, the
+    /// `(effect, key)`, and the instance's own simulation-frame counter — so a
+    /// fixed seed + `dt` sequence reproduces the same seed stream run to run
+    /// (preview vs runtime, captures, golden tests). `None` derives the seed from
+    /// the global frame counter (not reproducible across runs). See
+    /// [`with_seed`](Self::with_seed). GPU atomic spawn order still limits exact
+    /// particle-set reproducibility.
+    pub seed: Option<u64>,
 }
 
 impl ParticleItem {
@@ -130,6 +139,7 @@ impl ParticleItem {
             gradient: None,
             properties: Vec::new(),
             one_shot: false,
+            seed: None,
         }
     }
 
@@ -184,6 +194,25 @@ impl ParticleItem {
         self.properties.push((name, value));
         self
     }
+
+    /// Set a deterministic host RNG seed for this instance (Phase 28). A fixed
+    /// seed + `dt` sequence reproduces the same spawn-seed stream run to run.
+    pub fn with_seed(mut self, seed: u64) -> Self {
+        self.seed = Some(seed);
+        self
+    }
+}
+
+/// A runtime effect-lifecycle command (Phase 27), queued on [`ParticleItems`] and
+/// applied by the plugin in `prepare` before it simulates. This is the delivery
+/// path for hot-reload since the renderer owns the plugin after installation, so
+/// the host cannot call [`ParticlePlugin::replace_effect`] / `remove_effect`
+/// directly. (Registering a *new* effect still needs
+/// [`ParticlePlugin::add_effect`] at startup, which returns the [`EffectId`].)
+#[derive(Clone, Debug)]
+enum EffectCommand {
+    Replace(EffectId, Box<EffectAsset>),
+    Remove(EffectId),
 }
 
 /// The per-frame collection of live effect instances.
@@ -195,6 +224,8 @@ impl ParticleItem {
 #[derive(Clone, Debug)]
 pub struct ParticleItems {
     items: Vec<ParticleItem>,
+    /// Queued lifecycle commands applied at the start of `prepare`.
+    commands: Vec<EffectCommand>,
     /// Simulation time step in seconds for this frame. Defaults to 1/60.
     pub dt: f32,
     /// Whether to depth-sort non-additive (alpha / premultiplied) effects
@@ -227,6 +258,7 @@ impl Default for ParticleItems {
     fn default() -> Self {
         Self {
             items: Vec::new(),
+            commands: Vec::new(),
             dt: 1.0 / 60.0,
             sort_transparent: true,
             cull_distance: None,
@@ -285,6 +317,21 @@ impl ParticleItems {
     /// Append an instance.
     pub fn push(&mut self, item: ParticleItem) {
         self.items.push(item);
+    }
+
+    /// Queue a hot-reload: replace `id`'s asset when the plugin next runs
+    /// `prepare` (Phase 27). Preserves the live particle set for a uniform-only
+    /// change; a structural change rebuilds the effect. See
+    /// [`ParticlePlugin::replace_effect`].
+    pub fn replace_effect(&mut self, id: EffectId, asset: EffectAsset) {
+        self.commands
+            .push(EffectCommand::Replace(id, Box::new(asset)));
+    }
+
+    /// Queue a removal: tombstone `id` and reclaim its GPU state when the plugin
+    /// next runs `prepare` (Phase 27). See [`ParticlePlugin::remove_effect`].
+    pub fn remove_effect(&mut self, id: EffectId) {
+        self.commands.push(EffectCommand::Remove(id));
     }
 
     /// The submitted instances.
@@ -632,6 +679,9 @@ struct GenGpu {
 /// drive many independent instances.
 struct RegisteredEffect {
     asset: EffectAsset,
+    /// Set by `remove_effect` (Phase 27): the slot is tombstoned (its
+    /// `EffectId` index stays stable) and no longer simulated or drawn.
+    removed: bool,
 }
 
 /// Identifies one live instance: a registered effect plus the host's stable
@@ -667,6 +717,9 @@ struct EffectInstance {
     /// Set when a distance/frustum cull has zeroed this instance's particle
     /// buffer, so the drop happens once per cull episode (not every frame).
     dropped: bool,
+    /// Count of frames this instance has been simulated, mixed into the emit RNG
+    /// seed under deterministic seeding (Phase 28) so each frame decorrelates.
+    sim_frame: u32,
 }
 
 /// A live transient (burst) instance (Phase 25): a pooled particle set playing a
@@ -685,6 +738,8 @@ struct TransientInstance {
     /// Age at which the instance is retired and its slot recycled (the effect's
     /// max particle lifetime plus a margin).
     retire_at: f32,
+    /// Deterministic seed captured from the spawning item (Phase 28).
+    seed: Option<u64>,
 }
 
 /// The particle system plugin.
@@ -815,6 +870,8 @@ struct DrivenInstance {
     cast_shadows: bool,
     /// `Some(index)` for a steady submitted item; `None` for a transient.
     item_idx: Option<usize>,
+    /// Deterministic seed for this instance's emit, if any (Phase 28).
+    seed: Option<u64>,
 }
 
 /// Per-effect pick-id uniform (group 2 of the pick pipeline). 16 bytes.
@@ -842,13 +899,81 @@ impl ParticlePlugin {
     /// first frame the effect is simulated.
     pub fn add_effect(&mut self, _device: &vwgpu::Device, asset: EffectAsset) -> EffectId {
         let id = EffectId(self.effects.len() as u32);
-        self.effects.push(RegisteredEffect { asset });
+        self.effects.push(RegisteredEffect {
+            asset,
+            removed: false,
+        });
         id
     }
 
-    /// Number of registered effects.
+    /// Number of registered effects (including tombstoned / removed slots).
     pub fn effect_count(&self) -> usize {
         self.effects.len()
+    }
+
+    /// Replace a registered effect's asset in place (Phase 27), for hot-reload.
+    /// The [`EffectId`] stays valid and its live particle set is **preserved**
+    /// when the change is uniform-only (emitter / forces / lifetime / sim-space):
+    /// those are re-read per frame, so nothing rebuilds. A structural change
+    /// (capacity, render route, blend, texture, gradient, program, sub-emitter)
+    /// discards the effect's GPU state so it rebuilds lazily next frame (its
+    /// particles reset). A no-op for an unknown or removed id.
+    ///
+    /// Callable at runtime via [`ParticleItems::replace_effect`] (which routes
+    /// here in `prepare`), or directly when a handle to the plugin is held.
+    pub fn replace_effect(&mut self, id: EffectId, asset: EffectAsset) {
+        let idx = id.0 as usize;
+        let Some(eff) = self.effects.get(idx) else {
+            return;
+        };
+        if eff.removed {
+            return;
+        }
+        if structural_sig(&eff.asset) != structural_sig(&asset) {
+            self.purge_effect_gpu(idx);
+        }
+        self.effects[idx].asset = asset;
+    }
+
+    /// Remove a registered effect (Phase 27): tombstone its slot (the
+    /// [`EffectId`] index stays stable but is inert) and reclaim its per-effect
+    /// GPU buffers, bind groups, transient slots, and sub-emitter state. A no-op
+    /// for an unknown id. Slots are not reused, so existing ids keep pointing at
+    /// the same effects.
+    pub fn remove_effect(&mut self, id: EffectId) {
+        let idx = id.0 as usize;
+        if idx >= self.effects.len() {
+            return;
+        }
+        self.purge_effect_gpu(idx);
+        self.effects[idx].removed = true;
+    }
+
+    /// Discard all GPU state belonging to effect `idx`: its live instances
+    /// (steady + transient), transient pool bookkeeping, and any sub-emitter
+    /// entry where it is the parent or the child (whose bind groups alias its
+    /// buffers). The wgpu resources drop with the map entries.
+    fn purge_effect_gpu(&mut self, idx: usize) {
+        let effect = idx as u32;
+        self.instances.retain(|k, _| k.effect != effect);
+        self.transients.retain(|t| t.ikey.effect != effect);
+        self.transient_free.remove(&idx);
+        self.transient_next.remove(&idx);
+        // Drop sub-emitter state where this effect is the parent, or is the child
+        // of some parent (that parent's bind groups reference this buffer).
+        let parents_to_drop: Vec<usize> = self
+            .effects
+            .iter()
+            .enumerate()
+            .filter_map(|(pi, e)| match e.asset.sub_emitter {
+                Some(sub) if sub.child.0 as usize == idx => Some(pi),
+                _ => None,
+            })
+            .collect();
+        self.subemitters.remove(&idx);
+        for pi in parents_to_drop {
+            self.subemitters.remove(&pi);
+        }
     }
 
     /// Upload a mesh for the mesh render route, returning a handle to reference
@@ -1140,6 +1265,7 @@ impl ParticlePlugin {
                 burst_done: false,
                 last_origin: None,
                 dropped: false,
+                sim_frame: 0,
             },
         );
     }
@@ -2139,11 +2265,23 @@ impl ItemTypePlugin for ParticlePlugin {
         self.time += dt;
         let time = self.time;
 
+        // Apply queued lifecycle commands (Phase 27) before simulating, so a
+        // hot-reloaded or removed effect takes effect this frame.
+        for cmd in &items.commands {
+            match cmd {
+                EffectCommand::Replace(id, asset) => self.replace_effect(*id, (**asset).clone()),
+                EffectCommand::Remove(id) => self.remove_effect(*id),
+            }
+        }
+
         // Sub-emitter wiring: which effect is whose child. Derived from the
         // assets, independent of GPU state. Used to order passes and to pick the
         // sub-emit / parent-sim pipelines below.
         let mut parent_of: HashMap<usize, usize> = HashMap::new();
         for (pi, eff) in self.effects.iter().enumerate() {
+            if eff.removed {
+                continue;
+            }
             if let Some(sub) = eff.asset.sub_emitter {
                 let ci = sub.child.0 as usize;
                 if ci < self.effects.len() {
@@ -2175,7 +2313,7 @@ impl ItemTypePlugin for ParticlePlugin {
                 continue;
             }
             let idx = it.effect.0 as usize;
-            if idx >= num_effects {
+            if idx >= num_effects || self.effects[idx].removed {
                 continue;
             }
             let key = if is_single(idx) { 0 } else { it.key };
@@ -2191,6 +2329,7 @@ impl ItemTypePlugin for ParticlePlugin {
                     selected: it.settings.selected,
                     cast_shadows: it.settings.cast_shadows,
                     item_idx: Some(i),
+                    seed: it.seed,
                 });
             }
         }
@@ -2218,7 +2357,7 @@ impl ItemTypePlugin for ParticlePlugin {
                 continue;
             }
             let idx = it.effect.0 as usize;
-            if idx >= num_effects || is_single(idx) {
+            if idx >= num_effects || is_single(idx) || self.effects[idx].removed {
                 continue;
             }
             let Some(slot) = self.acquire_transient_slot(idx, max_transients) else {
@@ -2237,6 +2376,7 @@ impl ItemTypePlugin for ParticlePlugin {
                 inst.burst_done = false;
                 inst.last_origin = None;
                 inst.dropped = false;
+                inst.sim_frame = 0;
             }
             let retire_at = transient_lifetime(&self.effects[idx].asset);
             self.transients.push(TransientInstance {
@@ -2245,6 +2385,7 @@ impl ItemTypePlugin for ParticlePlugin {
                 cast_shadows: it.settings.cast_shadows,
                 age: 0.0,
                 retire_at,
+                seed: it.seed,
             });
         }
         for t in &self.transients {
@@ -2255,6 +2396,7 @@ impl ItemTypePlugin for ParticlePlugin {
                 selected: false,
                 cast_shadows: t.cast_shadows,
                 item_idx: None,
+                seed: t.seed,
             });
         }
 
@@ -2401,21 +2543,26 @@ impl ItemTypePlugin for ParticlePlugin {
                     .unwrap_or(self.effects[idx].asset.emitter.rate),
             };
             let capacity = self.effects[idx].asset.capacity;
-            let rng_seed = (ctx.frame_index as u32)
-                .wrapping_mul(2654435761)
-                .wrapping_add(idx as u32)
-                .wrapping_add((ikey.key as u32).wrapping_mul(40503));
             let groups = capacity.div_ceil(64).max(1);
 
             // Advance this instance's own spawn state and record its origin (for
             // the next frame's local-space delta). Simulating clears the culled
-            // "dropped" flag so a future cull drops its particles again.
-            let spawn_count = {
+            // "dropped" flag so a future cull drops its particles again, and bumps
+            // the per-instance sim-frame counter used by the deterministic seed.
+            let (spawn_count, sim_frame) = {
                 let inst = self.instances.get_mut(&ikey).unwrap();
                 inst.last_origin = Some(origin);
                 inst.dropped = false;
-                next_spawn_count(&mut inst.spawn_accum, &mut inst.burst_done, rate, dt)
+                let f = inst.sim_frame;
+                inst.sim_frame = inst.sim_frame.wrapping_add(1);
+                (
+                    next_spawn_count(&mut inst.spawn_accum, &mut inst.burst_done, rate, dt),
+                    f,
+                )
             };
+            // Emit RNG seed: deterministic from the host seed (Phase 28) when set,
+            // else derived from the global frame counter.
+            let rng_seed = instance_rng_seed(di.seed, ctx.frame_index, idx, ikey.key, sim_frame);
 
             // Publish this instance's pick id for the pick pass.
             {
@@ -2765,6 +2912,69 @@ impl ItemTypePlugin for ParticlePlugin {
             pass.set_bind_group(1, inst.gpu.draw_bg(), &[]);
             pass.draw(0..6, 0..eff.asset.capacity);
         }
+    }
+}
+
+/// A hash of the parts of an [`EffectAsset`] that are baked into GPU state at
+/// [`ensure_instance_gpu`](ParticlePlugin::ensure_instance_gpu) time — capacity,
+/// blend, render route, texture, flipbook, gradient, sub-emitter presence, and
+/// the generated program (its WGSL). Two assets with the same signature differ
+/// only in per-frame-consumed fields (emitter / forces / lifetime / sim-space),
+/// so `replace_effect` can keep the live particle set when they match.
+fn structural_sig(asset: &EffectAsset) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    let mut h = DefaultHasher::new();
+    asset.capacity.hash(&mut h);
+    format!("{:?}", asset.blend).hash(&mut h);
+    format!("{:?}", asset.render).hash(&mut h);
+    asset.texture.map(|t| t.0).hash(&mut h);
+    format!("{:?}", asset.texture_mode).hash(&mut h);
+    format!("{:?}", asset.flipbook).hash(&mut h);
+    format!("{:?}", asset.gradient).hash(&mut h);
+    asset.sub_emitter.map(|s| s.child.0).hash(&mut h);
+    match &asset.program {
+        None => 0u8.hash(&mut h),
+        Some(p) => {
+            1u8.hash(&mut h);
+            let shaders = codegen::generate_program(p);
+            shaders.emit.hash(&mut h);
+            shaders.sim.hash(&mut h);
+        }
+    }
+    h.finish()
+}
+
+/// SplitMix64 finalizer, for deriving a well-mixed 64-bit value from a seed.
+fn splitmix64(x: u64) -> u64 {
+    let mut z = x.wrapping_add(0x9E3779B97F4A7C15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+    z ^ (z >> 31)
+}
+
+/// The per-frame emit RNG seed for one instance. With a host `seed` (Phase 28) it
+/// is a fixed function of the seed, the `(effect, key)`, and the instance's
+/// sim-frame counter — reproducible run to run for a fixed seed + `dt` sequence
+/// (GPU atomic spawn order still limits exact per-particle reproducibility).
+/// Without one it derives from the global frame counter (the pre-Phase-28
+/// behaviour, not reproducible across runs).
+fn instance_rng_seed(
+    seed: Option<u64>,
+    frame_index: u64,
+    effect: usize,
+    key: u64,
+    sim_frame: u32,
+) -> u32 {
+    match seed {
+        Some(s) => splitmix64(
+            s ^ (effect as u64).wrapping_mul(0x9E3779B97F4A7C15)
+                ^ key.wrapping_mul(0xD1B54A32D192ED03)
+                ^ (sim_frame as u64).wrapping_mul(0x2545F4914F6CDD1D),
+        ) as u32,
+        None => (frame_index as u32)
+            .wrapping_mul(2654435761)
+            .wrapping_add(effect as u32)
+            .wrapping_add((key as u32).wrapping_mul(40503)),
     }
 }
 
@@ -3777,4 +3987,41 @@ fn build_sim_params(
     }
     p.misc = [dt, time, 0.0, n as f32];
     p
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn seeded_rng_is_deterministic_and_frame_independent() {
+        // Phase 28: with a host seed the emit seed is a fixed function of
+        // (seed, effect, key, sim_frame) and ignores the global frame counter, so
+        // it reproduces run to run.
+        assert_eq!(
+            instance_rng_seed(Some(42), 100, 3, 7, 5),
+            instance_rng_seed(Some(42), 999, 3, 7, 5),
+            "seeded path must ignore the global frame index"
+        );
+        // Each simulated frame decorrelates.
+        assert_ne!(
+            instance_rng_seed(Some(42), 0, 3, 7, 5),
+            instance_rng_seed(Some(42), 0, 3, 7, 6),
+        );
+        // Distinct instances (key) get distinct streams.
+        assert_ne!(
+            instance_rng_seed(Some(42), 0, 3, 7, 5),
+            instance_rng_seed(Some(42), 0, 3, 8, 5),
+        );
+        // A different seed gives a different stream.
+        assert_ne!(
+            instance_rng_seed(Some(1), 0, 3, 7, 5),
+            instance_rng_seed(Some(2), 0, 3, 7, 5),
+        );
+        // Unseeded path varies with the frame counter (the pre-Phase-28 behaviour).
+        assert_ne!(
+            instance_rng_seed(None, 1, 3, 7, 5),
+            instance_rng_seed(None, 2, 3, 7, 5),
+        );
+    }
 }

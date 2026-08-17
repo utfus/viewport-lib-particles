@@ -23,6 +23,7 @@ mod showcase_10_simspace;
 mod showcase_11_serialization;
 mod showcase_12_instances;
 mod showcase_13_bursts;
+mod showcase_14_lifecycle;
 mod viewport_callback;
 
 use eframe::egui;
@@ -54,6 +55,7 @@ enum ShowcaseMode {
     Serialization,
     Instances,
     Bursts,
+    Lifecycle,
 }
 
 impl ShowcaseMode {
@@ -71,6 +73,7 @@ impl ShowcaseMode {
         ShowcaseMode::Serialization,
         ShowcaseMode::Instances,
         ShowcaseMode::Bursts,
+        ShowcaseMode::Lifecycle,
     ];
 
     fn label(self) -> &'static str {
@@ -88,6 +91,7 @@ impl ShowcaseMode {
             ShowcaseMode::Serialization => "11: Load / save",
             ShowcaseMode::Instances => "12: Instances",
             ShowcaseMode::Bursts => "13: Bursts",
+            ShowcaseMode::Lifecycle => "14: Lifecycle",
         }
     }
 
@@ -169,6 +173,10 @@ fn main() -> eframe::Result {
                 .into_iter()
                 .map(|(_, asset)| plugin.add_effect(device, asset))
                 .collect();
+            let lifecycle_ids: Vec<EffectId> = showcase_14_lifecycle::presets()
+                .into_iter()
+                .map(|(_, asset)| plugin.add_effect(device, asset))
+                .collect();
             let interaction_id = showcase_06_interaction::presets()
                 .into_iter()
                 .map(|(_, asset)| plugin.add_effect(device, asset))
@@ -228,6 +236,8 @@ fn main() -> eframe::Result {
                 instances: showcase_12_instances::State::default(),
                 bursts_ids,
                 bursts: showcase_13_bursts::State::default(),
+                lifecycle_ids,
+                lifecycle: showcase_14_lifecycle::State::default(),
             }))
         }),
     )
@@ -268,6 +278,8 @@ struct App {
     instances: showcase_12_instances::State,
     bursts_ids: Vec<EffectId>,
     bursts: showcase_13_bursts::State,
+    lifecycle_ids: Vec<EffectId>,
+    lifecycle: showcase_14_lifecycle::State,
 }
 
 impl eframe::App for App {
@@ -346,6 +358,9 @@ impl eframe::App for App {
                 }
                 ShowcaseMode::Bursts => {
                     showcase_13_bursts::controls(&mut self.bursts, ui)
+                }
+                ShowcaseMode::Lifecycle => {
+                    showcase_14_lifecycle::controls(&mut self.lifecycle, ui)
                 }
             });
 
@@ -455,6 +470,9 @@ impl eframe::App for App {
                     ShowcaseMode::Bursts => {
                         self.bursts.t += dt;
                         showcase_13_bursts::items(&self.bursts_ids, &self.bursts, dt)
+                    }
+                    ShowcaseMode::Lifecycle => {
+                        showcase_14_lifecycle::items(&self.lifecycle_ids, &self.lifecycle, dt)
                     }
                     ShowcaseMode::Refraction | ShowcaseMode::Interaction => {
                         unreachable!("handled above")

@@ -197,6 +197,46 @@ fn burst_plays_then_retires() {
     assert_eq!(late, 0, "burst should self-retire and go dark ({late} lit)");
 }
 
+#[test]
+fn remove_effect_stops_drawing() {
+    let Some((device, queue)) = headless_device() else {
+        eprintln!("skipping: no GPU adapter available");
+        return;
+    };
+
+    // Control: the effect draws.
+    let lit = render_and_count(
+        &device,
+        &queue,
+        cloud_effect(SpawnRate::PerSecond(3_000.0), (2.0, 2.5)),
+        6,
+        |_, id| {
+            let mut items = ParticleItems::new().with_dt(1.0 / 60.0);
+            items.push(ParticleItem::new(id).at([0.0, 0.0, 0.0]));
+            items
+        },
+    );
+    assert!(lit > 0, "control drew nothing");
+
+    // Phase 27: a queued remove on frame 2 tombstones the effect and reclaims its
+    // particles, so nothing draws thereafter even though the item is still sent.
+    let removed = render_and_count(
+        &device,
+        &queue,
+        cloud_effect(SpawnRate::PerSecond(3_000.0), (2.0, 2.5)),
+        12,
+        |f, id| {
+            let mut items = ParticleItems::new().with_dt(1.0 / 60.0);
+            if f == 2 {
+                items.remove_effect(id);
+            }
+            items.push(ParticleItem::new(id).at([0.0, 0.0, 0.0]));
+            items
+        },
+    );
+    assert_eq!(removed, 0, "removed effect should not draw ({removed} lit)");
+}
+
 fn read_back(device: &wgpu::Device, queue: &wgpu::Queue, target: &wgpu::Texture) -> Vec<u8> {
     let row_bytes = SIZE * 4;
     let staging = device.create_buffer(&wgpu::BufferDescriptor {

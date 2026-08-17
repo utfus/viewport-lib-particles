@@ -1,0 +1,252 @@
+use super::*;
+
+/// When a parent effect produces spawn events for its child.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum EventCondition {
+    /// One trigger per live parent particle each simulation step. Suited to
+    /// continuous streams: a rocket laying down a smoke trail.
+    EveryStep,
+    /// One trigger when a parent particle dies (its lifetime crosses zero).
+    /// Suited to bursts: a firework shell breaking into sparks at its apex.
+    OnDeath,
+}
+
+/// Links a parent effect to a child effect so parent particles spawn child
+/// particles on the GPU.
+///
+/// The parent's simulate pass appends spawn events (the parent particle's
+/// position and velocity) into a shared buffer; the child's emit pass consumes
+/// them, seeding new particles at the event position. The child keeps its own
+/// spawn shape, velocity distribution, lifetime, colour, and size, so it shapes
+/// the burst; set the child emitter's rate to zero for a purely event-driven
+/// child.
+///
+/// Both effects must be fixed-function (no [`EffectProgram`]). Register the child
+/// before the parent so the parent can name it. The plugin orders the passes
+/// (parent simulate before child emit) automatically.
+#[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct SubEmitter {
+    /// The child effect that consumes this parent's events.
+    pub child: EffectId,
+    /// When the parent produces events.
+    pub condition: EventCondition,
+    /// Child particles spawned per trigger. Bounded by the child's capacity.
+    pub count: u32,
+    /// Fraction of the parent particle's velocity handed to each child particle,
+    /// added on top of the child's own velocity distribution. `0` ignores the
+    /// parent velocity; `1` matches it.
+    pub inherit_velocity: f32,
+}
+
+impl SubEmitter {
+    /// A sub-emitter that spawns `count` child particles per trigger under
+    /// `condition`, inheriting none of the parent velocity.
+    pub fn new(child: EffectId, condition: EventCondition, count: u32) -> Self {
+        Self {
+            child,
+            condition,
+            count,
+            inherit_velocity: 0.0,
+        }
+    }
+
+    /// Hand each child particle `fraction` of the parent particle's velocity.
+    pub fn with_inherit_velocity(mut self, fraction: f32) -> Self {
+        self.inherit_velocity = fraction;
+        self
+    }
+}
+
+/// The authored description of one effect.
+///
+/// Carries no GPU state. Register it with a
+/// [`ParticlePlugin`](crate::ParticlePlugin) to get an [`EffectId`].
+#[derive(Clone, Debug)]
+#[non_exhaustive]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct EffectAsset {
+    /// Human-readable name, surfaced in debug labels.
+    pub name: String,
+    /// Maximum simultaneously-live particles. Memory scales linearly.
+    pub capacity: u32,
+    /// Blend mode for the draw.
+    pub blend: ParticleBlend,
+    /// Fixed-function emitter. Ignored when [`program`](Self::program) is set.
+    pub emitter: Emitter,
+    /// Forces summed each simulation step. Ignored when
+    /// [`program`](Self::program) is set.
+    pub forces: Vec<ForceModifier>,
+    /// Optional codegen program. When present, the effect compiles to per-effect
+    /// emit/simulate WGSL from the expression graph instead of using the
+    /// fixed-function emitter and forces above.
+    pub program: Option<EffectProgram>,
+    /// Optional colour/size ramp over lifetime, applied at draw. `None` uses the
+    /// shared identity ramp (no change). Works for both the fixed and codegen
+    /// paths.
+    pub gradient: Option<Gradient>,
+    /// How live particles are drawn. Defaults to a round camera-facing
+    /// billboard.
+    pub render: ParticleRender,
+    /// Optional texture sampled by the billboard fragment. `None` draws the
+    /// procedural soft round dot. Uploaded via
+    /// `ParticlePlugin::upload_texture`. Applies to the billboard routes.
+    pub texture: Option<ParticleTextureId>,
+    /// How [`texture`](Self::texture) modulates the particle colour. Ignored
+    /// when no texture is set.
+    pub texture_mode: TextureMode,
+    /// Optional flipbook animation over [`texture`](Self::texture) treated as an
+    /// atlas. `None` samples the whole texture.
+    pub flipbook: Option<Flipbook>,
+    /// Optional sub-emitter: this effect's particles spawn particles in a child
+    /// effect on the GPU. `None` for a leaf effect. Fixed-function only.
+    pub sub_emitter: Option<SubEmitter>,
+    /// The frame particles simulate in. [`SimulationSpace::Global`] (world space)
+    /// is the default; [`SimulationSpace::Local`] makes live particles follow the
+    /// emitting instance's translation.
+    pub sim_space: SimulationSpace,
+}
+
+impl Default for EffectAsset {
+    fn default() -> Self {
+        Self {
+            name: "effect".to_string(),
+            capacity: 10_000,
+            blend: ParticleBlend::default(),
+            emitter: Emitter::default(),
+            forces: Vec::new(),
+            program: None,
+            gradient: None,
+            render: ParticleRender::default(),
+            texture: None,
+            texture_mode: TextureMode::default(),
+            flipbook: None,
+            sub_emitter: None,
+            sim_space: SimulationSpace::Global,
+        }
+    }
+}
+
+impl EffectAsset {
+    /// A named, empty effect with default capacity and emitter.
+    pub fn new(name: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            ..Self::default()
+        }
+    }
+
+    /// Set the live-particle capacity.
+    pub fn with_capacity(mut self, capacity: u32) -> Self {
+        self.capacity = capacity;
+        self
+    }
+
+    /// Set the blend mode.
+    pub fn with_blend(mut self, blend: ParticleBlend) -> Self {
+        self.blend = blend;
+        self
+    }
+
+    /// Replace the emitter.
+    pub fn with_emitter(mut self, emitter: Emitter) -> Self {
+        self.emitter = emitter;
+        self
+    }
+
+    /// Append a force.
+    pub fn force(mut self, force: ForceModifier) -> Self {
+        self.forces.push(force);
+        self
+    }
+
+    /// Attach a codegen program. The effect then compiles its emit/simulate
+    /// kernels from the expression graph, ignoring the fixed-function emitter
+    /// and forces.
+    pub fn with_program(mut self, program: EffectProgram) -> Self {
+        self.program = Some(program);
+        self
+    }
+
+    /// Attach a colour/size ramp over lifetime.
+    pub fn with_gradient(mut self, gradient: Gradient) -> Self {
+        self.gradient = Some(gradient);
+        self
+    }
+
+    /// Set the render route (billboard with optional stretch, or mesh instances).
+    pub fn with_render(mut self, render: ParticleRender) -> Self {
+        self.render = render;
+        self
+    }
+
+    /// Sample `texture` in the billboard fragment, modulating colour per
+    /// [`TextureMode::Modulate`]. Combine with [`with_texture_mode`](Self::with_texture_mode)
+    /// or [`with_flipbook`](Self::with_flipbook).
+    pub fn with_texture(mut self, texture: ParticleTextureId) -> Self {
+        self.texture = Some(texture);
+        self
+    }
+
+    /// Set how the texture modulates the particle colour.
+    pub fn with_texture_mode(mut self, mode: TextureMode) -> Self {
+        self.texture_mode = mode;
+        self
+    }
+
+    /// Animate the texture as a flipbook atlas.
+    pub fn with_flipbook(mut self, flipbook: Flipbook) -> Self {
+        self.flipbook = Some(flipbook);
+        self
+    }
+
+    /// Spawn particles in a child effect from this effect's particles. See
+    /// [`SubEmitter`]. Fixed-function only; ignored if either effect carries a
+    /// program.
+    pub fn with_sub_emitter(mut self, sub_emitter: SubEmitter) -> Self {
+        self.sub_emitter = Some(sub_emitter);
+        self
+    }
+
+    /// Set the simulation space. [`SimulationSpace::Local`] makes live particles
+    /// follow the emitting instance's translation each frame.
+    pub fn with_simulation_space(mut self, space: SimulationSpace) -> Self {
+        self.sim_space = space;
+        self
+    }
+}
+
+/// RON `.effect` serialization, behind the `serde` feature. Round-trips the whole
+/// authored asset model (emitter, forces, expression [`Module`], gradient, render
+/// route, textures, sub-emitter, simulation space).
+///
+/// Note the GPU-handle fields ([`EffectAsset::texture`],
+/// [`ParticleRender::Mesh`], [`SubEmitter::child`]) serialize as their raw ids.
+/// Those ids are session-scoped registration handles: a loaded asset only refers
+/// to the right resource if the host re-registers meshes/textures/child effects
+/// in the same order (or remaps the ids after loading).
+#[cfg(feature = "serde")]
+impl EffectAsset {
+    /// Serialize this asset to a pretty RON string.
+    pub fn to_ron(&self) -> Result<String, ron::Error> {
+        ron::ser::to_string_pretty(self, ron::ser::PrettyConfig::default())
+    }
+
+    /// Parse an asset from a RON string.
+    pub fn from_ron(s: &str) -> Result<Self, ron::error::SpannedError> {
+        ron::from_str(s)
+    }
+
+    /// Write this asset to a `.effect` (RON) file.
+    pub fn save_ron(&self, path: impl AsRef<std::path::Path>) -> std::io::Result<()> {
+        let s = self.to_ron().map_err(std::io::Error::other)?;
+        std::fs::write(path, s)
+    }
+
+    /// Read an asset from a `.effect` (RON) file.
+    pub fn load_ron(path: impl AsRef<std::path::Path>) -> std::io::Result<Self> {
+        let s = std::fs::read_to_string(path)?;
+        Self::from_ron(&s).map_err(std::io::Error::other)
+    }
+}

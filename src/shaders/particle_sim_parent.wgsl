@@ -27,6 +27,7 @@ struct SimParams {
     misc: vec4<f32>,           // dt, time, _, force_count
     forces: array<Force, 8>,
     event: vec4<u32>,          // condition (0=every step, 1=on death), count, child_capacity, active
+    space: vec4<f32>,          // xyz local-space translation delta for this frame
 };
 
 struct SpawnEvent {
@@ -84,6 +85,7 @@ fn sim_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     p.velocity += accel * dt;
     p.velocity *= max(0.0, 1.0 - drag * dt);
     p.position += p.velocity * dt;
+    p.position += params.space.xyz; // local-space: follow the emitter's translation
     p.lifetime -= dt;
     particles[i] = p;
 

@@ -55,6 +55,7 @@ struct Particle {
 
 struct GenParams {
     origin: vec4<f32>,
+    space: vec4<f32>,
     dt: f32,
     time: f32,
     spawn_count: u32,
@@ -184,10 +185,10 @@ fn properties_struct(props: &[PropertyDecl]) -> String {
 
 /// Right-hand side for one node, referencing `v{child}` for its children.
 fn lower_node(module: &Module, i: u32, ctx: Ctx) -> String {
-    match *module.get(ExprHandle(i)) {
-        Expr::LitF32(v) => flit(v),
+    match module.get(ExprHandle(i)) {
+        Expr::LitF32(v) => flit(*v),
         Expr::LitVec3([x, y, z]) => {
-            format!("vec3<f32>({}, {}, {})", flit(x), flit(y), flit(z))
+            format!("vec3<f32>({}, {}, {})", flit(*x), flit(*y), flit(*z))
         }
         Expr::Attribute(name) => attribute_wgsl(name, ctx),
         Expr::Property(name) => property_wgsl(name, ctx.props),
@@ -351,6 +352,7 @@ fn sim_main(@builtin(global_invocation_id) gid: vec3<u32>) {{
 {accel}
     p.velocity = p.velocity + accel * dt;
     p.position = p.position + p.velocity * dt;
+    p.position = p.position + params.space.xyz;
     p.lifetime = p.lifetime - dt;
     particles[i] = p;
 }}

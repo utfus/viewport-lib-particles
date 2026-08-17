@@ -19,6 +19,8 @@ mod showcase_06_interaction;
 mod showcase_07_textures;
 mod showcase_08_turbulence;
 mod showcase_09_subemitters;
+mod showcase_10_simspace;
+mod showcase_11_serialization;
 mod viewport_callback;
 
 use eframe::egui;
@@ -46,6 +48,8 @@ enum ShowcaseMode {
     Textures,
     Turbulence,
     SubEmitters,
+    SimSpace,
+    Serialization,
 }
 
 impl ShowcaseMode {
@@ -59,6 +63,8 @@ impl ShowcaseMode {
         ShowcaseMode::Textures,
         ShowcaseMode::Turbulence,
         ShowcaseMode::SubEmitters,
+        ShowcaseMode::SimSpace,
+        ShowcaseMode::Serialization,
     ];
 
     fn label(self) -> &'static str {
@@ -72,6 +78,8 @@ impl ShowcaseMode {
             ShowcaseMode::Textures => "7: Textures",
             ShowcaseMode::Turbulence => "8: Turbulence",
             ShowcaseMode::SubEmitters => "9: Sub-emitters",
+            ShowcaseMode::SimSpace => "10: Sim space",
+            ShowcaseMode::Serialization => "11: Load / save",
         }
     }
 
@@ -137,6 +145,14 @@ fn main() -> eframe::Result {
                 .map(|(_, asset)| plugin.add_effect(device, asset))
                 .collect();
             let subemitter_ids = showcase_09_subemitters::register(&mut plugin, device);
+            let simspace_ids: Vec<EffectId> = showcase_10_simspace::presets()
+                .into_iter()
+                .map(|(_, asset)| plugin.add_effect(device, asset))
+                .collect();
+            let serialization_ids: Vec<EffectId> = showcase_11_serialization::presets()
+                .into_iter()
+                .map(|(_, asset)| plugin.add_effect(device, asset))
+                .collect();
             let interaction_id = showcase_06_interaction::presets()
                 .into_iter()
                 .map(|(_, asset)| plugin.add_effect(device, asset))
@@ -188,6 +204,10 @@ fn main() -> eframe::Result {
                 turbulence: showcase_08_turbulence::State::default(),
                 subemitter_ids,
                 subemitters: showcase_09_subemitters::State::default(),
+                simspace_ids,
+                simspace: showcase_10_simspace::State::default(),
+                serialization_ids,
+                serialization: showcase_11_serialization::State::default(),
             }))
         }),
     )
@@ -220,6 +240,10 @@ struct App {
     turbulence: showcase_08_turbulence::State,
     subemitter_ids: showcase_09_subemitters::Ids,
     subemitters: showcase_09_subemitters::State,
+    simspace_ids: Vec<EffectId>,
+    simspace: showcase_10_simspace::State,
+    serialization_ids: Vec<EffectId>,
+    serialization: showcase_11_serialization::State,
 }
 
 impl eframe::App for App {
@@ -286,6 +310,12 @@ impl eframe::App for App {
                 }
                 ShowcaseMode::SubEmitters => {
                     showcase_09_subemitters::controls(&mut self.subemitters, ui)
+                }
+                ShowcaseMode::SimSpace => {
+                    showcase_10_simspace::controls(&mut self.simspace, ui)
+                }
+                ShowcaseMode::Serialization => {
+                    showcase_11_serialization::controls(&mut self.serialization, ui)
                 }
             });
 
@@ -379,6 +409,15 @@ impl eframe::App for App {
                     ShowcaseMode::SubEmitters => {
                         showcase_09_subemitters::items(&self.subemitter_ids, &self.subemitters, dt)
                     }
+                    ShowcaseMode::SimSpace => {
+                        self.simspace.t += dt;
+                        showcase_10_simspace::items(&self.simspace_ids, &self.simspace, dt)
+                    }
+                    ShowcaseMode::Serialization => showcase_11_serialization::items(
+                        &self.serialization_ids,
+                        &self.serialization,
+                        dt,
+                    ),
                     ShowcaseMode::Refraction | ShowcaseMode::Interaction => {
                         unreachable!("handled above")
                     }

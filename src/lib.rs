@@ -63,16 +63,18 @@ mod effect;
 mod expr;
 mod plugin;
 mod refraction;
+mod registry;
 
 pub use effect::{
     Attribute, EffectAsset, EffectId, EffectProgram, Emitter, EventCondition, Flipbook,
     ForceModifier, Gradient, MeshAlign, ParticleBlend, ParticleMeshId, ParticleRender,
-    ParticleTextureId, PropertyDecl, PropertyValue, SetAttribute, SpawnRate, SpawnShape,
-    SubEmitter, TextureMode, UpdateOp, VelocityDist,
+    ParticleTextureId, PropertyDecl, PropertyValue, SetAttribute, SimulationSpace, SpawnRate,
+    SpawnShape, SubEmitter, TextureMode, UpdateOp, VelocityDist,
 };
 pub use expr::{Expr, ExprHandle, Module};
 pub use plugin::{ParticleItem, ParticleItems, ParticlePlugin};
 pub use refraction::RefractionPlugin;
+pub use registry::ModifierRegistry;
 
 /// Catalogue version of `viewport-lib` this crate was built against.
 ///

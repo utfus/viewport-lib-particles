@@ -42,7 +42,7 @@ use crate::codegen;
 use crate::effect::{
     EffectAsset, EffectId, EffectProgram, Emitter, EventCondition, ForceModifier, Gradient,
     MeshAlign, ParticleBlend, ParticleMeshId, ParticleRender, ParticleTextureId, PropertyDecl,
-    PropertyValue, SpawnRate, SpawnShape, TextureMode, VelocityDist,
+    PropertyValue, SimulationSpace, SpawnRate, SpawnShape, TextureMode, VelocityDist,
 };
 
 /// MSAA sample count the plugin builds its pipelines for. A plugin cannot read
@@ -264,6 +264,12 @@ struct SimParamsGpu {
     /// (0 = every step, 1 = on death), events per trigger, child capacity, and
     /// an active flag (1 when this effect is a parent). All zero otherwise.
     event: [u32; 4],
+    /// Simulation-space translation applied to every live particle this frame:
+    /// `xyz` is the emitting instance's movement since last frame under
+    /// [`SimulationSpace::Local`], zero under `Global`. Trails `event`, so the
+    /// non-parent sim shader (whose struct now also declares these last two
+    /// lanes) reads the same buffer.
+    space: [f32; 4],
 }
 
 /// One GPU spawn event appended by a parent and consumed by its child. Matches
@@ -342,6 +348,8 @@ struct HistoryParams {
 #[derive(Copy, Clone, Pod, Zeroable)]
 struct GenParams {
     origin: [f32; 4],
+    /// Simulation-space translation for this frame (see [`SimParamsGpu::space`]).
+    space: [f32; 4],
     dt: f32,
     time: f32,
     spawn_count: u32,
@@ -531,6 +539,9 @@ struct RegisteredEffect {
     spawn_accum: f32,
     /// Whether a `SpawnRate::Burst` has already fired.
     burst_done: bool,
+    /// The driving instance's origin last frame, for the local-space translation
+    /// delta. `None` until the effect is first driven.
+    last_origin: Option<[f32; 3]>,
 }
 
 /// The particle system plugin.
@@ -674,6 +685,7 @@ impl ParticlePlugin {
             gpu: None,
             spawn_accum: 0.0,
             burst_done: false,
+            last_origin: None,
         });
         id
     }
@@ -1987,6 +1999,18 @@ impl ItemTypePlugin for ParticlePlugin {
             let selected = item.settings.selected;
             let cast_shadows = item.settings.cast_shadows;
 
+            // Local-space translation delta: how far the driving instance moved
+            // since last frame. Under `Local`, this rigidly carries every live
+            // particle with the emitter; under `Global` it stays zero.
+            let space_delta = match self.effects[idx].asset.sim_space {
+                SimulationSpace::Local => {
+                    let last = self.effects[idx].last_origin.unwrap_or(origin);
+                    [origin[0] - last[0], origin[1] - last[1], origin[2] - last[2]]
+                }
+                SimulationSpace::Global => [0.0; 3],
+            };
+            self.effects[idx].last_origin = Some(origin);
+
             // Lazily build this effect's GPU state (fixed or generated).
             self.ensure_effect_gpu(idx, device, queue, &emit_bgl, &sim_bgl, &draw_bgl);
 
@@ -2079,7 +2103,7 @@ impl ItemTypePlugin for ParticlePlugin {
                         ],
                         None => [0; 4],
                     };
-                    let sim = build_sim_params(forces, dt, time, event);
+                    let sim = build_sim_params(forces, dt, time, event, space_delta);
                     queue.write_buffer(&g.emit_buf, 0, bytemuck::bytes_of(&emit));
                     queue.write_buffer(&g.sim_buf, 0, bytemuck::bytes_of(&sim));
                     queue.write_buffer(&g.budget_buf, 0, bytemuck::bytes_of(&0u32));
@@ -2100,6 +2124,7 @@ impl ItemTypePlugin for ParticlePlugin {
                 EffectGpu::Gen(g) => {
                     let gp = GenParams {
                         origin: [origin[0], origin[1], origin[2], 0.0],
+                        space: [space_delta[0], space_delta[1], space_delta[2], 0.0],
                         dt,
                         time,
                         spawn_count,
@@ -3193,7 +3218,7 @@ fn build_props_data(
         .map(|d| {
             overrides
                 .iter()
-                .find(|(name, _)| *name == d.name)
+                .find(|(name, _)| *name == d.name.as_str())
                 .map(|(_, v)| *v)
                 .unwrap_or(d.default)
                 .to_vec4()
@@ -3233,6 +3258,26 @@ fn build_emit_params(
             [radius, if volume { 1.0 } else { 0.0 }, 0.0, 0.0],
             [0.0; 4],
         ),
+        SpawnShape::Circle { radius, volume } => (
+            3u32,
+            [radius, if volume { 1.0 } else { 0.0 }, 0.0, 0.0],
+            [0.0; 4],
+        ),
+        SpawnShape::Cone {
+            base_radius,
+            top_radius,
+            height,
+            volume,
+        } => (
+            4u32,
+            [
+                base_radius,
+                top_radius,
+                height,
+                if volume { 1.0 } else { 0.0 },
+            ],
+            [0.0; 4],
+        ),
     };
     p.spawn_a = spawn_a;
     p.spawn_b = spawn_b;
@@ -3266,9 +3311,11 @@ fn build_sim_params(
     dt: f32,
     time: f32,
     event: [u32; 4],
+    space: [f32; 3],
 ) -> SimParamsGpu {
     let mut p = SimParamsGpu::zeroed();
     p.event = event;
+    p.space = [space[0], space[1], space[2], 0.0];
     let n = forces.len().min(MAX_FORCES);
     for (i, f) in forces.iter().take(n).enumerate() {
         p.forces[i] = match *f {

@@ -18,7 +18,7 @@ struct Particle {
 
 struct EmitParams {
     origin:  vec4<f32>,  // xyz world origin (instance position)
-    spawn_a: vec4<f32>,  // box min xyz | sphere (radius, volume_flag, _, _)
+    spawn_a: vec4<f32>,  // box min xyz | sphere/circle (radius, volume_flag, _, _) | cone (base_r, top_r, height, volume_flag)
     spawn_b: vec4<f32>,  // box max xyz
     vel_a:   vec4<f32>,  // fixed vel xyz | box vel min xyz | cone axis xyz
     vel_b:   vec4<f32>,  // box vel max xyz | cone (half_angle, min_speed, max_speed, _)
@@ -88,6 +88,27 @@ fn emit_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             r = r * pow(rand01(&rng), 0.3333333);
         }
         pos += dir * r;
+    } else if (spawn_kind == 3u) {
+        // Circle (disc) in the XY plane.
+        let ang = rand01(&rng) * 6.2831853;
+        var r = params.spawn_a.x;
+        if (params.spawn_a.y > 0.5) {
+            r = r * sqrt(rand01(&rng)); // uniform over the disc area
+        }
+        pos += vec3<f32>(r * cos(ang), r * sin(ang), 0.0);
+    } else if (spawn_kind == 4u) {
+        // Cone around +Z: base at z=0, apex at z=height.
+        let base_r = params.spawn_a.x;
+        let top_r = params.spawn_a.y;
+        let height = params.spawn_a.z;
+        let t = rand01(&rng);
+        let ring_r = mix(base_r, top_r, t);
+        let ang = rand01(&rng) * 6.2831853;
+        var r = ring_r;
+        if (params.spawn_a.w > 0.5) {
+            r = ring_r * sqrt(rand01(&rng)); // fill the cross-section
+        }
+        pos += vec3<f32>(r * cos(ang), r * sin(ang), t * height);
     }
 
     // Velocity.

@@ -12,10 +12,12 @@
 
 /// Index into a [`Module`]'s expression arena.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ExprHandle(pub(crate) u32);
 
 /// A single node in the expression graph.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Expr {
     /// Scalar constant.
     LitF32(f32),
@@ -24,13 +26,13 @@ pub enum Expr {
     /// A built-in particle attribute by name. Valid names depend on the kernel:
     /// `"origin"` (emit and simulate), and `"position"`, `"velocity"`, `"age"`,
     /// `"lifetime"`, `"seed"` (simulate).
-    Attribute(&'static str),
+    Attribute(String),
     /// A CPU-updatable named property, read from the effect's per-frame property
     /// uniform. The name must match a
     /// [`PropertyDecl`](crate::effect::PropertyDecl) on the effect's program; the
     /// read yields that property's declared type (`f32` / `vec3` / `vec4`). Valid
     /// in both the emit and simulate kernels.
-    Property(&'static str),
+    Property(String),
     /// A fresh uniform random scalar in `0..1` (emit only; consumes rng).
     Rand,
     /// A fresh uniform random unit vector (emit only; consumes rng).
@@ -76,6 +78,7 @@ pub enum Expr {
 /// Children are always created before their parents, so node indices are a
 /// valid topological order: lowering can walk the arena front to back.
 #[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Module {
     nodes: Vec<Expr>,
 }
@@ -104,14 +107,14 @@ impl Module {
     }
 
     /// Read a built-in attribute by name.
-    pub fn attr(&mut self, name: &'static str) -> ExprHandle {
-        self.push(Expr::Attribute(name))
+    pub fn attr(&mut self, name: impl Into<String>) -> ExprHandle {
+        self.push(Expr::Attribute(name.into()))
     }
 
     /// Read a CPU-updatable named property. The name must match a
     /// [`PropertyDecl`](crate::effect::PropertyDecl) declared on the program.
-    pub fn property(&mut self, name: &'static str) -> ExprHandle {
-        self.push(Expr::Property(name))
+    pub fn property(&mut self, name: impl Into<String>) -> ExprHandle {
+        self.push(Expr::Property(name.into()))
     }
 
     /// Fresh random scalar in `0..1`.

@@ -18,22 +18,26 @@ use crate::expr::{ExprHandle, Module};
 ///
 /// Returned by `ParticlePlugin::add_effect`. Stable for the plugin's lifetime.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct EffectId(pub(crate) u32);
 
 /// Handle to a mesh uploaded to a [`ParticlePlugin`](crate::ParticlePlugin) for
 /// the mesh render route. Returned by `ParticlePlugin::upload_mesh`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ParticleMeshId(pub(crate) u32);
 
 /// Handle to a texture uploaded to a [`ParticlePlugin`](crate::ParticlePlugin)
 /// for the billboard texture / flipbook routes. Returned by
 /// `ParticlePlugin::upload_texture`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct ParticleTextureId(pub(crate) u32);
 
 /// How an effect's texture modulates the per-particle colour in the billboard
 /// fragment shader. Mirrors Hanabi's `ImageSampleMapping`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TextureMode {
     /// Multiply both colour (rgb) and alpha by the sampled texel.
     #[default]
@@ -49,6 +53,7 @@ pub enum TextureMode {
 /// of `columns` x `rows` animation frames; the billboard fragment picks a cell
 /// per particle and offsets its UVs into it.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Flipbook {
     /// Atlas columns.
     pub columns: u32,
@@ -80,6 +85,7 @@ impl Flipbook {
 
 /// How a mesh-route particle is oriented each frame.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum MeshAlign {
     /// Align the mesh's local +Z to the particle's velocity direction.
     Velocity,
@@ -89,6 +95,7 @@ pub enum MeshAlign {
 
 /// How an effect's live particles are drawn.
 #[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ParticleRender {
     /// Camera-facing billboard. `stretch` (> 0) elongates it along the
     /// screen-projected velocity, scaled by speed, for motion streaks.
@@ -122,6 +129,7 @@ impl Default for ParticleRender {
 
 /// How many particles an effect spawns per second.
 #[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum SpawnRate {
     /// Constant rate in particles per second. Fractional values accumulate
     /// across frames.
@@ -142,6 +150,7 @@ impl Default for SpawnRate {
 
 /// Shape new particles spawn from, offset by the emitting instance's position.
 #[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum SpawnShape {
     /// All particles spawn at the instance position.
     Point,
@@ -159,6 +168,27 @@ pub enum SpawnShape {
         /// `true` scatters through the volume; `false` places on the surface.
         volume: bool,
     },
+    /// Spawn on or inside a circle (disc) in the XY plane, centered on the
+    /// instance position. Z-up, so the disc lies flat on the ground plane.
+    Circle {
+        /// Circle radius.
+        radius: f32,
+        /// `true` fills the disc; `false` places on the perimeter ring.
+        volume: bool,
+    },
+    /// Spawn on or inside a cone around the +Z axis: the base sits at the
+    /// instance position and the apex is offset by `height` along +Z. The radius
+    /// tapers linearly from `base_radius` at the base to `top_radius` at the top.
+    Cone {
+        /// Radius at the base (z = 0).
+        base_radius: f32,
+        /// Radius at the top (z = height); `0` for a sharp apex.
+        top_radius: f32,
+        /// Cone height along +Z.
+        height: f32,
+        /// `true` fills the solid cone; `false` places on the lateral surface.
+        volume: bool,
+    },
 }
 
 impl Default for SpawnShape {
@@ -169,6 +199,7 @@ impl Default for SpawnShape {
 
 /// Distribution used to assign an initial velocity to a new particle.
 #[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum VelocityDist {
     /// Every particle gets the same velocity.
     Fixed([f32; 3]),
@@ -201,6 +232,7 @@ impl Default for VelocityDist {
 
 /// A force integrated into every live particle each simulation step.
 #[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ForceModifier {
     /// Constant acceleration, world units per second squared.
     Accel([f32; 3]),
@@ -241,6 +273,7 @@ pub enum ForceModifier {
 /// When using a colour ramp, set the emitter/program colour to white so the
 /// multiply yields the ramp colour directly.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Gradient {
     /// Colour keys `(t, rgb)`. Multiplies the particle colour.
     pub colour: Vec<(f32, [f32; 3])>,
@@ -333,8 +366,27 @@ fn sample_keys1(keys: &[(f32, f32)], t: f32) -> f32 {
     keys[keys.len() - 1].1
 }
 
+/// The frame an effect's particles simulate in.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub enum SimulationSpace {
+    /// World space: a particle keeps its world position after spawn, so when the
+    /// emitting instance moves the already-spawned particles stay put (they trail
+    /// behind a moving emitter). The default, and the behaviour of every effect
+    /// before this option existed.
+    #[default]
+    Global,
+    /// The emitting instance's frame: live particles rigidly follow the
+    /// instance's translation each frame, so the whole effect moves with the
+    /// emitter. Only the instance translation is tracked — a
+    /// [`ParticleItem`](crate::ParticleItem) carries no rotation or scale — so
+    /// this is a translation-only local space, applied each simulation step.
+    Local,
+}
+
 /// GPU blend mode for the particle draw.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ParticleBlend {
     /// Standard over-blend (premultiplied): particles occlude the background by
     /// their alpha.
@@ -354,6 +406,7 @@ impl Default for ParticleBlend {
 
 /// A particle attribute an init modifier can set.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum Attribute {
     /// World-space position (`vec3`).
     Position,
@@ -369,6 +422,7 @@ pub enum Attribute {
 
 /// An init modifier: set an attribute from an expression at spawn.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SetAttribute {
     /// Which attribute to write.
     pub attribute: Attribute,
@@ -379,6 +433,7 @@ pub struct SetAttribute {
 
 /// An update modifier: contributes to the per-step motion.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum UpdateOp {
     /// Add a `vec3` acceleration (integrated into velocity each step). Force
     /// modifiers are expressed this way; the expression may read attributes such
@@ -390,6 +445,7 @@ pub enum UpdateOp {
 /// [`Expr::Property`](crate::Expr::Property). The variant fixes the property's
 /// type; a read yields `f32`, `vec3`, or `vec4` accordingly.
 #[derive(Clone, Copy, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum PropertyValue {
     /// A scalar property.
     F32(f32),
@@ -415,10 +471,11 @@ impl PropertyValue {
 /// [`default`](Self::default) supplies the value until the host overrides it per
 /// frame via [`ParticleItem`](crate::ParticleItem).
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct PropertyDecl {
     /// Property name, referenced by [`Expr::Property`](crate::Expr::Property) and
     /// used as the uniform field name; must be a valid WGSL identifier.
-    pub name: &'static str,
+    pub name: String,
     /// Default value (and, via its variant, the property's type).
     pub default: PropertyValue,
 }
@@ -428,6 +485,7 @@ pub struct PropertyDecl {
 /// to per-effect emit and simulate WGSL kernels instead of using the
 /// fixed-function [`Emitter`] path.
 #[derive(Clone, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct EffectProgram {
     /// The expression graph the modifiers reference.
     pub module: Module,
@@ -493,14 +551,18 @@ impl EffectProgram {
     /// expression graph with [`Module::property`](crate::Module::property) and
     /// override it per frame via
     /// [`ParticleItem::with_property`](crate::ParticleItem::with_property).
-    pub fn property(mut self, name: &'static str, default: PropertyValue) -> Self {
-        self.properties.push(PropertyDecl { name, default });
+    pub fn property(mut self, name: impl Into<String>, default: PropertyValue) -> Self {
+        self.properties.push(PropertyDecl {
+            name: name.into(),
+            default,
+        });
         self
     }
 }
 
 /// Fixed-function emitter configuration.
 #[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Emitter {
     /// Emission schedule.
     pub rate: SpawnRate,
@@ -531,6 +593,7 @@ impl Default for Emitter {
 
 /// When a parent effect produces spawn events for its child.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum EventCondition {
     /// One trigger per live parent particle each simulation step. Suited to
     /// continuous streams: a rocket laying down a smoke trail.
@@ -554,6 +617,7 @@ pub enum EventCondition {
 /// before the parent so the parent can name it. The plugin orders the passes
 /// (parent simulate before child emit) automatically.
 #[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct SubEmitter {
     /// The child effect that consumes this parent's events.
     pub child: EffectId,
@@ -592,6 +656,7 @@ impl SubEmitter {
 /// [`ParticlePlugin`](crate::ParticlePlugin) to get an [`EffectId`].
 #[derive(Clone, Debug)]
 #[non_exhaustive]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct EffectAsset {
     /// Human-readable name, surfaced in debug labels.
     pub name: String,
@@ -628,6 +693,10 @@ pub struct EffectAsset {
     /// Optional sub-emitter: this effect's particles spawn particles in a child
     /// effect on the GPU. `None` for a leaf effect. Fixed-function only.
     pub sub_emitter: Option<SubEmitter>,
+    /// The frame particles simulate in. [`SimulationSpace::Global`] (world space)
+    /// is the default; [`SimulationSpace::Local`] makes live particles follow the
+    /// emitting instance's translation.
+    pub sim_space: SimulationSpace,
 }
 
 impl Default for EffectAsset {
@@ -645,6 +714,7 @@ impl Default for EffectAsset {
             texture_mode: TextureMode::default(),
             flipbook: None,
             sub_emitter: None,
+            sim_space: SimulationSpace::Global,
         }
     }
 }
@@ -728,5 +798,46 @@ impl EffectAsset {
     pub fn with_sub_emitter(mut self, sub_emitter: SubEmitter) -> Self {
         self.sub_emitter = Some(sub_emitter);
         self
+    }
+
+    /// Set the simulation space. [`SimulationSpace::Local`] makes live particles
+    /// follow the emitting instance's translation each frame.
+    pub fn with_simulation_space(mut self, space: SimulationSpace) -> Self {
+        self.sim_space = space;
+        self
+    }
+}
+
+/// RON `.effect` serialization, behind the `serde` feature. Round-trips the whole
+/// authored asset model (emitter, forces, expression [`Module`], gradient, render
+/// route, textures, sub-emitter, simulation space).
+///
+/// Note the GPU-handle fields ([`EffectAsset::texture`],
+/// [`ParticleRender::Mesh`], [`SubEmitter::child`]) serialize as their raw ids.
+/// Those ids are session-scoped registration handles: a loaded asset only refers
+/// to the right resource if the host re-registers meshes/textures/child effects
+/// in the same order (or remaps the ids after loading).
+#[cfg(feature = "serde")]
+impl EffectAsset {
+    /// Serialize this asset to a pretty RON string.
+    pub fn to_ron(&self) -> Result<String, ron::Error> {
+        ron::ser::to_string_pretty(self, ron::ser::PrettyConfig::default())
+    }
+
+    /// Parse an asset from a RON string.
+    pub fn from_ron(s: &str) -> Result<Self, ron::error::SpannedError> {
+        ron::from_str(s)
+    }
+
+    /// Write this asset to a `.effect` (RON) file.
+    pub fn save_ron(&self, path: impl AsRef<std::path::Path>) -> std::io::Result<()> {
+        let s = self.to_ron().map_err(std::io::Error::other)?;
+        std::fs::write(path, s)
+    }
+
+    /// Read an asset from a `.effect` (RON) file.
+    pub fn load_ron(path: impl AsRef<std::path::Path>) -> std::io::Result<Self> {
+        let s = std::fs::read_to_string(path)?;
+        Self::from_ron(&s).map_err(std::io::Error::other)
     }
 }

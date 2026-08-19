@@ -27,6 +27,7 @@ mod showcase_14_lifecycle;
 mod showcase_15_fire;
 mod showcase_16_rendering;
 mod showcase_17_meshspawn;
+mod showcase_18_soft;
 mod viewport_callback;
 
 use eframe::egui;
@@ -62,6 +63,7 @@ enum ShowcaseMode {
     Fire,
     Rendering,
     MeshSpawn,
+    Soft,
 }
 
 impl ShowcaseMode {
@@ -83,6 +85,7 @@ impl ShowcaseMode {
         ShowcaseMode::Fire,
         ShowcaseMode::Rendering,
         ShowcaseMode::MeshSpawn,
+        ShowcaseMode::Soft,
     ];
 
     fn label(self) -> &'static str {
@@ -104,6 +107,7 @@ impl ShowcaseMode {
             ShowcaseMode::Fire => "15: Fire",
             ShowcaseMode::Rendering => "16: Rendering",
             ShowcaseMode::MeshSpawn => "17: Mesh spawn",
+            ShowcaseMode::Soft => "18: Soft particles",
         }
     }
 
@@ -195,6 +199,10 @@ fn main() -> eframe::Result {
                 .collect();
             let rendering_ids = showcase_16_rendering::register(&mut plugin, device, queue);
             let meshspawn_ids = showcase_17_meshspawn::register(&mut plugin, device);
+            let soft_ids: Vec<EffectId> = showcase_18_soft::presets()
+                .into_iter()
+                .map(|(_, asset)| plugin.add_effect(device, asset))
+                .collect();
             let interaction_id = showcase_06_interaction::presets()
                 .into_iter()
                 .map(|(_, asset)| plugin.add_effect(device, asset))
@@ -262,6 +270,8 @@ fn main() -> eframe::Result {
                 rendering: showcase_16_rendering::State::default(),
                 meshspawn_ids,
                 meshspawn: showcase_17_meshspawn::State::default(),
+                soft_ids,
+                soft: showcase_18_soft::State::default(),
             }))
         }),
     )
@@ -310,6 +320,8 @@ struct App {
     rendering: showcase_16_rendering::State,
     meshspawn_ids: showcase_17_meshspawn::Ids,
     meshspawn: showcase_17_meshspawn::State,
+    soft_ids: Vec<EffectId>,
+    soft: showcase_18_soft::State,
 }
 
 impl eframe::App for App {
@@ -399,6 +411,7 @@ impl eframe::App for App {
                 ShowcaseMode::MeshSpawn => {
                     showcase_17_meshspawn::controls(&mut self.meshspawn, ui)
                 }
+                ShowcaseMode::Soft => showcase_18_soft::controls(&mut self.soft, ui),
             });
 
         // ---- Central panel: viewport ----
@@ -466,7 +479,14 @@ impl eframe::App for App {
                     return;
                 }
 
-                let mut scene = SceneFrame::from_surface_items(Vec::new());
+                // Soft particles need opaque geometry to fade against: submit the
+                // shared ground plane (and a sun light) for that mode.
+                let surfaces = if self.mode == ShowcaseMode::Soft {
+                    vec![showcase_06_interaction::ground_item(self.ground_mesh)]
+                } else {
+                    Vec::new()
+                };
+                let mut scene = SceneFrame::from_surface_items(surfaces);
                 let items = match self.mode {
                     ShowcaseMode::Emitters => {
                         showcase_01_emitters::items(&self.emitter_ids, &self.emitters, dt)
@@ -518,6 +538,9 @@ impl eframe::App for App {
                     ShowcaseMode::MeshSpawn => {
                         showcase_17_meshspawn::items(&self.meshspawn_ids, &self.meshspawn, dt)
                     }
+                    ShowcaseMode::Soft => {
+                        showcase_18_soft::items(&self.soft_ids, &self.soft, dt)
+                    }
                     ShowcaseMode::Refraction | ShowcaseMode::Interaction => {
                         unreachable!("handled above")
                     }
@@ -537,6 +560,11 @@ impl eframe::App for App {
                         show_skybox: true,
                         ..Default::default()
                     });
+                }
+
+                // Soft particles: light the ground plane they fade into.
+                if self.mode == ShowcaseMode::Soft {
+                    frame_data.effects.lighting = showcase_06_interaction::lighting();
                 }
 
                 ui.painter()

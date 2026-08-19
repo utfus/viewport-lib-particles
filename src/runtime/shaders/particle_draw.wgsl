@@ -42,7 +42,7 @@ struct DrawParams {
     orient: u32,        // 0 parallel-plane, 1 face-camera, 2 along-velocity, 3 fixed roll
     orient_param: f32,  // fixed roll angle (radians) for orient == 3
     screen_size: u32,   // 1 = constant apparent size
-    _pad: u32,
+    soft_dist: f32,     // soft-particle fade distance (unused here; read by particle_soft)
 };
 @group(3) @binding(0) var<uniform> draw_params: DrawParams;
 // Billboard texture + sampler (a 1x1 white default when the effect has none).

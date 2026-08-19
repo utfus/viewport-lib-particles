@@ -116,6 +116,15 @@ pub struct EffectAsset {
     /// Billboard route only.
     #[cfg_attr(feature = "serde", serde(default))]
     pub screen_space_size: bool,
+    /// Soft-particle fade distance in world units (Phase 9). `Some(d)` fades the
+    /// billboard's alpha to zero as it comes within `d` of the opaque scene
+    /// surface, removing the hard clip line where a particle intersects geometry.
+    /// Soft effects draw in the renderer's read-only-depth pass (via the
+    /// `ItemTypePlugin::paint_depth_read` seam), composited over the scene with
+    /// alpha blending — so a soft effect is over-blended regardless of its
+    /// [`blend`](Self::blend). Billboard route only; `None` disables it.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub soft: Option<f32>,
 }
 
 impl Default for EffectAsset {
@@ -136,6 +145,7 @@ impl Default for EffectAsset {
             sim_space: SimulationSpace::Global,
             orient: Orient::ParallelCameraPlane,
             screen_space_size: false,
+            soft: None,
         }
     }
 }
@@ -238,6 +248,16 @@ impl EffectAsset {
     /// apparent size (Phase 15). Billboard route only.
     pub fn with_screen_size(mut self, enable: bool) -> Self {
         self.screen_space_size = enable;
+        self
+    }
+
+    /// Make this a soft-particle effect (Phase 9): fade the billboard alpha to
+    /// zero within `distance` world units of the opaque scene surface, so it
+    /// dissolves into geometry instead of showing a hard intersection edge.
+    /// Draws through the read-only-depth pass with alpha blending. Billboard
+    /// route only.
+    pub fn with_soft(mut self, distance: f32) -> Self {
+        self.soft = Some(distance);
         self
     }
 }

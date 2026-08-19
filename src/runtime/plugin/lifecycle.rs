@@ -1,7 +1,8 @@
 use std::hash::{Hash, Hasher};
 
 use viewport_lib::plugin_api::shared_wgsl::{
-    SHARED_BINDINGS_WGSL, SHARED_MASK_WGSL, SHARED_OIT_WGSL, SHARED_PICK_WGSL,
+    SHARED_BINDINGS_WGSL, SHARED_DEPTH_READ_WGSL, SHARED_MASK_WGSL, SHARED_OIT_WGSL,
+    SHARED_PICK_WGSL,
 };
 use viewport_lib::plugin_api::{OIT_ACCUM_BLEND, OIT_REVEAL_BLEND, SharedBindings};
 use viewport_lib::resources::{
@@ -249,6 +250,7 @@ impl ParticlePlugin {
         let flipbook = self.effects[idx].asset.flipbook;
         let orient_mode = self.effects[idx].asset.orient;
         let screen_space_size = self.effects[idx].asset.screen_space_size;
+        let soft = self.effects[idx].asset.soft;
 
         // Draw order buffer, padded to a power of two so the bitonic sort has a
         // clean length. Identity for now; sorted per frame for non-additive
@@ -317,6 +319,7 @@ impl ParticlePlugin {
             (0u32, 0.0)
         };
         let screen_size = if is_billboard && screen_space_size { 1u32 } else { 0u32 };
+        let soft_dist = if is_billboard { soft.unwrap_or(0.0) } else { 0.0 };
         let dp = DrawParams {
             stretch,
             align,
@@ -329,7 +332,7 @@ impl ParticlePlugin {
             orient,
             orient_param,
             screen_size,
-            _pad: 0,
+            soft_dist,
         };
         // Bind the effect's texture, or the shared 1x1 white default. The sprite
         // sampler is the shared linear-clamp ramp sampler.
@@ -425,6 +428,29 @@ impl ParticlePlugin {
             None
         };
 
+        // Soft-particle (Phase 9) group-1 bind group: built when the effect is a
+        // soft billboard, folding particles + order + draw params + sprite so the
+        // depth-read pipeline's group 3 carries the scene depth.
+        let soft_draw_bg = if soft.is_some() && is_billboard {
+            let soft_draw_bgl = self.soft_draw_bgl.clone().unwrap();
+            let sprite_view = match texture.and_then(|t| self.textures.get(t.0 as usize)) {
+                Some(t) => &t.view,
+                None => self.default_tex_view.as_ref().unwrap(),
+            };
+            let sprite_sampler = self.ramp_sampler.as_ref().unwrap();
+            Some(build_soft_draw_bg(
+                device,
+                &soft_draw_bgl,
+                gpu.particle_buf(),
+                &order_buf,
+                dp,
+                sprite_view,
+                sprite_sampler,
+            ))
+        } else {
+            None
+        };
+
         // Per-instance pick-id uniform (group 2 of the pick pipeline). Written
         // each frame from the driving item's pick id.
         let pick_bgl = self.pick_bgl.clone().unwrap();
@@ -448,6 +474,7 @@ impl ParticlePlugin {
             EffectInstance {
                 gpu,
                 trail,
+                soft_draw_bg,
                 sort,
                 pick_buf,
                 pick_bg,
@@ -1034,6 +1061,127 @@ impl ParticlePlugin {
             },
         ));
 
+        // Soft-particle (Phase 9) billboard pipeline for the read-only-depth
+        // pass. It folds particles+order+draw-params+sprite into group 1 so
+        // group 3 can carry the scene depth (we are already at four groups), and
+        // its group-3 layout replicates the renderer's `depth_read_bgl` so the
+        // context's prebuilt `scene_depth_bind_group` binds against it (wgpu
+        // deduplicates identical layout descriptors).
+        let soft_draw_bgl = device.create_bind_group_layout(&vwgpu::BindGroupLayoutDescriptor {
+            label: Some("particle_soft_draw_bgl"),
+            entries: &[
+                draw_storage(0),
+                draw_storage(1),
+                vwgpu::BindGroupLayoutEntry {
+                    binding: 2,
+                    visibility: vwgpu::ShaderStages::VERTEX | vwgpu::ShaderStages::FRAGMENT,
+                    ty: vwgpu::BindingType::Buffer {
+                        ty: vwgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                },
+                vwgpu::BindGroupLayoutEntry {
+                    binding: 3,
+                    visibility: vwgpu::ShaderStages::FRAGMENT,
+                    ty: vwgpu::BindingType::Texture {
+                        sample_type: vwgpu::TextureSampleType::Float { filterable: true },
+                        view_dimension: vwgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                vwgpu::BindGroupLayoutEntry {
+                    binding: 4,
+                    visibility: vwgpu::ShaderStages::FRAGMENT,
+                    ty: vwgpu::BindingType::Sampler(vwgpu::SamplerBindingType::Filtering),
+                    count: None,
+                },
+            ],
+        });
+        // Replica of the renderer's depth_read_bgl: binding 0 = depth texture,
+        // binding 1 = non-filtering sampler, both fragment-visible.
+        let depth_read_bgl = device.create_bind_group_layout(&vwgpu::BindGroupLayoutDescriptor {
+            label: Some("particle_depth_read_bgl"),
+            entries: &[
+                vwgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: vwgpu::ShaderStages::FRAGMENT,
+                    ty: vwgpu::BindingType::Texture {
+                        sample_type: vwgpu::TextureSampleType::Depth,
+                        view_dimension: vwgpu::TextureViewDimension::D2,
+                        multisampled: false,
+                    },
+                    count: None,
+                },
+                vwgpu::BindGroupLayoutEntry {
+                    binding: 1,
+                    visibility: vwgpu::ShaderStages::FRAGMENT,
+                    ty: vwgpu::BindingType::Sampler(vwgpu::SamplerBindingType::NonFiltering),
+                    count: None,
+                },
+            ],
+        });
+        let soft_src = format!(
+            "{SHARED_BINDINGS_WGSL}\n{SHARED_DEPTH_READ_WGSL}\n{}",
+            include_str!("../shaders/particle_soft.wgsl")
+        );
+        let soft_shader = device.create_shader_module(vwgpu::ShaderModuleDescriptor {
+            label: Some("particle_soft_shader"),
+            source: vwgpu::ShaderSource::Wgsl(soft_src.into()),
+        });
+        let soft_layout = vwgpu::pipeline_layout(
+            device,
+            "particle_soft_layout",
+            &[shared.group0_layout, &soft_draw_bgl, &ramp_bgl, &depth_read_bgl],
+        );
+        self.soft_pipeline = Some(vwgpu::render_pipeline(
+            device,
+            vwgpu::RenderPipelineDesc {
+                label: "particle_soft",
+                layout: &soft_layout,
+                vertex: vwgpu::VertexState {
+                    module: &soft_shader,
+                    entry_point: Some("vs"),
+                    buffers: &[],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(vwgpu::FragmentState {
+                    module: &soft_shader,
+                    entry_point: Some("fs"),
+                    targets: &[Some(vwgpu::ColorTargetState {
+                        format: HDR_COLOR_FORMAT,
+                        blend: Some(vwgpu::BlendState {
+                            color: over,
+                            alpha: over,
+                        }),
+                        write_mask: vwgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                primitive: vwgpu::PrimitiveState {
+                    topology: vwgpu::PrimitiveTopology::TriangleList,
+                    cull_mode: None,
+                    ..Default::default()
+                },
+                // Test against opaque depth, read-only (the depth-read pass binds
+                // scene depth read-only and never writes it).
+                depth_stencil: Some(vwgpu::depth_stencil(
+                    SCENE_DEPTH_FORMAT,
+                    false,
+                    vwgpu::CompareFunction::LessEqual,
+                )),
+                multisample: vwgpu::MultisampleState {
+                    count: SAMPLE_COUNT,
+                    ..Default::default()
+                },
+                cache: None,
+            },
+        ));
+        self.soft_draw_bgl = Some(soft_draw_bgl);
+        self.depth_read_bgl = Some(depth_read_bgl);
+
         // Mesh render route: instance an uploaded mesh per particle. Same bind
         // group layouts plus a per-vertex position stream.
         let mesh_src = format!(
@@ -1347,7 +1495,14 @@ impl ParticlePlugin {
                     buffers: &[],
                     compilation_options: Default::default(),
                 },
-                fragment: None,
+                // Depth-only, but with a fragment stage that discards for a round,
+                // alpha-dithered footprint (no colour targets).
+                fragment: Some(vwgpu::FragmentState {
+                    module: &shadow_shader,
+                    entry_point: Some("fs"),
+                    targets: &[],
+                    compilation_options: Default::default(),
+                }),
                 primitive: vwgpu::PrimitiveState {
                     topology: vwgpu::PrimitiveTopology::TriangleList,
                     cull_mode: None,

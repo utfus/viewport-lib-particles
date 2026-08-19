@@ -42,7 +42,7 @@ struct DrawParams {
     orient: u32,
     orient_param: f32,
     screen_size: u32,
-    _pad: u32,
+    soft_dist: f32,
 };
 @group(3) @binding(0) var<uniform> draw_params: DrawParams;
 // Billboard texture + sampler (a 1x1 white default when the effect has none).

@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 
 use viewport_lib::plugin_api::{
-    ItemFrameContext, ItemTypePlugin, OutlineMaskContext,
+    DepthReadContext, ItemFrameContext, ItemTypePlugin, OutlineMaskContext,
     PaintContext, PickPassContext, PluginItemCollection, ShadowCastContext, SharedBindings,
 };
 use viewport_lib::wgpu as vwgpu;
@@ -396,6 +396,11 @@ impl ItemTypePlugin for ParticlePlugin {
 
             match eff.asset.render {
                 ParticleRender::Billboard { .. } => {
+                    // Soft billboards draw in the read-only-depth pass
+                    // (paint_depth_read), never here.
+                    if eff.asset.soft.is_some() {
+                        continue;
+                    }
                     // Alpha/Premultiplied billboards route through the OIT pass
                     // (paint_transparent). Only additive draws here.
                     if !additive {
@@ -455,9 +460,55 @@ impl ItemTypePlugin for ParticlePlugin {
             if !matches!(eff.asset.render, ParticleRender::Billboard { .. }) {
                 continue;
             }
+            // Soft billboards draw in the read-only-depth pass, not the OIT pass.
+            if eff.asset.soft.is_some() {
+                continue;
+            }
             pass.set_bind_group(1, gpu.draw_bg(), &[]);
             pass.set_bind_group(2, gpu.ramp_bg(), &[]);
             pass.set_bind_group(3, gpu.drawparams_bg(), &[]);
+            pass.draw(0..6, 0..eff.asset.capacity);
+        }
+    }
+
+    fn draws_depth_read(&self) -> bool {
+        // Open the read-only-depth pass only when a soft billboard effect is
+        // actually being drawn this frame (Phase 9).
+        self.draw_list.iter().any(|e| {
+            let eff = &self.effects[e.key.effect as usize];
+            eff.asset.soft.is_some() && matches!(eff.asset.render, ParticleRender::Billboard { .. })
+        })
+    }
+
+    fn paint_depth_read<'a>(
+        &'a self,
+        pass: &mut vwgpu::RenderPass<'a>,
+        ctx: &DepthReadContext<'a>,
+        _items: &'a dyn PluginItemCollection,
+    ) {
+        let Some(soft) = self.soft_pipeline.as_ref() else {
+            return;
+        };
+        // Group 0 (camera + scene) is bound by the lib on pass entry. Group 3 is
+        // the scene depth, from the context's prebuilt bind group (its layout
+        // matches our replicated `depth_read_bgl`).
+        pass.set_pipeline(soft);
+        pass.set_bind_group(3, ctx.scene_depth_bind_group, &[]);
+        for entry in &self.draw_list {
+            let eff = &self.effects[entry.key.effect as usize];
+            if eff.asset.soft.is_none()
+                || !matches!(eff.asset.render, ParticleRender::Billboard { .. })
+            {
+                continue;
+            }
+            let Some(inst) = self.instances.get(&entry.key) else {
+                continue;
+            };
+            let Some(soft_bg) = inst.soft_draw_bg.as_ref() else {
+                continue;
+            };
+            pass.set_bind_group(1, soft_bg, &[]);
+            pass.set_bind_group(2, inst.gpu.ramp_bg(), &[]);
             pass.draw(0..6, 0..eff.asset.capacity);
         }
     }

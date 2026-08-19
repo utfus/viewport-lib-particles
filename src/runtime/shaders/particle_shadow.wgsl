@@ -1,11 +1,12 @@
-// Shadow pass: draw each live particle as a small world-axis-aligned quad,
-// depth-only, into one cascade tile of the lib's shadow atlas so particles cast
-// blob shadows.
+// Shadow pass: draw each live particle as a small world-axis-aligned quad into
+// one cascade tile of the lib's shadow atlas, so particles cast blob shadows.
+// A fragment stage clips each quad to a circle so the cast is round, not a
+// square (a cloud of squares reads as a boxy, stair-stepped shadow); it stays a
+// solid occluder inside the circle.
 //
 // Group 0 here is NOT the scene camera: the shadow pass binds a single cascade
 // light-space view-projection matrix (matching the lib's `shadow_camera` bind
-// group), so this shader declares its own `Light` uniform rather than pulling in
-// the shared bindings. Depth-only: no fragment stage.
+// group), so this shader declares its own `Light` uniform.
 
 struct Particle {
     position: vec3<f32>,
@@ -26,8 +27,13 @@ struct Light {
 @group(1) @binding(0) var<storage, read> particles: array<Particle>;
 @group(1) @binding(1) var<storage, read> order: array<u32>;
 
+struct VsOut {
+    @builtin(position) pos: vec4<f32>,
+    @location(0) uv: vec2<f32>,
+};
+
 @vertex
-fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> @builtin(position) vec4<f32> {
+fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VsOut {
     var corners = array<vec2<f32>, 6>(
         vec2<f32>(-1.0, -1.0),
         vec2<f32>(1.0, -1.0),
@@ -43,7 +49,19 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> @buil
     if (p.lifetime <= 0.0) {
         half = 0.0;
     }
-    // A world-axis quad (X/Y plane): cheap, casts a round-ish blob for any light.
+    // A world-axis quad (X/Y plane): cheap, casts a round blob for any light.
     let world = p.position + vec3<f32>(c.x * half, c.y * half, 0.0);
-    return light.view_proj * vec4<f32>(world, 1.0);
+
+    var out: VsOut;
+    out.pos = light.view_proj * vec4<f32>(world, 1.0);
+    out.uv = c;
+    return out;
+}
+
+// Depth-only occluder, clipped to a circle so the footprint is round.
+@fragment
+fn fs(in: VsOut) {
+    if (dot(in.uv, in.uv) > 1.0) {
+        discard;
+    }
 }

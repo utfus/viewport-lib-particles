@@ -25,6 +25,7 @@ pub(crate) fn structural_sig(asset: &EffectAsset) -> u64 {
     format!("{:?}", asset.render).hash(&mut h);
     format!("{:?}", asset.orient).hash(&mut h);
     asset.screen_space_size.hash(&mut h);
+    asset.soft.map(|d| d.to_bits()).hash(&mut h);
     asset.texture.map(|t| t.0).hash(&mut h);
     format!("{:?}", asset.texture_mode).hash(&mut h);
     format!("{:?}", asset.flipbook).hash(&mut h);
@@ -402,6 +403,53 @@ pub(crate) fn build_drawparams_bg(
             },
             vwgpu::BindGroupEntry {
                 binding: 2,
+                resource: vwgpu::BindingResource::Sampler(sampler),
+            },
+        ],
+    })
+}
+
+/// Soft-particle draw bind group (Phase 9): group 1 of the depth-read pipeline,
+/// folding particles (0), draw order (1), the `DrawParams` uniform (2), the
+/// billboard texture (3), and its sampler (4) into one group — so group 3 stays
+/// free for the scene depth. Owns a private `DrawParams` buffer.
+pub(crate) fn build_soft_draw_bg(
+    device: &vwgpu::Device,
+    soft_draw_bgl: &vwgpu::BindGroupLayout,
+    particle_buf: &vwgpu::Buffer,
+    order_buf: &vwgpu::Buffer,
+    params: DrawParams,
+    texture_view: &vwgpu::TextureView,
+    sampler: &vwgpu::Sampler,
+) -> vwgpu::BindGroup {
+    let buf = buffer_with_data(
+        device,
+        "particle_soft_drawparams",
+        bytemuck::bytes_of(&params),
+        vwgpu::BufferUsages::UNIFORM,
+    );
+    device.create_bind_group(&vwgpu::BindGroupDescriptor {
+        label: Some("particle_soft_draw_bg"),
+        layout: soft_draw_bgl,
+        entries: &[
+            vwgpu::BindGroupEntry {
+                binding: 0,
+                resource: particle_buf.as_entire_binding(),
+            },
+            vwgpu::BindGroupEntry {
+                binding: 1,
+                resource: order_buf.as_entire_binding(),
+            },
+            vwgpu::BindGroupEntry {
+                binding: 2,
+                resource: buf.as_entire_binding(),
+            },
+            vwgpu::BindGroupEntry {
+                binding: 3,
+                resource: vwgpu::BindingResource::TextureView(texture_view),
+            },
+            vwgpu::BindGroupEntry {
+                binding: 4,
                 resource: vwgpu::BindingResource::Sampler(sampler),
             },
         ],

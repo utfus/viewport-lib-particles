@@ -146,8 +146,9 @@ pub(crate) struct DrawParams {
     pub(crate) orient_param: f32,
     /// Screen-space size flag (Phase 15): 1 keeps constant apparent size.
     pub(crate) screen_size: u32,
-    /// Padding to a 16-byte multiple.
-    pub(crate) _pad: u32,
+    /// Soft-particle fade distance in world units (Phase 9); 0 = not soft. Read
+    /// only by the soft (depth-read) billboard shader.
+    pub(crate) soft_dist: f32,
 }
 
 /// Trail history parameters (group 1, binding 2 of the append and trail draw
@@ -383,6 +384,11 @@ pub(crate) struct EffectInstance {
     pub(crate) gpu: EffectGpu,
     /// Trail history state, present only for `ParticleRender::Trail` effects.
     pub(crate) trail: Option<TrailGpu>,
+    /// Soft-particle draw bind group (Phase 9): group 1 of the depth-read
+    /// pipeline, combining this instance's particles + order + draw params +
+    /// sprite (folded into one group so group 3 is free for the scene depth).
+    /// Present only for soft billboard effects.
+    pub(crate) soft_draw_bg: Option<vwgpu::BindGroup>,
     /// Depth-sort state, present only for non-additive effects.
     pub(crate) sort: Option<SortGpu>,
     /// This instance's pick-id uniform (group 2 of the pick pipeline) and its
@@ -442,6 +448,13 @@ pub struct ParticlePlugin {
     pub(crate) draw_pipeline_oit: Option<vwgpu::RenderPipeline>,
     pub(crate) mesh_pipeline_additive: Option<vwgpu::RenderPipeline>,
     pub(crate) mesh_pipeline_over: Option<vwgpu::RenderPipeline>,
+    // Soft-particle (Phase 9) billboard draw for the read-only-depth pass. Its
+    // group 1 folds particles+order+draw-params+sprite so group 3 carries the
+    // scene depth; `depth_read_bgl` replicates the renderer's `depth_read_bgl`
+    // so the context's prebuilt `scene_depth_bind_group` binds against it.
+    pub(crate) soft_pipeline: Option<vwgpu::RenderPipeline>,
+    pub(crate) soft_draw_bgl: Option<vwgpu::BindGroupLayout>,
+    pub(crate) depth_read_bgl: Option<vwgpu::BindGroupLayout>,
     pub(crate) emit_bgl: Option<vwgpu::BindGroupLayout>,
     pub(crate) sim_bgl: Option<vwgpu::BindGroupLayout>,
     // Sub-emitter variants: a child emit that also reads a spawn-event buffer

@@ -38,8 +38,8 @@
 //! lifetime gradients (`tests/gradient.rs`) and the billboard, mesh, and trail
 //! render routes (`tests/render_routes.rs`, `tests/trails.rs`). Non-additive
 //! effects depth-sort back-to-front (`tests/sort.rs`), and the systems are
-//! GPU-pickable and cast shadows (`tests/pick.rs`, `tests/shadow.rs`). Soft
-//! particles are the main feature still ahead; see
+//! GPU-pickable and cast shadows (`tests/pick.rs`, `tests/shadow.rs`), and fade
+//! into geometry as soft particles (`tests/soft_particles.rs`). See
 //! `docs/plans/particle-system-plan.md` for the phased build-out.
 //!
 //! Typical setup:

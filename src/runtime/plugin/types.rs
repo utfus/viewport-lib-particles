@@ -45,26 +45,29 @@ pub(crate) struct EmitParamsGpu {
     pub(crate) spawn_offset: [f32; 4],
 }
 
-/// One force. Matches `Force` in `particle_sim.wgsl`.
+/// One packed modifier. Matches `Modifier` in the shared `MODIFIERS_WGSL` block.
+/// `kind` selects the behaviour; the three `data` lanes carry that kind's
+/// parameters (see `build_sim_params` / `eval_modifier` for the layout per kind).
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
-pub(crate) struct GpuForce {
-    /// xyz vector (accel or attractor position), w = kind as f32.
+pub(crate) struct GpuModifier {
+    /// Kind discriminant (matches the `Modifier` enum order).
+    pub(crate) kind: u32,
+    pub(crate) _pad: [u32; 3],
     pub(crate) data0: [f32; 4],
-    /// strength, falloff, drag, _.
     pub(crate) data1: [f32; 4],
+    pub(crate) data2: [f32; 4],
 }
 
 /// Simulate-pass parameters. Matches `SimParams` in `particle_sim.wgsl` (and,
 /// with the extra `event` lane read, `particle_sim_parent.wgsl`). The `event`
-/// lane trails the forces array, so the non-parent sim shader, whose struct ends
-/// at `forces`, reads the same buffer unchanged.
+/// lane trails the modifiers array, so both sim shaders read the same buffer.
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 pub(crate) struct SimParamsGpu {
-    /// dt, time, _, force_count.
+    /// dt, time, _, modifier_count.
     pub(crate) misc: [f32; 4],
-    pub(crate) forces: [GpuForce; MAX_FORCES],
+    pub(crate) modifiers: [GpuModifier; MAX_MODIFIERS],
     /// Sub-emitter event control (parent effects only): condition
     /// (0 = every step, 1 = on death), events per trigger, child capacity, and
     /// an active flag (1 when this effect is a parent). All zero otherwise.

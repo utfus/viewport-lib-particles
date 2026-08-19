@@ -242,9 +242,9 @@ impl ItemTypePlugin for ParticlePlugin {
                     let emitter = item
                         .and_then(|it| it.emitter.as_ref())
                         .unwrap_or(&asset.emitter);
-                    let forces = item
-                        .and_then(|it| it.forces.as_deref())
-                        .unwrap_or(&asset.forces);
+                    let modifiers = item
+                        .and_then(|it| it.modifiers.as_deref())
+                        .unwrap_or(&asset.modifiers);
                     let inherit = child_link.as_ref().map(|(_, s)| *s).unwrap_or(0.0);
                     // Phase 22: size of this effect's baked spawn-sample pool
                     // (0 for non-mesh shapes; the emit kernel skips the mesh path).
@@ -276,7 +276,7 @@ impl ItemTypePlugin for ParticlePlugin {
                         ],
                         None => [0; 4],
                     };
-                    let sim = build_sim_params(forces, dt, time, event, space_delta);
+                    let sim = build_sim_params(modifiers, dt, time, event, space_delta);
                     queue.write_buffer(&g.emit_buf, 0, bytemuck::bytes_of(&emit));
                     queue.write_buffer(&g.sim_buf, 0, bytemuck::bytes_of(&sim));
                     queue.write_buffer(&g.budget_buf, 0, bytemuck::bytes_of(&0u32));

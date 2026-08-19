@@ -42,7 +42,7 @@ fn main() {
         "effect '{}': capacity {}, {} forces, blend {:?}",
         effect.name,
         effect.capacity,
-        effect.forces.len(),
+        effect.modifiers.len(),
         effect.blend,
     );
     println!("registered effects: {}", plugin.effect_count());

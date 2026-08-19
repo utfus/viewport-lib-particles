@@ -4,7 +4,7 @@ use viewport_lib::plugin_api::PluginItemCollection;
 use viewport_lib::scene::material::ItemSettings;
 
 use crate::effect::{
-    EffectAsset, EffectId, Emitter, ForceModifier, Gradient,
+    EffectAsset, EffectId, Emitter, Gradient, Modifier,
     PropertyValue,
 };
 
@@ -43,9 +43,9 @@ pub struct ParticleItem {
     /// Per-frame emitter override for the fixed-function path. `None` uses the
     /// effect's registered emitter. Ignored by effects carrying a program.
     pub emitter: Option<Emitter>,
-    /// Per-frame force override for the fixed-function path. `None` uses the
-    /// effect's registered forces. Ignored by effects carrying a program.
-    pub forces: Option<Vec<ForceModifier>>,
+    /// Per-frame modifier override for the fixed-function path. `None` uses the
+    /// effect's registered modifiers. Ignored by effects carrying a program.
+    pub modifiers: Option<Vec<Modifier>>,
     /// Per-frame lifetime-ramp override. When set, the effect's ramp LUT is
     /// re-baked from these keys this frame. `None` keeps the registered gradient.
     pub gradient: Option<Gradient>,
@@ -77,7 +77,7 @@ impl ParticleItem {
             position: [0.0, 0.0, 0.0],
             settings: ItemSettings::default(),
             emitter: None,
-            forces: None,
+            modifiers: None,
             gradient: None,
             properties: Vec::new(),
             one_shot: false,
@@ -117,11 +117,17 @@ impl ParticleItem {
         self
     }
 
-    /// Override the fixed-function forces for this frame. No effect on program
+    /// Override the fixed-function modifiers for this frame. No effect on program
     /// effects.
-    pub fn with_forces(mut self, forces: Vec<ForceModifier>) -> Self {
-        self.forces = Some(forces);
+    pub fn with_modifiers(mut self, modifiers: Vec<Modifier>) -> Self {
+        self.modifiers = Some(modifiers);
         self
+    }
+
+    /// Override the fixed-function modifiers for this frame. Kept for the
+    /// pre-existing name; identical to [`with_modifiers`](Self::with_modifiers).
+    pub fn with_forces(self, forces: Vec<Modifier>) -> Self {
+        self.with_modifiers(forces)
     }
 
     /// Re-bake the lifetime ramp from `gradient` this frame (live gradient-key

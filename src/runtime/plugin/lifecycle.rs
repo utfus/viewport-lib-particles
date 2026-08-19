@@ -881,11 +881,13 @@ impl ParticlePlugin {
             "particle_emit",
             &emit_bgl,
         );
-        // Prepend the shared curl-noise helpers so the CurlNoise force can call
-        // them (same source of truth as the codegen noise ops).
+        // Prepend the shared curl-noise helpers (so CurlNoise can call them) and
+        // the shared modifier definitions (the `Modifier` struct + `eval_modifier`)
+        // that both simulate shaders use.
         let sim_src = format!(
-            "{}\n{}",
+            "{}\n{}\n{}",
             codegen::NOISE_WGSL,
+            include_str!("../shaders/particle_modifiers.wgsl"),
             include_str!("../shaders/particle_sim.wgsl")
         );
         let sim_pipeline = compute(&sim_src, "sim_main", "particle_sim", &sim_bgl);
@@ -912,8 +914,9 @@ impl ParticlePlugin {
             &subemit_bgl,
         );
         let sim_parent_src = format!(
-            "{}\n{}",
+            "{}\n{}\n{}",
             codegen::NOISE_WGSL,
+            include_str!("../shaders/particle_modifiers.wgsl"),
             include_str!("../shaders/particle_sim_parent.wgsl")
         );
         let sim_parent_pipeline =

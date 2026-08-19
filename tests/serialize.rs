@@ -46,7 +46,7 @@ fn round_trip_fixed_function() {
     assert_eq!(back.capacity, 4321);
     assert_eq!(back.blend, ParticleBlend::Alpha);
     assert_eq!(back.sim_space, SimulationSpace::Local);
-    assert_eq!(back.forces.len(), 2);
+    assert_eq!(back.modifiers.len(), 2);
     assert!(matches!(
         back.emitter.spawn,
         SpawnShape::Cone {

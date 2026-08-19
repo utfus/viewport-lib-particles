@@ -35,8 +35,9 @@ pub(crate) const TRANSIENT_KEY_BIT: u64 = 1 << 63;
 /// Default cap on concurrent transient (burst) instances per effect.
 pub(crate) const DEFAULT_MAX_TRANSIENTS: usize = 64;
 
-/// Max forces per effect, matching the fixed array in `particle_sim.wgsl`.
-pub(crate) const MAX_FORCES: usize = 8;
+/// Max modifiers per effect, matching the fixed array in the simulate shaders.
+/// Bump this and the array size in `MODIFIERS_WGSL` together to allow more.
+pub(crate) const MAX_MODIFIERS: usize = 8;
 
 /// Trail history samples kept per particle. Matches `HISTORY_LEN` usage in the
 /// trail shaders.

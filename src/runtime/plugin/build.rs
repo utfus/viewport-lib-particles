@@ -5,7 +5,7 @@ use viewport_lib::wgpu as vwgpu;
 
 use crate::codegen;
 use crate::effect::{
-    EffectAsset, Emitter, ForceModifier, PropertyDecl,
+    EffectAsset, Emitter, Modifier, PropertyDecl,
     PropertyValue, SpawnRate, SpawnShape, VelocityDist,
 };
 
@@ -1354,8 +1354,94 @@ pub(crate) fn build_emit_params(
     p
 }
 
+/// Pack one [`Modifier`] into its GPU slot. The `kind` discriminant and the
+/// `data` lane layout here must match the `case` arm in `particle_modifiers.wgsl`.
+/// This and that `case` are the two places a new modifier touches on either side.
+pub(crate) fn pack_modifier(m: &Modifier) -> GpuModifier {
+    let flag = |b: bool| if b { 1.0 } else { 0.0 };
+    let mut g = GpuModifier::zeroed();
+    match *m {
+        Modifier::Accel(a) => {
+            g.kind = 0;
+            g.data0 = [a[0], a[1], a[2], 0.0];
+        }
+        Modifier::Drag(c) => {
+            g.kind = 1;
+            g.data0 = [c, 0.0, 0.0, 0.0];
+        }
+        Modifier::PointAttractor {
+            position,
+            strength,
+            falloff,
+        } => {
+            g.kind = 2;
+            g.data0 = [position[0], position[1], position[2], 0.0];
+            g.data1 = [strength, falloff, 0.0, 0.0];
+        }
+        Modifier::CurlNoise {
+            scale,
+            strength,
+            speed,
+        } => {
+            g.kind = 3;
+            g.data1 = [scale, strength, speed, 0.0];
+        }
+        Modifier::Radial {
+            center,
+            strength,
+            falloff,
+        } => {
+            g.kind = 4;
+            g.data0 = [center[0], center[1], center[2], 0.0];
+            g.data1 = [strength, falloff, 0.0, 0.0];
+        }
+        Modifier::Vortex {
+            center,
+            axis,
+            strength,
+            falloff,
+        } => {
+            g.kind = 5;
+            g.data0 = [center[0], center[1], center[2], 0.0];
+            g.data1 = [axis[0], axis[1], axis[2], 0.0];
+            g.data2 = [strength, falloff, 0.0, 0.0];
+        }
+        Modifier::Conform {
+            center,
+            radius,
+            attraction,
+            influence,
+            sticky,
+        } => {
+            g.kind = 6;
+            g.data0 = [center[0], center[1], center[2], radius];
+            g.data1 = [attraction, influence, sticky, 0.0];
+        }
+        Modifier::KillSphere {
+            center,
+            radius,
+            kill_inside,
+        } => {
+            g.kind = 7;
+            g.data0 = [center[0], center[1], center[2], radius];
+            g.data1 = [flag(kill_inside), 0.0, 0.0, 0.0];
+        }
+        Modifier::KillAabb {
+            min,
+            max,
+            kill_inside,
+        } => {
+            g.kind = 8;
+            g.data0 = [min[0], min[1], min[2], 0.0];
+            g.data1 = [max[0], max[1], max[2], 0.0];
+            g.data2 = [flag(kill_inside), 0.0, 0.0, 0.0];
+        }
+    }
+    g
+}
+
 pub(crate) fn build_sim_params(
-    forces: &[ForceModifier],
+    modifiers: &[Modifier],
     dt: f32,
     time: f32,
     event: [u32; 4],
@@ -1364,34 +1450,9 @@ pub(crate) fn build_sim_params(
     let mut p = SimParamsGpu::zeroed();
     p.event = event;
     p.space = [space[0], space[1], space[2], 0.0];
-    let n = forces.len().min(MAX_FORCES);
-    for (i, f) in forces.iter().take(n).enumerate() {
-        p.forces[i] = match *f {
-            ForceModifier::Accel(a) => GpuForce {
-                data0: [a[0], a[1], a[2], 0.0],
-                data1: [0.0; 4],
-            },
-            ForceModifier::Drag(c) => GpuForce {
-                data0: [0.0, 0.0, 0.0, 1.0],
-                data1: [0.0, 0.0, c, 0.0],
-            },
-            ForceModifier::PointAttractor {
-                position,
-                strength,
-                falloff,
-            } => GpuForce {
-                data0: [position[0], position[1], position[2], 2.0],
-                data1: [strength, falloff, 0.0, 0.0],
-            },
-            ForceModifier::CurlNoise {
-                scale,
-                strength,
-                speed,
-            } => GpuForce {
-                data0: [0.0, 0.0, 0.0, 3.0],
-                data1: [scale, strength, speed, 0.0],
-            },
-        };
+    let n = modifiers.len().min(MAX_MODIFIERS);
+    for (i, m) in modifiers.iter().take(n).enumerate() {
+        p.modifiers[i] = pack_modifier(m);
     }
     p.misc = [dt, time, 0.0, n as f32];
     p

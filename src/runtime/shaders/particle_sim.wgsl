@@ -1,8 +1,9 @@
-// Simulate pass: integrate forces into every live particle, then age it.
+// Simulate pass: apply modifiers to every live particle, then age it.
 //
-// One invocation per capacity slot. Dead slots are skipped and left for the
-// emit pass to recycle. Forces are inlined into a fixed-size array; the count
-// says how many are active this frame.
+// One invocation per capacity slot. Dead slots are skipped and left for the emit
+// pass to recycle. Modifiers are inlined into a fixed-size array; the count says
+// how many are active this frame. The `Modifier` struct and the per-kind
+// `eval_modifier` are shared with the parent-sim shader (prepended at build).
 
 struct Particle {
     position: vec3<f32>,
@@ -15,18 +16,9 @@ struct Particle {
     pad: vec2<f32>,
 };
 
-// kind (data0.w): 0 = accel (data0.xyz), 1 = drag (data1.z),
-//                 2 = attractor (data0.xyz pos, data1.x strength, data1.y falloff),
-//                 3 = curl noise (data1.x scale, data1.y strength, data1.z speed).
-// Curl-noise helpers (value_noise / curl_noise) are prepended at pipeline build.
-struct Force {
-    data0: vec4<f32>,
-    data1: vec4<f32>,
-};
-
 struct SimParams {
-    misc: vec4<f32>,           // dt, time, _, force_count
-    forces: array<Force, 8>,
+    misc: vec4<f32>,           // dt, time, _, modifier_count
+    modifiers: array<Modifier, 8>,
     event: vec4<u32>,          // sub-emitter control (unused here; parent shader reads it)
     space: vec4<f32>,          // xyz local-space translation delta for this frame
 };
@@ -50,23 +42,16 @@ fn sim_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     let count = u32(params.misc.w);
     var accel = vec3<f32>(0.0, 0.0, 0.0);
     var drag = 0.0;
+    var killed = false;
 
     for (var k = 0u; k < count; k = k + 1u) {
-        let f = params.forces[k];
-        let kind = u32(f.data0.w + 0.5);
-        if (kind == 0u) {
-            accel += f.data0.xyz;
-        } else if (kind == 1u) {
-            drag += f.data1.z;
-        } else if (kind == 2u) {
-            let to = f.data0.xyz - p.position;
-            let dist = length(to);
-            let soft = dist + f.data1.y;
-            accel += (to / max(dist, 1e-4)) * (f.data1.x / (soft * soft));
-        } else if (kind == 3u) {
-            let domain = p.position * f.data1.x + vec3<f32>(time * f.data1.z);
-            accel += curl_noise(domain) * f.data1.y;
-        }
+        eval_modifier(params.modifiers[k], p.position, p.velocity, time, &accel, &drag, &killed);
+    }
+
+    if (killed) {
+        p.lifetime = 0.0;
+        particles[i] = p;
+        return;
     }
 
     p.velocity += accel * dt;

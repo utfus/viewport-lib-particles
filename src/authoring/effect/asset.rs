@@ -75,9 +75,12 @@ pub struct EffectAsset {
     pub blend: ParticleBlend,
     /// Fixed-function emitter. Ignored when [`program`](Self::program) is set.
     pub emitter: Emitter,
-    /// Forces summed each simulation step. Ignored when
-    /// [`program`](Self::program) is set.
-    pub forces: Vec<ForceModifier>,
+    /// Modifiers applied each simulation step: forces summed into acceleration,
+    /// plus drag and kill-region rules. Ignored when [`program`](Self::program)
+    /// is set. (Was named `forces`; the serde alias keeps old `.effect` files
+    /// loading.)
+    #[cfg_attr(feature = "serde", serde(alias = "forces"))]
+    pub modifiers: Vec<Modifier>,
     /// Optional codegen program. When present, the effect compiles to per-effect
     /// emit/simulate WGSL from the expression graph instead of using the
     /// fixed-function emitter and forces above.
@@ -163,7 +166,7 @@ impl Default for EffectAsset {
             capacity: 10_000,
             blend: ParticleBlend::default(),
             emitter: Emitter::default(),
-            forces: Vec::new(),
+            modifiers: Vec::new(),
             program: None,
             gradient: None,
             render: ParticleRender::default(),
@@ -212,9 +215,21 @@ impl EffectAsset {
         self
     }
 
-    /// Append a force.
-    pub fn force(mut self, force: ForceModifier) -> Self {
-        self.forces.push(force);
+    /// Append a modifier (a force, drag, or kill region).
+    pub fn modifier(mut self, modifier: Modifier) -> Self {
+        self.modifiers.push(modifier);
+        self
+    }
+
+    /// Append a modifier. Kept for the pre-existing name; identical to
+    /// [`modifier`](Self::modifier).
+    pub fn force(self, force: Modifier) -> Self {
+        self.modifier(force)
+    }
+
+    /// Replace the whole modifier list.
+    pub fn with_modifiers(mut self, modifiers: Vec<Modifier>) -> Self {
+        self.modifiers = modifiers;
         self
     }
 

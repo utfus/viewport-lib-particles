@@ -82,7 +82,7 @@ pub fn controls(state: &mut State, ui: &mut egui::Ui) {
             }
             match EffectAsset::from_ron(&state.ron) {
                 Ok(back) => {
-                    let ok = back.forces.len() == demo_asset().forces.len()
+                    let ok = back.modifiers.len() == demo_asset().modifiers.len()
                         && back.gradient.is_some();
                     state.status = if ok {
                         "Round-trip OK: forces + gradient preserved.".to_string()

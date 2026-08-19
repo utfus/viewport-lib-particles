@@ -143,10 +143,17 @@ impl Default for VelocityDist {
     }
 }
 
-/// A force integrated into every live particle each simulation step.
+/// A modifier applied to every live particle each simulation step: a force added
+/// to its acceleration, a drag, or a rule that kills it inside or outside a
+/// region.
+///
+/// This is a closed, kind-dispatched set. Each variant packs into a fixed GPU
+/// slot and is handled by one arm of the shared `eval_modifier` function in the
+/// simulate shaders, so adding a new modifier is three local edits: a variant
+/// here, a packing arm in `build_sim_params`, and a `case` in `eval_modifier`.
 #[derive(Clone, Copy, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub enum ForceModifier {
+pub enum Modifier {
     /// Constant acceleration, world units per second squared.
     Accel([f32; 3]),
     /// Velocity-proportional drag; the coefficient is the fraction of velocity
@@ -173,7 +180,72 @@ pub enum ForceModifier {
         /// How fast the field scrolls over time (0 is a static field).
         speed: f32,
     },
+    /// Acceleration straight out from (or, with negative strength, in toward) a
+    /// center. A radial push / implosion.
+    Radial {
+        /// World-space center the acceleration points away from.
+        center: [f32; 3],
+        /// Acceleration magnitude; negative pulls inward.
+        strength: f32,
+        /// When `> 0`, the magnitude fades with distance as
+        /// `strength / (1 + dist / falloff)`; `0` keeps it constant.
+        falloff: f32,
+    },
+    /// Tangential swirl around an axis through a center: a deterministic vortex
+    /// (whirlwind, magic swirl), distinct from the fluid chaos of `CurlNoise`.
+    Vortex {
+        /// World-space center the axis passes through.
+        center: [f32; 3],
+        /// Axis the swirl rotates about.
+        axis: [f32; 3],
+        /// Tangential acceleration magnitude; negative reverses the spin.
+        strength: f32,
+        /// When `> 0`, the magnitude fades with distance from the axis as
+        /// `strength / (1 + dist / falloff)`; `0` keeps it constant.
+        falloff: f32,
+    },
+    /// Pull particles onto a sphere shell: within `influence` of the shell, they
+    /// accelerate toward it at `attraction`, forming a swarm on the surface.
+    Conform {
+        /// Sphere center.
+        center: [f32; 3],
+        /// Sphere radius the particles conform to.
+        radius: f32,
+        /// Acceleration toward the shell.
+        attraction: f32,
+        /// Only particles within this distance of the shell are affected.
+        influence: f32,
+        /// Extra drag applied within `influence`, so particles settle rather than
+        /// orbit. `0` for none.
+        sticky: f32,
+    },
+    /// Kill particles by position relative to a sphere: inside it when
+    /// `kill_inside`, otherwise outside it. Killed particles are recycled by the
+    /// emit pass.
+    KillSphere {
+        /// Sphere center.
+        center: [f32; 3],
+        /// Sphere radius.
+        radius: f32,
+        /// `true` kills particles inside the sphere; `false` kills those outside.
+        kill_inside: bool,
+    },
+    /// Kill particles by position relative to an axis-aligned box: inside it when
+    /// `kill_inside`, otherwise outside it.
+    KillAabb {
+        /// Minimum corner.
+        min: [f32; 3],
+        /// Maximum corner.
+        max: [f32; 3],
+        /// `true` kills particles inside the box; `false` kills those outside.
+        kill_inside: bool,
+    },
 }
+
+/// Former name of [`Modifier`], kept so existing `ForceModifier::…` code and
+/// `.force(…)` calls keep working. The modifier set now includes non-force kinds
+/// (kill regions), so `Modifier` is the current name.
+pub type ForceModifier = Modifier;
 
 /// Fixed-function emitter configuration.
 #[derive(Clone, Copy, Debug)]

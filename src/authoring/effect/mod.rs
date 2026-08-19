@@ -7,7 +7,9 @@ mod program;
 mod render;
 
 pub use asset::{EffectAsset, EventCondition, SubEmitter};
-pub use emitter::{Emitter, ForceModifier, SpawnRate, SpawnShape, TimedBurst, VelocityDist};
+pub use emitter::{
+    Emitter, ForceModifier, Modifier, SpawnRate, SpawnShape, TimedBurst, VelocityDist,
+};
 pub use ids::{EffectId, ParticleMeshId, ParticleTextureId};
 pub use program::{
     Attribute, EffectProgram, PropertyDecl, PropertyValue, SetAttribute, UpdateOp,

@@ -52,6 +52,11 @@ impl ItemTypePlugin for ParticlePlugin {
         let subemit_pipeline = self.subemit_pipeline.clone();
         let sim_parent_pipeline = self.sim_parent_pipeline.clone();
         let append_pipeline = self.append_pipeline.clone();
+        // Live-count readback, used only when the host enables it.
+        let count_pipeline = self.count_pipeline.clone();
+        let count_bgl = self.count_bgl.clone();
+        // Shared store a `ParticleStatsHandle` reads; written on readback below.
+        let stats_shared = self.stats.clone();
         let sort_init_pipeline = self.sort_init_pipeline.clone();
         let sort_stage_pipeline = self.sort_stage_pipeline.clone();
         // For per-frame gradient overrides (re-baking the ramp LUT in the loop).
@@ -347,6 +352,94 @@ impl ItemTypePlugin for ParticlePlugin {
                     };
                     queue.write_buffer(&sort.init_buf, 0, bytemuck::bytes_of(&ip));
                     dispatch_sort(&mut encoder, init_pipeline, stage_pipeline, sort);
+                }
+            }
+
+            // Live particle-count readback. Build the per-instance stats state on
+            // first request; each frame drain any completed map, advance a prior
+            // copy into a map, then reset, count, and copy into a free ring
+            // buffer. The read lags about two frames but never stalls.
+            if items.stats_readback {
+                if let (Some(count_pipeline), Some(count_bgl)) =
+                    (count_pipeline.as_ref(), count_bgl.as_ref())
+                {
+                    let inst = self.instances.get_mut(&ikey).unwrap();
+                    if inst.stats.is_none() {
+                        inst.stats = Some(build_stats_gpu(
+                            device,
+                            count_bgl,
+                            inst.gpu.particle_buf(),
+                            capacity,
+                            STATS_RING,
+                        ));
+                    }
+                    let stats = inst.stats.as_mut().unwrap();
+
+                    // Drain completed maps and advance prior copies into maps.
+                    for rb in &mut stats.ring {
+                        match rb.state {
+                            ReadbackState::Mapping
+                                if rb.done.load(std::sync::atomic::Ordering::Acquire) =>
+                            {
+                                let live = {
+                                    let view = rb.buf.slice(..).get_mapped_range();
+                                    u32::from_le_bytes(view[0..4].try_into().unwrap())
+                                };
+                                rb.buf.unmap();
+                                rb.done.store(false, std::sync::atomic::Ordering::Release);
+                                rb.state = ReadbackState::Idle;
+                                // Publish to the shared store the host handle reads.
+                                if let Ok(mut g) = stats_shared.lock() {
+                                    g.entries.insert(
+                                        (ikey.effect, ikey.key),
+                                        StatEntry { live, capacity },
+                                    );
+                                }
+                            }
+                            ReadbackState::Copied => {
+                                // The copy was encoded on a previous frame and has
+                                // since been submitted, so mapping is safe now.
+                                let done = rb.done.clone();
+                                rb.buf.slice(..).map_async(
+                                    vwgpu::MapMode::Read,
+                                    move |res| {
+                                        if res.is_ok() {
+                                            done.store(true, std::sync::atomic::Ordering::Release);
+                                        }
+                                    },
+                                );
+                                rb.state = ReadbackState::Mapping;
+                            }
+                            _ => {}
+                        }
+                    }
+
+                    // Count this frame's live particles into an idle ring buffer.
+                    if let Some(slot) = stats
+                        .ring
+                        .iter()
+                        .position(|rb| rb.state == ReadbackState::Idle)
+                    {
+                        queue.write_buffer(&stats.stats_buf, 0, bytemuck::bytes_of(&0u32));
+                        {
+                            let mut pass =
+                                encoder.begin_compute_pass(&vwgpu::ComputePassDescriptor {
+                                    label: Some("particle_count_pass"),
+                                    timestamp_writes: None,
+                                });
+                            pass.set_pipeline(count_pipeline);
+                            pass.set_bind_group(0, &stats.count_bg, &[]);
+                            pass.dispatch_workgroups(groups, 1, 1);
+                        }
+                        encoder.copy_buffer_to_buffer(
+                            &stats.stats_buf,
+                            0,
+                            &stats.ring[slot].buf,
+                            0,
+                            std::mem::size_of::<u32>() as u64,
+                        );
+                        stats.ring[slot].state = ReadbackState::Copied;
+                    }
                 }
             }
 

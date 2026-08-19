@@ -160,6 +160,80 @@ pub(crate) fn build_budget_buffer(device: &vwgpu::Device) -> vwgpu::Buffer {
     })
 }
 
+/// Live-count readback state for one instance: the single-atomic stats buffer, a
+/// `CountParams` uniform (capacity, written once), the count bind group over this
+/// instance's particle buffer, and a small ring of mappable readback buffers.
+/// `ring_len` buffers pipeline the copy-then-map-a-frame-later cycle without
+/// aliasing.
+pub(crate) fn build_stats_gpu(
+    device: &vwgpu::Device,
+    count_bgl: &vwgpu::BindGroupLayout,
+    particle_buf: &vwgpu::Buffer,
+    capacity: u32,
+    ring_len: usize,
+) -> StatsGpu {
+    let stats_buf = device.create_buffer(&vwgpu::BufferDescriptor {
+        label: Some("particle_stats"),
+        size: std::mem::size_of::<u32>() as u64,
+        usage: vwgpu::BufferUsages::STORAGE
+            | vwgpu::BufferUsages::COPY_SRC
+            | vwgpu::BufferUsages::COPY_DST,
+        mapped_at_creation: false,
+    });
+    // Capacity uniform, seeded at creation (it never changes for this instance).
+    let params = CountParamsGpu {
+        capacity,
+        _pad: [0; 3],
+    };
+    let params_buf = device.create_buffer(&vwgpu::BufferDescriptor {
+        label: Some("particle_count_params"),
+        size: std::mem::size_of::<CountParamsGpu>() as u64,
+        usage: vwgpu::BufferUsages::UNIFORM,
+        mapped_at_creation: true,
+    });
+    params_buf
+        .slice(..)
+        .get_mapped_range_mut()
+        .copy_from_slice(bytemuck::bytes_of(&params));
+    params_buf.unmap();
+    let count_bg = device.create_bind_group(&vwgpu::BindGroupDescriptor {
+        label: Some("particle_count_bg"),
+        layout: count_bgl,
+        entries: &[
+            vwgpu::BindGroupEntry {
+                binding: 0,
+                resource: particle_buf.as_entire_binding(),
+            },
+            vwgpu::BindGroupEntry {
+                binding: 1,
+                resource: stats_buf.as_entire_binding(),
+            },
+            vwgpu::BindGroupEntry {
+                binding: 2,
+                resource: params_buf.as_entire_binding(),
+            },
+        ],
+    });
+    let ring = (0..ring_len)
+        .map(|_| StatsReadback {
+            buf: device.create_buffer(&vwgpu::BufferDescriptor {
+                label: Some("particle_stats_readback"),
+                size: std::mem::size_of::<u32>() as u64,
+                usage: vwgpu::BufferUsages::MAP_READ | vwgpu::BufferUsages::COPY_DST,
+                mapped_at_creation: false,
+            }),
+            state: ReadbackState::Idle,
+            done: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+        })
+        .collect();
+    StatsGpu {
+        stats_buf,
+        params_buf,
+        count_bg,
+        ring,
+    }
+}
+
 /// A `[0, 1)` draw from a SplitMix64 stream, advancing `state`.
 fn sample_rand(state: &mut u64) -> f32 {
     *state = splitmix64(*state);

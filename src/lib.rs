@@ -74,7 +74,9 @@ pub use effect::{
     SpawnShape, SubEmitter, TextureMode, UpdateOp, VelocityDist,
 };
 pub use expr::{Expr, ExprHandle, Module};
-pub use plugin::{ParticleItem, ParticleItems, ParticlePlugin};
+pub use plugin::{
+    ParticleItem, ParticleItems, ParticlePlugin, ParticleStats, ParticleStatsHandle,
+};
 pub use refraction::RefractionPlugin;
 pub use registry::ModifierRegistry;
 

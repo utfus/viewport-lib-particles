@@ -4,8 +4,10 @@ use std::hash::Hash;
 use bytemuck::{Pod, Zeroable};
 use viewport_lib::wgpu as vwgpu;
 
+use std::sync::{Arc, Mutex};
+
 use crate::effect::{
-    EffectAsset, EventCondition,
+    EffectAsset, EffectId, EventCondition,
 };
 
 use super::*;
@@ -104,6 +106,100 @@ pub(crate) struct SpawnSampleGpu {
     pub(crate) position: [f32; 4],
     /// Surface (or radial) normal at the sample (xyz; w unused).
     pub(crate) normal: [f32; 4],
+}
+
+/// Count-pass parameters. Matches `CountParams` in `particle_count.wgsl`.
+#[repr(C)]
+#[derive(Copy, Clone, Pod, Zeroable)]
+pub(crate) struct CountParamsGpu {
+    pub(crate) capacity: u32,
+    pub(crate) _pad: [u32; 3],
+}
+
+/// Live simulation statistics for one instance (or one effect, summed over its
+/// instances), read back from the GPU a couple of frames late. Suitable for an
+/// editor readout: a live particle count and an over-budget flag, without
+/// stalling the frame.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub struct ParticleStats {
+    /// Live particle count at the last completed readback.
+    pub live_count: u32,
+    /// The instance's (or effect's) particle-buffer capacity.
+    pub capacity: u32,
+    /// True when the buffer is full (`live_count >= capacity`), so the emitter
+    /// cannot spawn more this frame: the over-budget state an editor shows.
+    pub over_budget: bool,
+}
+
+/// One instance's latest readback: live count and its buffer capacity.
+#[derive(Copy, Clone)]
+pub(crate) struct StatEntry {
+    pub(crate) live: u32,
+    pub(crate) capacity: u32,
+}
+
+/// Shared live-count store, keyed by `(effect, key)`. The plugin writes each
+/// instance's completed readback here inside `prepare`; a [`ParticleStatsHandle`]
+/// cloned out before install reads it back on the host side. The handle is how a
+/// host observes these counts after the renderer takes ownership of the plugin.
+#[derive(Default)]
+pub(crate) struct StatsShared {
+    pub(crate) entries: HashMap<(u32, u64), StatEntry>,
+}
+
+/// A cheap, cloneable handle to a [`ParticlePlugin`]'s live particle-count stats.
+/// Obtain it with [`ParticlePlugin::stats_handle`] before handing the plugin to
+/// the renderer, then read counts from it each frame. The plugin updates the
+/// shared store inside its `prepare`, which the renderer drives, so the handle
+/// stays live after install.
+///
+/// Enable the readback per frame with
+/// [`ParticleItems::with_stats_readback`](crate::ParticleItems::with_stats_readback).
+/// The values lag about two frames (an async, non-stalling GPU read), which is
+/// fine for an editor readout. Counts are per instance, so
+/// [`instance_stats`](Self::instance_stats) addresses a single `(effect, key)`
+/// and [`effect_stats`](Self::effect_stats) sums an effect's instances.
+#[derive(Clone, Default)]
+pub struct ParticleStatsHandle {
+    pub(crate) inner: Arc<Mutex<StatsShared>>,
+}
+
+impl ParticleStatsHandle {
+    /// Latest readback for one instance (`key` from
+    /// [`ParticleItem::with_key`](crate::ParticleItem::with_key)), or `None`
+    /// until a readback for it has completed (the first frames after enabling are
+    /// empty, since the read is deferred).
+    pub fn instance_stats(&self, effect: EffectId, key: u64) -> Option<ParticleStats> {
+        let g = self.inner.lock().ok()?;
+        let e = g.entries.get(&(effect.0, key))?;
+        Some(ParticleStats {
+            live_count: e.live,
+            capacity: e.capacity,
+            over_budget: e.capacity > 0 && e.live >= e.capacity,
+        })
+    }
+
+    /// Latest readback for an effect, summed over its instances that have a
+    /// completed readback (each owns a `capacity`-sized buffer, so `capacity`
+    /// here is that sum). `None` until at least one instance has a readback.
+    pub fn effect_stats(&self, effect: EffectId) -> Option<ParticleStats> {
+        let g = self.inner.lock().ok()?;
+        let mut live = 0u32;
+        let mut capacity = 0u32;
+        let mut any = false;
+        for ((eff, _), e) in &g.entries {
+            if *eff == effect.0 {
+                live = live.saturating_add(e.live);
+                capacity = capacity.saturating_add(e.capacity);
+                any = true;
+            }
+        }
+        any.then_some(ParticleStats {
+            live_count: live,
+            capacity,
+            over_budget: capacity > 0 && live >= capacity,
+        })
+    }
 }
 
 /// An uploaded texture for the billboard texture / flipbook routes: the texture
@@ -391,6 +487,9 @@ pub(crate) struct EffectInstance {
     pub(crate) soft_draw_bg: Option<vwgpu::BindGroup>,
     /// Depth-sort state, present only for non-additive effects.
     pub(crate) sort: Option<SortGpu>,
+    /// Live-count readback state, built lazily the first frame the host requests
+    /// stats for this instance and retained thereafter.
+    pub(crate) stats: Option<StatsGpu>,
     /// This instance's pick-id uniform (group 2 of the pick pipeline) and its
     /// bind group, written each frame from the driving item's pick id.
     pub(crate) pick_buf: vwgpu::Buffer,
@@ -427,6 +526,45 @@ pub(crate) struct TransientInstance {
     pub(crate) retire_at: f32,
     /// Deterministic seed captured from the spawning item (Phase 28).
     pub(crate) seed: Option<u64>,
+}
+
+/// Live-count readback state for one instance. Present only when the host enables
+/// readback (`ParticleItems::with_stats_readback(true)`); built lazily the first
+/// such frame. Each frame a small count pass tallies live slots into `stats_buf`,
+/// which is copied into one of a small ring of mappable buffers; a buffer copied
+/// on a previous frame is mapped and read here, so the count is about two frames
+/// late but never stalls the frame.
+pub(crate) struct StatsGpu {
+    /// Single `atomic<u32>` live-count, reset to 0 each frame before the pass.
+    pub(crate) stats_buf: vwgpu::Buffer,
+    /// `CountParams` uniform (capacity), written once at build.
+    #[allow(dead_code)]
+    pub(crate) params_buf: vwgpu::Buffer,
+    /// Count-pass bind group (particles read + stats read_write + params).
+    pub(crate) count_bg: vwgpu::BindGroup,
+    /// Ring of mappable readback buffers, cycled so a copy and its later map do
+    /// not alias.
+    pub(crate) ring: Vec<StatsReadback>,
+}
+
+/// One mappable readback buffer in a [`StatsGpu`] ring, with its async-map state.
+pub(crate) struct StatsReadback {
+    /// `MAP_READ | COPY_DST`, four bytes (the live count).
+    pub(crate) buf: vwgpu::Buffer,
+    pub(crate) state: ReadbackState,
+    /// Set true by the `map_async` callback when the map completes.
+    pub(crate) done: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
+/// Async-map lifecycle of one [`StatsReadback`] buffer.
+#[derive(PartialEq, Eq)]
+pub(crate) enum ReadbackState {
+    /// Free to receive a copy this frame.
+    Idle,
+    /// A copy was encoded this frame; next frame (once submitted) start the map.
+    Copied,
+    /// `map_async` is in flight; poll `done`, then read + unmap + return to idle.
+    Mapping,
 }
 
 /// The particle system plugin.
@@ -478,6 +616,14 @@ pub struct ParticlePlugin {
     pub(crate) gen_sim_bgl: Option<vwgpu::BindGroupLayout>,
     pub(crate) draw_bgl: Option<vwgpu::BindGroupLayout>,
     pub(crate) drawparams_bgl: Option<vwgpu::BindGroupLayout>,
+
+    // Live-count readback: a compute pass tallying live particles into a
+    // per-instance atomic, run only for instances whose host requested stats.
+    pub(crate) count_pipeline: Option<vwgpu::ComputePipeline>,
+    pub(crate) count_bgl: Option<vwgpu::BindGroupLayout>,
+    /// Shared live-count store, written in `prepare` and read by any
+    /// [`ParticleStatsHandle`] cloned out via [`stats_handle`](Self::stats_handle).
+    pub(crate) stats: Arc<Mutex<StatsShared>>,
 
     // Trail render route: the history-append compute pass and the ribbon draw.
     pub(crate) append_pipeline: Option<vwgpu::ComputePipeline>,
@@ -547,6 +693,14 @@ pub struct ParticlePlugin {
     /// Elapsed simulation time in seconds, accumulated from each frame's `dt`.
     /// Scrolls time-varying fields such as the `CurlNoise` force.
     pub(crate) time: f32,
+
+    /// MSAA sample count of the renderer's HDR scene target, read from
+    /// `SharedBindings.sample_count` in `build_gpu`. The HDR colour-pass pipelines
+    /// (billboard, OIT, mesh, trail, soft) build with this so they match an MSAA
+    /// host; the interaction passes stay at [`INTERACTION_SAMPLE_COUNT`]. Set in
+    /// `build_gpu` before any pipeline is built; `0` from `Default` beforehand,
+    /// never read until then.
+    pub(crate) sample_count: u32,
 }
 
 /// One instance drawn this frame, with the driving item's interaction flags.

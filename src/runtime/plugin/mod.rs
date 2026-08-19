@@ -13,7 +13,7 @@ mod prepare;
 mod types;
 
 pub use items::{ParticleItem, ParticleItems};
-pub use types::ParticlePlugin;
+pub use types::{ParticlePlugin, ParticleStats, ParticleStatsHandle};
 
 // Crate-internal re-exports so the submodules reach each other's items through
 // `use super::*`.
@@ -21,10 +21,12 @@ pub(crate) use build::*;
 pub(crate) use items::EffectCommand;
 pub(crate) use types::*;
 
-/// MSAA sample count the plugin builds its pipelines for. A plugin cannot read
-/// the renderer's configured sample count from `SharedBindings` today, so this
-/// assumes the default single-sampled HDR pass (see the plan).
-pub(crate) const SAMPLE_COUNT: u32 = 1;
+/// Sample count for the plugin's single-sampled interaction passes (shadow,
+/// pick, outline-mask). The library pegs those pass targets to 1 regardless of
+/// the scene MSAA level (see [`SharedBindings::sample_count`]), so the plugin uses
+/// 1 there. The HDR colour passes instead build against `self.sample_count`, read
+/// from `SharedBindings.sample_count` in `build_gpu`.
+pub(crate) const INTERACTION_SAMPLE_COUNT: u32 = 1;
 
 /// High bit of an `InstanceKey`'s `key`, reserved for internal transient (burst)
 /// instances so they never collide with host-supplied keys.
@@ -54,3 +56,8 @@ pub(crate) const RAMP_WIDTH: u32 = 64;
 /// Number of samples baked into a `MeshSurface` / `PointCloud` spawn pool
 /// (Phase 22). The emit kernel picks a random index into this pool per spawn.
 pub(crate) const MESH_SAMPLE_POOL: u32 = 8192;
+
+/// Mappable readback buffers per instance for the live-count stats ring. Enough
+/// to pipeline the copy-this-frame, map-next-frame cycle without a copy ever
+/// aliasing an in-flight map.
+pub(crate) const STATS_RING: usize = 3;

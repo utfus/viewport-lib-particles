@@ -194,6 +194,13 @@ pub struct ParticleItems {
     /// a new burst would exceed it, the oldest transient of that effect is
     /// recycled. `None` uses the default (64).
     pub max_transients: Option<usize>,
+    /// Live particle-count readback: when `true`, each simulated instance runs a
+    /// small count pass and its live count is read back (a couple of frames late)
+    /// for [`ParticlePlugin::instance_stats`] /
+    /// [`effect_stats`](ParticlePlugin::effect_stats). Off by default (it adds a
+    /// compute pass and a copy per instance); enable it only while an editor is
+    /// showing counts. Non-stalling either way.
+    pub stats_readback: bool,
 }
 
 impl Default for ParticleItems {
@@ -207,6 +214,7 @@ impl Default for ParticleItems {
             frustum_cull: false,
             max_sim_instances: None,
             max_transients: None,
+            stats_readback: false,
         }
     }
 }
@@ -253,6 +261,15 @@ impl ParticleItems {
     /// Cap concurrent transient (burst) instances per effect (Phase 25).
     pub fn with_max_transients(mut self, max: usize) -> Self {
         self.max_transients = Some(max);
+        self
+    }
+
+    /// Enable live particle-count readback this frame. Read the result with
+    /// [`ParticlePlugin::instance_stats`] /
+    /// [`effect_stats`](ParticlePlugin::effect_stats); it lags by about two frames
+    /// and never stalls. Enable only while something needs the count.
+    pub fn with_stats_readback(mut self, enable: bool) -> Self {
+        self.stats_readback = enable;
         self
     }
 

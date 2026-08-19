@@ -68,6 +68,33 @@ impl ParticlePlugin {
         self.effects.len()
     }
 
+    /// A cheap, cloneable handle to this plugin's live particle-count stats.
+    /// Clone it out before installing the plugin with
+    /// [`ViewportRenderer::with_item_type_plugin`](viewport_lib::renderer::ViewportRenderer::with_item_type_plugin),
+    /// which takes ownership; the plugin updates the shared store inside its
+    /// `prepare`, so the handle keeps reporting after install. Enable the readback
+    /// per frame with [`ParticleItems::with_stats_readback`]. See
+    /// [`ParticleStatsHandle`].
+    pub fn stats_handle(&self) -> ParticleStatsHandle {
+        ParticleStatsHandle {
+            inner: self.stats.clone(),
+        }
+    }
+
+    /// Live simulation stats for one instance, from the shared store this plugin
+    /// fills each frame. Equivalent to [`ParticleStatsHandle::instance_stats`];
+    /// usable when a plugin handle is held directly, before install. Returns
+    /// `None` until a readback for the `(effect, key)` has completed.
+    pub fn instance_stats(&self, effect: EffectId, key: u64) -> Option<ParticleStats> {
+        self.stats_handle().instance_stats(effect, key)
+    }
+
+    /// Live simulation stats for an effect, summed over its instances. Equivalent
+    /// to [`ParticleStatsHandle::effect_stats`].
+    pub fn effect_stats(&self, effect: EffectId) -> Option<ParticleStats> {
+        self.stats_handle().effect_stats(effect)
+    }
+
     /// Replace a registered effect's asset in place (Phase 27), for hot-reload.
     /// The [`EffectId`] stays valid and its live particle set is **preserved**
     /// when the change is uniform-only (emitter / forces / lifetime / sim-space):
@@ -113,6 +140,10 @@ impl ParticlePlugin {
     pub(crate) fn purge_effect_gpu(&mut self, idx: usize) {
         let effect = idx as u32;
         self.instances.retain(|k, _| k.effect != effect);
+        // Drop this effect's live-count readbacks from the shared store.
+        if let Ok(mut g) = self.stats.lock() {
+            g.entries.retain(|(eff, _), _| *eff != effect);
+        }
         self.transients.retain(|t| t.ikey.effect != effect);
         self.transient_free.remove(&idx);
         self.transient_next.remove(&idx);
@@ -476,6 +507,7 @@ impl ParticlePlugin {
                 trail,
                 soft_draw_bg,
                 sort,
+                stats: None,
                 pick_buf,
                 pick_bg,
                 spawn_accum: 0.0,
@@ -628,6 +660,12 @@ impl ParticlePlugin {
 
 impl ParticlePlugin {
     pub(crate) fn build_gpu(&mut self, device: &vwgpu::Device, shared: &SharedBindings<'_>) {
+        // MSAA sample count of the renderer's HDR scene target. The HDR
+        // colour-pass pipelines below build with this; the interaction passes
+        // (shadow, pick, mask) stay single-sampled. Captured into a local so the
+        // pipeline-building closures don't borrow `self`.
+        let sample_count = shared.sample_count.max(1);
+        self.sample_count = sample_count;
         let storage_rw = |binding| vwgpu::BindGroupLayoutEntry {
             binding,
             visibility: vwgpu::ShaderStages::COMPUTE,
@@ -882,6 +920,19 @@ impl ParticlePlugin {
             &history_bgl,
         );
 
+        // Live-count readback: particles (read) + a single-atomic stats buffer
+        // (read_write) + a CountParams uniform.
+        let count_bgl = device.create_bind_group_layout(&vwgpu::BindGroupLayoutDescriptor {
+            label: Some("particle_count_bgl"),
+            entries: &[storage_ro_compute(0), storage_rw(1), uniform(2)],
+        });
+        let count_pipeline = compute(
+            include_str!("../shaders/particle_count.wgsl"),
+            "count_main",
+            "particle_count",
+            &count_bgl,
+        );
+
         // Depth sort: a setup pass (keys + identity order) and a bitonic stage.
         let sort_init_bgl = device.create_bind_group_layout(&vwgpu::BindGroupLayoutDescriptor {
             label: Some("particle_sort_init_bgl"),
@@ -984,7 +1035,7 @@ impl ParticlePlugin {
                         vwgpu::CompareFunction::LessEqual,
                     )),
                     multisample: vwgpu::MultisampleState {
-                        count: SAMPLE_COUNT,
+                        count: sample_count,
                         ..Default::default()
                     },
                     cache: None,
@@ -1054,7 +1105,7 @@ impl ParticlePlugin {
                     vwgpu::CompareFunction::LessEqual,
                 )),
                 multisample: vwgpu::MultisampleState {
-                    count: SAMPLE_COUNT,
+                    count: sample_count,
                     ..Default::default()
                 },
                 cache: None,
@@ -1171,7 +1222,7 @@ impl ParticlePlugin {
                         vwgpu::CompareFunction::LessEqual,
                     )),
                     multisample: vwgpu::MultisampleState {
-                        count: SAMPLE_COUNT,
+                        count: sample_count,
                         ..Default::default()
                     },
                     cache: None,
@@ -1247,7 +1298,7 @@ impl ParticlePlugin {
                         vwgpu::CompareFunction::LessEqual,
                     )),
                     multisample: vwgpu::MultisampleState {
-                        count: SAMPLE_COUNT,
+                        count: sample_count,
                         ..Default::default()
                     },
                     cache: None,
@@ -1323,7 +1374,7 @@ impl ParticlePlugin {
                         vwgpu::CompareFunction::LessEqual,
                     )),
                     multisample: vwgpu::MultisampleState {
-                        count: SAMPLE_COUNT,
+                        count: sample_count,
                         ..Default::default()
                     },
                     cache: None,
@@ -1429,7 +1480,7 @@ impl ParticlePlugin {
                     vwgpu::CompareFunction::LessEqual,
                 )),
                 multisample: vwgpu::MultisampleState {
-                    count: SAMPLE_COUNT,
+                    count: INTERACTION_SAMPLE_COUNT,
                     ..Default::default()
                 },
                 cache: None,
@@ -1481,7 +1532,7 @@ impl ParticlePlugin {
                     vwgpu::CompareFunction::LessEqual,
                 )),
                 multisample: vwgpu::MultisampleState {
-                    count: SAMPLE_COUNT,
+                    count: INTERACTION_SAMPLE_COUNT,
                     ..Default::default()
                 },
                 cache: None,
@@ -1533,7 +1584,7 @@ impl ParticlePlugin {
                     },
                 }),
                 multisample: vwgpu::MultisampleState {
-                    count: SAMPLE_COUNT,
+                    count: INTERACTION_SAMPLE_COUNT,
                     ..Default::default()
                 },
                 cache: None,
@@ -1553,6 +1604,8 @@ impl ParticlePlugin {
         self.subemit_bgl = Some(subemit_bgl);
         self.sim_parent_bgl = Some(sim_parent_bgl);
         self.append_pipeline = Some(append_pipeline);
+        self.count_pipeline = Some(count_pipeline);
+        self.count_bgl = Some(count_bgl);
         self.sort_init_pipeline = Some(sort_init_pipeline);
         self.sort_stage_pipeline = Some(sort_stage_pipeline);
         self.emit_bgl = Some(emit_bgl);

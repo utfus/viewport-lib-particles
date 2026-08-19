@@ -28,6 +28,7 @@ mod showcase_15_fire;
 mod showcase_16_rendering;
 mod showcase_17_meshspawn;
 mod showcase_18_soft;
+mod showcase_19_fire_improved;
 mod viewport_callback;
 
 use eframe::egui;
@@ -64,6 +65,7 @@ enum ShowcaseMode {
     Rendering,
     MeshSpawn,
     Soft,
+    FireImproved,
 }
 
 impl ShowcaseMode {
@@ -86,6 +88,7 @@ impl ShowcaseMode {
         ShowcaseMode::Rendering,
         ShowcaseMode::MeshSpawn,
         ShowcaseMode::Soft,
+        ShowcaseMode::FireImproved,
     ];
 
     fn label(self) -> &'static str {
@@ -108,6 +111,7 @@ impl ShowcaseMode {
             ShowcaseMode::Rendering => "16: Rendering",
             ShowcaseMode::MeshSpawn => "17: Mesh spawn",
             ShowcaseMode::Soft => "18: Soft particles",
+            ShowcaseMode::FireImproved => "19: Fire+",
         }
     }
 
@@ -203,6 +207,7 @@ fn main() -> eframe::Result {
                 .into_iter()
                 .map(|(_, asset)| plugin.add_effect(device, asset))
                 .collect();
+            let fire2_ids = showcase_19_fire_improved::register(&mut plugin, device, queue);
             let interaction_id = showcase_06_interaction::presets()
                 .into_iter()
                 .map(|(_, asset)| plugin.add_effect(device, asset))
@@ -215,6 +220,11 @@ fn main() -> eframe::Result {
                 .resources_mut()
                 .upload_mesh_data(device, &primitives::cuboid(20.0, 20.0, 0.5))
                 .expect("ground mesh");
+            // Crossed logs the improved fire spawns from and fades into (occluder).
+            let fire2_logs_mesh = renderer
+                .resources_mut()
+                .upload_mesh_data(device, &showcase_19_fire_improved::logs_mesh_data())
+                .expect("fire logs mesh");
 
             let mut writer = rs.renderer.write();
             writer.callback_resources.insert(renderer);
@@ -272,6 +282,9 @@ fn main() -> eframe::Result {
                 meshspawn: showcase_17_meshspawn::State::default(),
                 soft_ids,
                 soft: showcase_18_soft::State::default(),
+                fire2_ids,
+                fire2: showcase_19_fire_improved::State::default(),
+                fire2_logs_mesh,
             }))
         }),
     )
@@ -322,6 +335,9 @@ struct App {
     meshspawn: showcase_17_meshspawn::State,
     soft_ids: Vec<EffectId>,
     soft: showcase_18_soft::State,
+    fire2_ids: showcase_19_fire_improved::Ids,
+    fire2: showcase_19_fire_improved::State,
+    fire2_logs_mesh: MeshId,
 }
 
 impl eframe::App for App {
@@ -412,6 +428,9 @@ impl eframe::App for App {
                     showcase_17_meshspawn::controls(&mut self.meshspawn, ui)
                 }
                 ShowcaseMode::Soft => showcase_18_soft::controls(&mut self.soft, ui),
+                ShowcaseMode::FireImproved => {
+                    showcase_19_fire_improved::controls(&mut self.fire2, ui)
+                }
             });
 
         // ---- Central panel: viewport ----
@@ -480,11 +499,17 @@ impl eframe::App for App {
                 }
 
                 // Soft particles need opaque geometry to fade against: submit the
-                // shared ground plane (and a sun light) for that mode.
-                let surfaces = if self.mode == ShowcaseMode::Soft {
-                    vec![showcase_06_interaction::ground_item(self.ground_mesh)]
-                } else {
-                    Vec::new()
+                // shared ground plane (and a sun light) for those modes; the
+                // improved fire adds its crossed logs.
+                let surfaces = match self.mode {
+                    ShowcaseMode::Soft => {
+                        vec![showcase_06_interaction::ground_item(self.ground_mesh)]
+                    }
+                    ShowcaseMode::FireImproved => vec![
+                        showcase_19_fire_improved::ground_item(self.ground_mesh),
+                        showcase_19_fire_improved::logs_item(self.fire2_logs_mesh),
+                    ],
+                    _ => Vec::new(),
                 };
                 let mut scene = SceneFrame::from_surface_items(surfaces);
                 let items = match self.mode {
@@ -541,6 +566,9 @@ impl eframe::App for App {
                     ShowcaseMode::Soft => {
                         showcase_18_soft::items(&self.soft_ids, &self.soft, dt)
                     }
+                    ShowcaseMode::FireImproved => {
+                        showcase_19_fire_improved::items(&self.fire2_ids, &self.fire2, dt)
+                    }
                     ShowcaseMode::Refraction | ShowcaseMode::Interaction => {
                         unreachable!("handled above")
                     }
@@ -562,8 +590,8 @@ impl eframe::App for App {
                     });
                 }
 
-                // Soft particles: light the ground plane they fade into.
-                if self.mode == ShowcaseMode::Soft {
+                // Soft particles / improved fire: light the geometry they fade into.
+                if matches!(self.mode, ShowcaseMode::Soft | ShowcaseMode::FireImproved) {
                     frame_data.effects.lighting = showcase_06_interaction::lighting();
                 }
 

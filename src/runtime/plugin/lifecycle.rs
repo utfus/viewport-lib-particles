@@ -1136,48 +1136,61 @@ impl ParticlePlugin {
             "particle_soft_layout",
             &[shared.group0_layout, &soft_draw_bgl, &ramp_bgl, &depth_read_bgl],
         );
-        self.soft_pipeline = Some(vwgpu::render_pipeline(
-            device,
-            vwgpu::RenderPipelineDesc {
-                label: "particle_soft",
-                layout: &soft_layout,
-                vertex: vwgpu::VertexState {
-                    module: &soft_shader,
-                    entry_point: Some("vs"),
-                    buffers: &[],
-                    compilation_options: Default::default(),
+        let make_soft = |blend: vwgpu::BlendState, label: &str| {
+            vwgpu::render_pipeline(
+                device,
+                vwgpu::RenderPipelineDesc {
+                    label,
+                    layout: &soft_layout,
+                    vertex: vwgpu::VertexState {
+                        module: &soft_shader,
+                        entry_point: Some("vs"),
+                        buffers: &[],
+                        compilation_options: Default::default(),
+                    },
+                    fragment: Some(vwgpu::FragmentState {
+                        module: &soft_shader,
+                        entry_point: Some("fs"),
+                        targets: &[Some(vwgpu::ColorTargetState {
+                            format: HDR_COLOR_FORMAT,
+                            blend: Some(blend),
+                            write_mask: vwgpu::ColorWrites::ALL,
+                        })],
+                        compilation_options: Default::default(),
+                    }),
+                    primitive: vwgpu::PrimitiveState {
+                        topology: vwgpu::PrimitiveTopology::TriangleList,
+                        cull_mode: None,
+                        ..Default::default()
+                    },
+                    // Test against opaque depth, read-only (the depth-read pass
+                    // binds scene depth read-only and never writes it).
+                    depth_stencil: Some(vwgpu::depth_stencil(
+                        SCENE_DEPTH_FORMAT,
+                        false,
+                        vwgpu::CompareFunction::LessEqual,
+                    )),
+                    multisample: vwgpu::MultisampleState {
+                        count: SAMPLE_COUNT,
+                        ..Default::default()
+                    },
+                    cache: None,
                 },
-                fragment: Some(vwgpu::FragmentState {
-                    module: &soft_shader,
-                    entry_point: Some("fs"),
-                    targets: &[Some(vwgpu::ColorTargetState {
-                        format: HDR_COLOR_FORMAT,
-                        blend: Some(vwgpu::BlendState {
-                            color: over,
-                            alpha: over,
-                        }),
-                        write_mask: vwgpu::ColorWrites::ALL,
-                    })],
-                    compilation_options: Default::default(),
-                }),
-                primitive: vwgpu::PrimitiveState {
-                    topology: vwgpu::PrimitiveTopology::TriangleList,
-                    cull_mode: None,
-                    ..Default::default()
-                },
-                // Test against opaque depth, read-only (the depth-read pass binds
-                // scene depth read-only and never writes it).
-                depth_stencil: Some(vwgpu::depth_stencil(
-                    SCENE_DEPTH_FORMAT,
-                    false,
-                    vwgpu::CompareFunction::LessEqual,
-                )),
-                multisample: vwgpu::MultisampleState {
-                    count: SAMPLE_COUNT,
-                    ..Default::default()
-                },
-                cache: None,
+            )
+        };
+        self.soft_pipeline_over = Some(make_soft(
+            vwgpu::BlendState {
+                color: over,
+                alpha: over,
             },
+            "particle_soft_over",
+        ));
+        self.soft_pipeline_additive = Some(make_soft(
+            vwgpu::BlendState {
+                color: one,
+                alpha: one,
+            },
+            "particle_soft_additive",
         ));
         self.soft_draw_bgl = Some(soft_draw_bgl);
         self.depth_read_bgl = Some(depth_read_bgl);

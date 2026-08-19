@@ -486,13 +486,16 @@ impl ItemTypePlugin for ParticlePlugin {
         ctx: &DepthReadContext<'a>,
         _items: &'a dyn PluginItemCollection,
     ) {
-        let Some(soft) = self.soft_pipeline.as_ref() else {
+        let (Some(soft_over), Some(soft_add)) = (
+            self.soft_pipeline_over.as_ref(),
+            self.soft_pipeline_additive.as_ref(),
+        ) else {
             return;
         };
         // Group 0 (camera + scene) is bound by the lib on pass entry. Group 3 is
         // the scene depth, from the context's prebuilt bind group (its layout
-        // matches our replicated `depth_read_bgl`).
-        pass.set_pipeline(soft);
+        // matches our replicated `depth_read_bgl`). Each soft effect picks the
+        // over / additive blend by its own blend mode.
         pass.set_bind_group(3, ctx.scene_depth_bind_group, &[]);
         for entry in &self.draw_list {
             let eff = &self.effects[entry.key.effect as usize];
@@ -507,6 +510,12 @@ impl ItemTypePlugin for ParticlePlugin {
             let Some(soft_bg) = inst.soft_draw_bg.as_ref() else {
                 continue;
             };
+            let pipeline = if matches!(eff.asset.blend, ParticleBlend::Additive) {
+                soft_add
+            } else {
+                soft_over
+            };
+            pass.set_pipeline(pipeline);
             pass.set_bind_group(1, soft_bg, &[]);
             pass.set_bind_group(2, inst.gpu.ramp_bg(), &[]);
             pass.draw(0..6, 0..eff.asset.capacity);

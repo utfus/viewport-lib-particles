@@ -451,8 +451,11 @@ pub struct ParticlePlugin {
     // Soft-particle (Phase 9) billboard draw for the read-only-depth pass. Its
     // group 1 folds particles+order+draw-params+sprite so group 3 carries the
     // scene depth; `depth_read_bgl` replicates the renderer's `depth_read_bgl`
-    // so the context's prebuilt `scene_depth_bind_group` binds against it.
-    pub(crate) soft_pipeline: Option<vwgpu::RenderPipeline>,
+    // so the context's prebuilt `scene_depth_bind_group` binds against it. Two
+    // blend variants (over / additive) so soft alpha smoke and soft additive
+    // flame both fade against geometry; chosen per effect by its blend.
+    pub(crate) soft_pipeline_over: Option<vwgpu::RenderPipeline>,
+    pub(crate) soft_pipeline_additive: Option<vwgpu::RenderPipeline>,
     pub(crate) soft_draw_bgl: Option<vwgpu::BindGroupLayout>,
     pub(crate) depth_read_bgl: Option<vwgpu::BindGroupLayout>,
     pub(crate) emit_bgl: Option<vwgpu::BindGroupLayout>,

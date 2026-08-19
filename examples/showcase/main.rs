@@ -31,6 +31,7 @@ mod showcase_18_soft;
 mod showcase_19_fire_improved;
 mod showcase_20_rotation;
 mod showcase_21_timedbursts;
+mod showcase_22_forces;
 mod viewport_callback;
 
 use eframe::egui;
@@ -70,6 +71,7 @@ enum ShowcaseMode {
     FireImproved,
     Rotation,
     TimedBursts,
+    Forces,
 }
 
 impl ShowcaseMode {
@@ -95,6 +97,7 @@ impl ShowcaseMode {
         ShowcaseMode::FireImproved,
         ShowcaseMode::Rotation,
         ShowcaseMode::TimedBursts,
+        ShowcaseMode::Forces,
     ];
 
     fn label(self) -> &'static str {
@@ -120,6 +123,7 @@ impl ShowcaseMode {
             ShowcaseMode::FireImproved => "19: Fire+",
             ShowcaseMode::Rotation => "20: Rotation",
             ShowcaseMode::TimedBursts => "21: Timed bursts",
+            ShowcaseMode::Forces => "22: Forces",
         }
     }
 
@@ -221,6 +225,10 @@ fn main() -> eframe::Result {
                 .into_iter()
                 .map(|(_, asset)| plugin.add_effect(device, asset))
                 .collect();
+            let forces_ids: Vec<EffectId> = showcase_22_forces::presets()
+                .into_iter()
+                .map(|(_, asset)| plugin.add_effect(device, asset))
+                .collect();
             let interaction_id = showcase_06_interaction::presets()
                 .into_iter()
                 .map(|(_, asset)| plugin.add_effect(device, asset))
@@ -302,6 +310,8 @@ fn main() -> eframe::Result {
                 rotation: showcase_20_rotation::State::default(),
                 timedbursts_ids,
                 timedbursts: showcase_21_timedbursts::State::default(),
+                forces_ids,
+                forces: showcase_22_forces::State::default(),
             }))
         }),
     )
@@ -359,6 +369,8 @@ struct App {
     rotation: showcase_20_rotation::State,
     timedbursts_ids: Vec<EffectId>,
     timedbursts: showcase_21_timedbursts::State,
+    forces_ids: Vec<EffectId>,
+    forces: showcase_22_forces::State,
 }
 
 impl eframe::App for App {
@@ -458,6 +470,7 @@ impl eframe::App for App {
                 ShowcaseMode::TimedBursts => {
                     showcase_21_timedbursts::controls(&mut self.timedbursts, ui)
                 }
+                ShowcaseMode::Forces => showcase_22_forces::controls(&mut self.forces, ui),
             });
 
         // ---- Central panel: viewport ----
@@ -606,6 +619,9 @@ impl eframe::App for App {
                             &self.timedbursts,
                             dt,
                         )
+                    }
+                    ShowcaseMode::Forces => {
+                        showcase_22_forces::items(&self.forces_ids, &self.forces, dt)
                     }
                     ShowcaseMode::Refraction | ShowcaseMode::Interaction => {
                         unreachable!("handled above")

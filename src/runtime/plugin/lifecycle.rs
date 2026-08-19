@@ -282,6 +282,7 @@ impl ParticlePlugin {
         let orient_mode = self.effects[idx].asset.orient;
         let screen_space_size = self.effects[idx].asset.screen_space_size;
         let soft = self.effects[idx].asset.soft;
+        let rotation_rate = self.effects[idx].asset.rotation_rate;
 
         // Draw order buffer, padded to a power of two so the bitonic sort has a
         // clean length. Identity for now; sorted per frame for non-additive
@@ -351,6 +352,7 @@ impl ParticlePlugin {
         };
         let screen_size = if is_billboard && screen_space_size { 1u32 } else { 0u32 };
         let soft_dist = if is_billboard { soft.unwrap_or(0.0) } else { 0.0 };
+        let roll_rate = if is_billboard { rotation_rate } else { 0.0 };
         let dp = DrawParams {
             stretch,
             align,
@@ -364,6 +366,8 @@ impl ParticlePlugin {
             orient_param,
             screen_size,
             soft_dist,
+            roll_rate,
+            _pad: [0.0; 3],
         };
         // Bind the effect's texture, or the shared 1x1 white default. The sprite
         // sampler is the shared linear-clamp ramp sampler.
@@ -515,6 +519,8 @@ impl ParticlePlugin {
                 last_origin: None,
                 dropped: false,
                 sim_frame: 0,
+                elapsed: 0.0,
+                schedule_fired: 0,
             },
         );
     }

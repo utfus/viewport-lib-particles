@@ -26,6 +26,10 @@ pub(crate) fn structural_sig(asset: &EffectAsset) -> u64 {
     format!("{:?}", asset.orient).hash(&mut h);
     asset.screen_space_size.hash(&mut h);
     asset.soft.map(|d| d.to_bits()).hash(&mut h);
+    // Spin rides DrawParams, which is baked at instance build, so a change must
+    // rebuild. Roll base/variance, size variance, spawn offset, and the burst
+    // schedule are re-read per frame, so they need no structural rebuild.
+    asset.rotation_rate.to_bits().hash(&mut h);
     asset.texture.map(|t| t.0).hash(&mut h);
     format!("{:?}", asset.texture_mode).hash(&mut h);
     format!("{:?}", asset.flipbook).hash(&mut h);
@@ -1246,6 +1250,7 @@ pub(crate) fn build_props_data(
         .collect()
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn build_emit_params(
     emitter: &Emitter,
     origin: [f32; 3],
@@ -1255,6 +1260,10 @@ pub(crate) fn build_emit_params(
     has_events: bool,
     inherit_velocity: f32,
     sample_count: u32,
+    rotation: f32,
+    rotation_variance: f32,
+    size_variance: f32,
+    spawn_offset: [f32; 3],
 ) -> EmitParamsGpu {
     let mut p = EmitParamsGpu::zeroed();
     p.origin = [origin[0], origin[1], origin[2], 0.0];
@@ -1267,6 +1276,8 @@ pub(crate) fn build_emit_params(
     ];
     // ctrl.w carries the mesh spawn-sample pool size (0 for non-mesh shapes).
     p.ctrl = [rng_seed, spawn_count, capacity, sample_count];
+    p.rot = [rotation, rotation_variance, size_variance, 0.0];
+    p.spawn_offset = [spawn_offset[0], spawn_offset[1], spawn_offset[2], 0.0];
 
     let (spawn_kind, spawn_a, spawn_b) = match emitter.spawn {
         SpawnShape::Point => (0u32, [0.0; 4], [0.0; 4]),

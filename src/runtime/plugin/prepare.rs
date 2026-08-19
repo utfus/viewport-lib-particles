@@ -8,7 +8,7 @@ use viewport_lib::wgpu as vwgpu;
 use viewport_lib::Frustum;
 
 use crate::effect::{
-    EventCondition, ParticleBlend, ParticleRender, PropertyDecl, SimulationSpace,
+    EventCondition, ParticleBlend, ParticleRender, PropertyDecl, SimulationSpace, TimedBurst,
 };
 
 use super::*;
@@ -170,6 +170,14 @@ impl ItemTypePlugin for ParticlePlugin {
             };
             let capacity = self.effects[idx].asset.capacity;
             let groups = capacity.div_ceil(64).max(1);
+            // Timed bursts layered on the continuous rate (fixed-function only).
+            // Copied out so the immutable `self.effects` borrow ends before the
+            // mutable `self.instances` borrow below.
+            let schedule: Vec<TimedBurst> = if self.effects[idx].asset.program.is_none() {
+                self.effects[idx].asset.spawn_schedule.clone()
+            } else {
+                Vec::new()
+            };
 
             // Advance this instance's own spawn state and record its origin (for
             // the next frame's local-space delta). Simulating clears the culled
@@ -181,10 +189,20 @@ impl ItemTypePlugin for ParticlePlugin {
                 inst.dropped = false;
                 let f = inst.sim_frame;
                 inst.sim_frame = inst.sim_frame.wrapping_add(1);
-                (
-                    next_spawn_count(&mut inst.spawn_accum, &mut inst.burst_done, rate, dt),
-                    f,
-                )
+                let mut count = next_spawn_count(&mut inst.spawn_accum, &mut inst.burst_done, rate, dt);
+                // Fire any timed burst whose time this instance has now reached,
+                // once each (tracked by a per-instance bitmask).
+                if !schedule.is_empty() {
+                    inst.elapsed += dt;
+                    for (bi, b) in schedule.iter().enumerate() {
+                        let bit = 1u64 << bi.min(63);
+                        if inst.schedule_fired & bit == 0 && inst.elapsed >= b.time {
+                            count = count.saturating_add(b.count);
+                            inst.schedule_fired |= bit;
+                        }
+                    }
+                }
+                (count, f)
             };
             // Emit RNG seed: deterministic from the host seed (Phase 28) when set,
             // else derived from the global frame counter.
@@ -240,6 +258,10 @@ impl ItemTypePlugin for ParticlePlugin {
                         child_link.is_some(),
                         inherit,
                         sample_count,
+                        asset.rotation,
+                        asset.rotation_variance,
+                        asset.size_variance,
+                        asset.spawn_offset,
                     );
                     // Event control for a parent: condition, count, child cap, active.
                     let event = match &parent_link {

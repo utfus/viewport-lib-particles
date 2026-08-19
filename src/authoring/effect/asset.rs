@@ -125,6 +125,35 @@ pub struct EffectAsset {
     /// [`blend`](Self::blend). Billboard route only; `None` disables it.
     #[cfg_attr(feature = "serde", serde(default))]
     pub soft: Option<f32>,
+    /// Per-particle billboard roll at spawn, in radians, plus a symmetric random
+    /// spread. Each particle spawns at `rotation` plus a uniform value in
+    /// `[-rotation_variance, rotation_variance]`. Billboard route only.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub rotation: f32,
+    /// Symmetric random spread on the spawn roll, in radians. See
+    /// [`rotation`](Self::rotation).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub rotation_variance: f32,
+    /// Constant billboard spin, in radians per second, advanced by particle age.
+    /// Billboard route only.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub rotation_rate: f32,
+    /// Timed bursts layered on top of the emitter's continuous rate. Each fires
+    /// once, `count` particles, at its `time` after the instance starts. Empty by
+    /// default. Fixed-function only.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub spawn_schedule: Vec<TimedBurst>,
+    /// World-space offset added to every spawn position, on top of the spawn
+    /// shape and the emitting instance's position. Lets a spawn region sit off the
+    /// anchor. Fixed-function only.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub spawn_offset: [f32; 3],
+    /// Symmetric random spread on each particle's spawn size, in the same world
+    /// units as [`Emitter::size`]. Each particle spawns at `size` plus a uniform
+    /// value in `[-size_variance, size_variance]`, clamped at zero. Fixed-function
+    /// only.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub size_variance: f32,
 }
 
 impl Default for EffectAsset {
@@ -146,6 +175,12 @@ impl Default for EffectAsset {
             orient: Orient::ParallelCameraPlane,
             screen_space_size: false,
             soft: None,
+            rotation: 0.0,
+            rotation_variance: 0.0,
+            rotation_rate: 0.0,
+            spawn_schedule: Vec::new(),
+            spawn_offset: [0.0, 0.0, 0.0],
+            size_variance: 0.0,
         }
     }
 }
@@ -258,6 +293,44 @@ impl EffectAsset {
     /// route only.
     pub fn with_soft(mut self, distance: f32) -> Self {
         self.soft = Some(distance);
+        self
+    }
+
+    /// Set per-particle billboard rotation: a spawn roll `angle` (radians) with a
+    /// symmetric random `variance`, and a constant spin `rate` (radians per
+    /// second) advanced by age. Billboard route only.
+    pub fn with_rotation(mut self, angle: f32, variance: f32, rate: f32) -> Self {
+        self.rotation = angle;
+        self.rotation_variance = variance;
+        self.rotation_rate = rate;
+        self
+    }
+
+    /// Append a timed burst: `count` particles firing once at `time` seconds after
+    /// an instance starts, on top of the emitter's continuous rate. Fixed-function
+    /// only.
+    pub fn add_burst(mut self, count: u32, time: f32) -> Self {
+        self.spawn_schedule.push(TimedBurst { count, time });
+        self
+    }
+
+    /// Replace the timed-burst schedule. See [`add_burst`](Self::add_burst).
+    pub fn with_spawn_schedule(mut self, schedule: Vec<TimedBurst>) -> Self {
+        self.spawn_schedule = schedule;
+        self
+    }
+
+    /// Offset every spawn position by `offset` world units, on top of the spawn
+    /// shape and the instance position. Fixed-function only.
+    pub fn with_spawn_offset(mut self, offset: [f32; 3]) -> Self {
+        self.spawn_offset = offset;
+        self
+    }
+
+    /// Set a symmetric random spread on each particle's spawn size, in the same
+    /// units as [`Emitter::size`]. Fixed-function only.
+    pub fn with_size_variance(mut self, variance: f32) -> Self {
+        self.size_variance = variance;
         self
     }
 }

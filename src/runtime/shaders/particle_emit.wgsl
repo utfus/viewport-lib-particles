@@ -26,6 +26,8 @@ struct EmitParams {
     misc:    vec4<f32>,  // lifetime_min, lifetime_max, size, _ | mesh: spawn_a.x = normal_velocity
     ctrl:    vec4<u32>,  // rng_seed, spawn_count, capacity, mesh_sample_count
     kinds:   vec4<u32>,  // spawn_kind, vel_kind, _, _
+    rot:          vec4<f32>,  // spawn roll base, roll variance, size variance, _
+    spawn_offset: vec4<f32>,  // world-space spawn offset xyz
 };
 
 // One baked mesh-surface / point-cloud spawn sample (Phase 22).
@@ -164,14 +166,25 @@ fn emit_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     let life = mix(params.misc.x, params.misc.y, rand01(&rng));
 
+    // Shared spawn offset, on top of the shape and the instance origin.
+    pos += params.spawn_offset.xyz;
+
+    // Per-particle size with a symmetric random spread, clamped at zero.
+    let size_var = (rand01(&rng) * 2.0 - 1.0) * params.rot.z;
+    let size = max(params.misc.z + size_var, 0.0);
+
+    // Per-particle spawn roll: base plus symmetric random spread (billboard route
+    // reads pad.x; other routes ignore it).
+    let roll = params.rot.x + (rand01(&rng) * 2.0 - 1.0) * params.rot.y;
+
     var np: Particle;
     np.position = pos;
     np.lifetime = life;
     np.velocity = vel;
     np.max_lifetime = life;
     np.colour = params.colour;
-    np.size = params.misc.z;
+    np.size = size;
     np.seed = rand01(&rng);
-    np.pad = vec2<f32>(0.0, 0.0);
+    np.pad = vec2<f32>(roll, 0.0);
     particles[i] = np;
 }

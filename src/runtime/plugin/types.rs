@@ -39,6 +39,10 @@ pub(crate) struct EmitParamsGpu {
     pub(crate) misc: [f32; 4],
     pub(crate) ctrl: [u32; 4],
     pub(crate) kinds: [u32; 4],
+    /// Spawn roll base, roll variance, size variance, unused.
+    pub(crate) rot: [f32; 4],
+    /// World-space spawn offset (xyz; w unused).
+    pub(crate) spawn_offset: [f32; 4],
 }
 
 /// One force. Matches `Force` in `particle_sim.wgsl`.
@@ -245,6 +249,13 @@ pub(crate) struct DrawParams {
     /// Soft-particle fade distance in world units (Phase 9); 0 = not soft. Read
     /// only by the soft (depth-read) billboard shader.
     pub(crate) soft_dist: f32,
+    /// Billboard spin in radians per second, advanced by particle age. Billboard
+    /// shaders only; 0 = no spin. The particle's spawn roll rides its `pad.x`.
+    pub(crate) roll_rate: f32,
+    /// Padding to a 16-byte multiple (uniform size requirement). The mesh and
+    /// trail shaders read only the 16-byte prefix, so growth here is invisible to
+    /// them.
+    pub(crate) _pad: [f32; 3],
 }
 
 /// Trail history parameters (group 1, binding 2 of the append and trail draw
@@ -506,6 +517,11 @@ pub(crate) struct EffectInstance {
     /// Count of frames this instance has been simulated, mixed into the emit RNG
     /// seed under deterministic seeding (Phase 28) so each frame decorrelates.
     pub(crate) sim_frame: u32,
+    /// Seconds this instance has simulated, for firing timed bursts.
+    pub(crate) elapsed: f32,
+    /// Bitmask of timed bursts (by index in the effect's `spawn_schedule`) that
+    /// have already fired, so each fires once. Bursts past index 63 share bit 63.
+    pub(crate) schedule_fired: u64,
 }
 
 /// A live transient (burst) instance (Phase 25): a pooled particle set playing a

@@ -21,6 +21,21 @@ impl Default for SpawnRate {
     }
 }
 
+/// A one-shot burst that fires at a set time after an instance starts, layered on
+/// top of the emitter's continuous [`SpawnRate`]. A list of these on
+/// [`EffectAsset`](crate::EffectAsset) lets one effect hold a steady rate and fire
+/// staged bursts (a muzzle flash that also puffs smoke, a multi-stage explosion).
+#[derive(Clone, Copy, Debug)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct TimedBurst {
+    /// Particles emitted when the burst fires (bounded by the effect capacity and
+    /// the frame's free slots).
+    pub count: u32,
+    /// Seconds after the instance starts simulating at which the burst fires. `0`
+    /// fires on the first simulated frame. Each burst fires once.
+    pub time: f32,
+}
+
 /// Shape new particles spawn from, offset by the emitting instance's position.
 #[derive(Clone, Copy, Debug)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]

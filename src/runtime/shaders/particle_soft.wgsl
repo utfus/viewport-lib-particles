@@ -36,6 +36,10 @@ struct DrawParams {
     orient_param: f32,
     screen_size: u32,
     soft_dist: f32,
+    roll_rate: f32,
+    pad0: f32,
+    pad1: f32,
+    pad2: f32,
 };
 @group(1) @binding(2) var<uniform> draw_params: DrawParams;
 @group(1) @binding(3) var sprite_tex: texture_2d<f32>;
@@ -68,7 +72,11 @@ fn flip_uv(uv: vec2<f32>, age: f32, age_sec: f32) -> vec2<f32> {
 
 // Same billboard placement as particle_draw.wgsl (orientation / screen-size /
 // stretch).
-fn billboard_world(p: Particle, c: vec2<f32>, size_scale: f32) -> vec3<f32> {
+fn billboard_world(p: Particle, c_in: vec2<f32>, size_scale: f32, roll: f32) -> vec3<f32> {
+    let cr = cos(roll);
+    let sr = sin(roll);
+    let c = vec2<f32>(c_in.x * cr - c_in.y * sr, c_in.x * sr + c_in.y * cr);
+
     var half = p.size * 0.5 * size_scale;
     if (p.lifetime <= 0.0) {
         half = 0.0;
@@ -143,7 +151,9 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VsOut
     let ramp0 = textureSampleLevel(ramp_tex, ramp_samp, vec2<f32>(age, 0.25), 0.0);
     let ramp1 = textureSampleLevel(ramp_tex, ramp_samp, vec2<f32>(age, 0.75), 0.0);
 
-    let world = billboard_world(p, c, ramp0.a);
+    let age_sec = max(p.max_lifetime - p.lifetime, 0.0);
+    let roll = p.pad.x + draw_params.roll_rate * age_sec;
+    let world = billboard_world(p, c, ramp0.a, roll);
 
     var out: VsOut;
     out.pos = camera.view_proj * vec4<f32>(world, 1.0);

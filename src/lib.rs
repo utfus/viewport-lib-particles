@@ -71,7 +71,7 @@ pub use effect::{
     Attribute, EffectAsset, EffectId, EffectProgram, Emitter, EventCondition, Flipbook,
     ForceModifier, Gradient, MeshAlign, Orient, ParticleBlend, ParticleMeshId, ParticleRender,
     ParticleTextureId, PropertyDecl, PropertyValue, SetAttribute, SimulationSpace, SpawnRate,
-    SpawnShape, SubEmitter, TextureMode, UpdateOp, VelocityDist,
+    SpawnShape, SubEmitter, TextureMode, TimedBurst, UpdateOp, VelocityDist,
 };
 pub use expr::{Expr, ExprHandle, Module};
 pub use plugin::{

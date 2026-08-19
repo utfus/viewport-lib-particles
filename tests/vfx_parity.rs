@@ -10,6 +10,8 @@
 //!   variance draws nothing.
 //! - `rotation_renders`: an effect with a spin rate draws (exercises the rotated
 //!   billboard path).
+//! - `transient_schedule_replays`: a scheduled effect fired as a one-shot burst
+//!   plays again when fired a second time into a recycled transient slot.
 //!
 //! Skips cleanly when no GPU adapter is available.
 
@@ -300,4 +302,48 @@ fn rotation_renders() {
         items
     }));
     assert!(lit > 0, "rotating effect drew nothing");
+}
+
+#[test]
+fn transient_schedule_replays() {
+    let Some((device, queue)) = headless_device() else {
+        eprintln!("skipping: no GPU adapter available");
+        return;
+    };
+
+    // No continuous rate; one burst scheduled at t = 0. Short lifetime so a fired
+    // transient retires quickly (transient life = lifetime + last burst + 0.1).
+    let effect = EffectAsset::new("staged")
+        .with_capacity(4_000)
+        .with_blend(ParticleBlend::Additive)
+        .with_emitter(Emitter {
+            rate: SpawnRate::PerSecond(0.0),
+            lifetime: (0.5, 0.5),
+            spawn: SpawnShape::Sphere {
+                radius: 0.1,
+                volume: true,
+            },
+            velocity: VelocityDist::Fixed([0.0, 0.0, 0.0]),
+            colour: [1.0, 1.0, 1.0, 1.0],
+            size: 0.12,
+        })
+        .add_burst(800, 0.0);
+
+    // Fire a one-shot burst on frame 0 and again on frame 45. The first transient
+    // has long since retired and freed its slot by then (life 0.6 s = 36 frames),
+    // so the second fire lands on a recycled slot. The final frame is a few frames
+    // into the second play, so it draws only if the recycled slot replayed the
+    // schedule.
+    let build = |f: usize, id: EffectId| {
+        let mut items = ParticleItems::new().with_dt(1.0 / 60.0);
+        if f == 0 || f == 45 {
+            items.push(ParticleItem::new(id).at([0.0, 0.0, 0.0]).burst());
+        }
+        items
+    };
+    let lit = lit_pixels(&render(&device, &queue, effect, 48, build));
+    assert!(
+        lit > 0,
+        "recycled transient slot did not replay its scheduled burst"
+    );
 }

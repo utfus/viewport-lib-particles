@@ -832,6 +832,10 @@ impl ParticlePlugin {
                 inst.last_origin = None;
                 inst.dropped = false;
                 inst.sim_frame = 0;
+                // Reset the timed-burst schedule so a recycled slot replays it
+                // from the start instead of treating its bursts as already fired.
+                inst.elapsed = 0.0;
+                inst.schedule_fired = 0;
             }
             let retire_at = transient_lifetime(&self.effects[idx].asset);
             self.transients.push(TransientInstance {

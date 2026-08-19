@@ -81,7 +81,10 @@ pub fn items(effect_ids: &[EffectId], state: &State, dt: f32) -> ParticleItems {
     let period = state.period.max(0.1);
     let prev = ((state.t - dt).max(0.0) / period).floor();
     let now = (state.t / period).floor();
-    if now > prev {
+    // Fire on the very first frame so the demo plays immediately, then once each
+    // time the timer crosses a `period` boundary.
+    let first_frame = state.t <= dt;
+    if first_frame || now > prev {
         items.push(ParticleItem::new(id).at([0.0, 0.0, 0.5]).burst());
     }
     items

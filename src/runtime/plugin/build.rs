@@ -96,7 +96,14 @@ pub(crate) fn transient_lifetime(asset: &EffectAsset) -> f32 {
         Some(p) => p.lifetime.1,
         None => asset.emitter.lifetime.1,
     };
-    life.max(0.05) + 0.1
+    // A timed burst can spawn late, so the transient must live past the last
+    // burst plus a full particle lifetime, or those particles get cut off.
+    let last_burst = asset
+        .spawn_schedule
+        .iter()
+        .map(|b| b.time)
+        .fold(0.0, f32::max);
+    life.max(0.05) + last_burst + 0.1
 }
 
 /// A conservative bounding radius for an effect's live particles about its

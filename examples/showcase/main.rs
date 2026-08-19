@@ -29,6 +29,8 @@ mod showcase_16_rendering;
 mod showcase_17_meshspawn;
 mod showcase_18_soft;
 mod showcase_19_fire_improved;
+mod showcase_20_rotation;
+mod showcase_21_timedbursts;
 mod viewport_callback;
 
 use eframe::egui;
@@ -66,6 +68,8 @@ enum ShowcaseMode {
     MeshSpawn,
     Soft,
     FireImproved,
+    Rotation,
+    TimedBursts,
 }
 
 impl ShowcaseMode {
@@ -89,6 +93,8 @@ impl ShowcaseMode {
         ShowcaseMode::MeshSpawn,
         ShowcaseMode::Soft,
         ShowcaseMode::FireImproved,
+        ShowcaseMode::Rotation,
+        ShowcaseMode::TimedBursts,
     ];
 
     fn label(self) -> &'static str {
@@ -112,6 +118,8 @@ impl ShowcaseMode {
             ShowcaseMode::MeshSpawn => "17: Mesh spawn",
             ShowcaseMode::Soft => "18: Soft particles",
             ShowcaseMode::FireImproved => "19: Fire+",
+            ShowcaseMode::Rotation => "20: Rotation",
+            ShowcaseMode::TimedBursts => "21: Timed bursts",
         }
     }
 
@@ -208,6 +216,11 @@ fn main() -> eframe::Result {
                 .map(|(_, asset)| plugin.add_effect(device, asset))
                 .collect();
             let fire2_ids = showcase_19_fire_improved::register(&mut plugin, device, queue);
+            let rotation_ids = showcase_20_rotation::register(&mut plugin, device, queue);
+            let timedbursts_ids: Vec<EffectId> = showcase_21_timedbursts::presets()
+                .into_iter()
+                .map(|(_, asset)| plugin.add_effect(device, asset))
+                .collect();
             let interaction_id = showcase_06_interaction::presets()
                 .into_iter()
                 .map(|(_, asset)| plugin.add_effect(device, asset))
@@ -285,6 +298,10 @@ fn main() -> eframe::Result {
                 fire2_ids,
                 fire2: showcase_19_fire_improved::State::default(),
                 fire2_logs_mesh,
+                rotation_ids,
+                rotation: showcase_20_rotation::State::default(),
+                timedbursts_ids,
+                timedbursts: showcase_21_timedbursts::State::default(),
             }))
         }),
     )
@@ -338,6 +355,10 @@ struct App {
     fire2_ids: showcase_19_fire_improved::Ids,
     fire2: showcase_19_fire_improved::State,
     fire2_logs_mesh: MeshId,
+    rotation_ids: showcase_20_rotation::Ids,
+    rotation: showcase_20_rotation::State,
+    timedbursts_ids: Vec<EffectId>,
+    timedbursts: showcase_21_timedbursts::State,
 }
 
 impl eframe::App for App {
@@ -430,6 +451,12 @@ impl eframe::App for App {
                 ShowcaseMode::Soft => showcase_18_soft::controls(&mut self.soft, ui),
                 ShowcaseMode::FireImproved => {
                     showcase_19_fire_improved::controls(&mut self.fire2, ui)
+                }
+                ShowcaseMode::Rotation => {
+                    showcase_20_rotation::controls(&mut self.rotation, ui)
+                }
+                ShowcaseMode::TimedBursts => {
+                    showcase_21_timedbursts::controls(&mut self.timedbursts, ui)
                 }
             });
 
@@ -568,6 +595,17 @@ impl eframe::App for App {
                     }
                     ShowcaseMode::FireImproved => {
                         showcase_19_fire_improved::items(&self.fire2_ids, &self.fire2, dt)
+                    }
+                    ShowcaseMode::Rotation => {
+                        showcase_20_rotation::items(&self.rotation_ids, &self.rotation, dt)
+                    }
+                    ShowcaseMode::TimedBursts => {
+                        self.timedbursts.t += dt;
+                        showcase_21_timedbursts::items(
+                            &self.timedbursts_ids,
+                            &self.timedbursts,
+                            dt,
+                        )
                     }
                     ShowcaseMode::Refraction | ShowcaseMode::Interaction => {
                         unreachable!("handled above")

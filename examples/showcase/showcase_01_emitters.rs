@@ -128,6 +128,11 @@ pub struct State {
     pub rate_mul: f32,
     pub lifetime_mul: f32,
     pub size_mul: f32,
+    /// Symmetric per-particle spawn-size spread (asset-level; applied by
+    /// re-registering the asset each frame). 0 = uniform size.
+    pub size_variance: f32,
+    /// Vertical lift of the whole spawn region, in world units (spawn offset Z).
+    pub spawn_lift: f32,
 }
 
 impl Default for State {
@@ -139,6 +144,8 @@ impl Default for State {
             rate_mul: 1.0,
             lifetime_mul: 1.0,
             size_mul: 1.0,
+            size_variance: 0.0,
+            spawn_lift: 0.0,
         }
     }
 }
@@ -167,6 +174,10 @@ pub fn controls(state: &mut State, ui: &mut egui::Ui) {
         state.lifetime_mul = 1.0;
         state.size_mul = 1.0;
     }
+    ui.separator();
+    ui.label("Init variance (re-registered each frame):");
+    ui.add(egui::Slider::new(&mut state.size_variance, 0.0..=0.3).text("size variance"));
+    ui.add(egui::Slider::new(&mut state.spawn_lift, 0.0..=3.0).text("spawn lift (z)"));
 }
 
 /// The selected preset's base emitter with the live multipliers applied.
@@ -184,6 +195,17 @@ fn tuned_emitter(state: &State) -> Emitter {
 pub fn items(effect_ids: &[EffectId], state: &State, dt: f32) -> ParticleItems {
     let mut items = ParticleItems::new().with_dt(dt);
     if let Some(&id) = effect_ids.get(state.selected) {
+        // Spawn offset and size variance are asset-level, so feed them by
+        // re-registering the asset (a uniform-only change that keeps the live
+        // particle set). The per-frame emitter override below still drives the
+        // rate / lifetime / size sliders.
+        let asset = presets()[state.selected]
+            .1
+            .clone()
+            .with_size_variance(state.size_variance)
+            .with_spawn_offset([0.0, 0.0, state.spawn_lift]);
+        items.replace_effect(id, asset);
+
         let mut item = ParticleItem::new(id)
             .at(state.position)
             .with_emitter(tuned_emitter(state));

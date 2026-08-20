@@ -66,6 +66,19 @@ pub struct ParticleItem {
     /// [`with_seed`](Self::with_seed). GPU atomic spawn order still limits exact
     /// particle-set reproducibility.
     pub seed: Option<u64>,
+    /// Per-instance simulation-time multiplier (issue 014), applied on top of the
+    /// effect's [`EffectAsset::simulation_speed`]. `1.0` runs at real time; `2.0`
+    /// runs this placement twice as fast, `0.0` freezes it (like
+    /// [`ItemSettings::hidden`] pausing, but still drawn). Scales the `dt` every
+    /// particle of this instance sees, so it composes with spawn rate, ageing,
+    /// forces, and burst times. See [`with_time_scale`](Self::with_time_scale).
+    pub time_scale: f32,
+    /// Per-instance prewarm override in seconds (issue 015). `Some(secs)`
+    /// fast-forwards this instance by `secs` on its first activation so it
+    /// presents at steady state; `None` uses the effect's
+    /// [`EffectAsset::prewarm`] (one particle lifetime when set, no warmup
+    /// otherwise). See [`with_warmup`](Self::with_warmup).
+    pub warmup: Option<f32>,
 }
 
 impl ParticleItem {
@@ -82,6 +95,8 @@ impl ParticleItem {
             properties: Vec::new(),
             one_shot: false,
             seed: None,
+            time_scale: 1.0,
+            warmup: None,
         }
     }
 
@@ -147,6 +162,22 @@ impl ParticleItem {
     /// seed + `dt` sequence reproduces the same spawn-seed stream run to run.
     pub fn with_seed(mut self, seed: u64) -> Self {
         self.seed = Some(seed);
+        self
+    }
+
+    /// Set this instance's simulation-time multiplier (issue 014). Multiplies the
+    /// effect's [`EffectAsset::simulation_speed`]. `2.0` runs it twice as fast,
+    /// `0.0` freezes it. See [`time_scale`](Self::time_scale).
+    pub fn with_time_scale(mut self, scale: f32) -> Self {
+        self.time_scale = scale;
+        self
+    }
+
+    /// Fast-forward this instance by `seconds` on its first activation so it
+    /// presents at steady state (issue 015), overriding the effect's
+    /// [`EffectAsset::prewarm`]. See [`warmup`](Self::warmup).
+    pub fn with_warmup(mut self, seconds: f32) -> Self {
+        self.warmup = Some(seconds);
         self
     }
 }

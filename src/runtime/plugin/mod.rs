@@ -62,3 +62,17 @@ pub(crate) const MESH_SAMPLE_POOL: u32 = 8192;
 /// to pipeline the copy-this-frame, map-next-frame cycle without a copy ever
 /// aliasing an in-flight map.
 pub(crate) const STATS_RING: usize = 3;
+
+/// Idle-GC threshold (issue 013): a steady instance whose `(effect, key)` has
+/// not been submitted for this many frames is reclaimed from `self.instances`,
+/// so the instance map stays bounded to the live working set across long
+/// sessions with many scene reloads. Submission (not simulation) resets the
+/// clock, so a paused, culled, or budget-frozen instance the host still submits
+/// is never reaped. Transient (pooled) and sub-emitter instances are exempt.
+pub(crate) const IDLE_RETIRE_FRAMES: u64 = 120;
+
+/// Upper bound on the number of sub-steps a prewarm (issue 015) runs on an
+/// instance's first activation. Warmup time is divided into at most this many
+/// steps (each its own tiny command buffer), so a large warmup stays a bounded
+/// one-time cost even when many instances activate on the same frame.
+pub(crate) const MAX_PREWARM_STEPS: u32 = 120;

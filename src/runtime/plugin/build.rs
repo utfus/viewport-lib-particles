@@ -91,6 +91,16 @@ pub(crate) fn zero_particle_buffer(queue: &vwgpu::Queue, buf: &vwgpu::Buffer, ca
 /// The age at which a transient (burst) instance of `asset` is retired: the
 /// effect's maximum particle lifetime plus a small margin, so all burst
 /// particles have died.
+/// One particle's maximum lifetime for `asset` (the upper bound of the emitter's
+/// or program's lifetime range). Used as the default prewarm duration (issue
+/// 015): warming an instance by this long reaches steady state.
+pub(crate) fn max_particle_lifetime(asset: &EffectAsset) -> f32 {
+    match &asset.program {
+        Some(p) => p.lifetime.1,
+        None => asset.emitter.lifetime.1,
+    }
+}
+
 pub(crate) fn transient_lifetime(asset: &EffectAsset) -> f32 {
     let life = match &asset.program {
         Some(p) => p.lifetime.1,

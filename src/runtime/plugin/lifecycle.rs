@@ -521,6 +521,9 @@ impl ParticlePlugin {
                 sim_frame: 0,
                 elapsed: 0.0,
                 schedule_fired: 0,
+                last_seen: 0,
+                local_time: 0.0,
+                warmed: false,
             },
         );
     }

@@ -83,10 +83,11 @@ impl ItemTypePlugin for ParticlePlugin {
         }
 
         let dt = items.dt.max(0.0);
-        // Advance the shared simulation clock once per frame (drives time-varying
-        // fields such as the CurlNoise force).
+        // Advance the shared simulation clock once per frame. Kept for reference;
+        // each instance now drives time-varying fields (e.g. the CurlNoise force)
+        // from its own `local_time`, which advances by the instance's time-scaled
+        // dt (issue 014) and is seeded by any prewarm (issue 015).
         self.time += dt;
-        let time = self.time;
 
         // Apply queued lifecycle commands (Phase 27) before simulating, so a
         // hot-reloaded or removed effect takes effect this frame.
@@ -123,6 +124,12 @@ impl ItemTypePlugin for ParticlePlugin {
             let pick_id = di.pick_id;
             let selected = di.selected;
             let cast_shadows = di.cast_shadows;
+            // Per-instance simulation dt (issue 014): the frame dt scaled by this
+            // instance's effective time scale (item `time_scale` × effect
+            // `simulation_speed`). Everything downstream that integrates over time
+            // — spawn accumulation, burst-schedule times, forces, ageing — uses
+            // this in place of the raw frame dt.
+            let inst_dt = dt * di.time_scale;
 
             // Build this instance's GPU state (fixed or generated) if new.
             self.ensure_instance_gpu(idx, ikey.key, device, queue, &emit_bgl, &sim_bgl, &draw_bgl);
@@ -179,21 +186,52 @@ impl ItemTypePlugin for ParticlePlugin {
                 Vec::new()
             };
 
+            // Prewarm on first activation (issue 015): fast-forward a fresh
+            // instance to steady state before its first draw so ambient set
+            // dressing appears full, not filling in. Sub-emitter parents/children
+            // are exempt — their shared event buffer makes a mid-stream warmup
+            // unsafe — and simply mark themselves warmed.
+            if !self.instances.get(&ikey).unwrap().warmed {
+                let is_sub = self.effects[idx].asset.sub_emitter.is_some()
+                    || parent_of.contains_key(&idx);
+                if di.warmup > 0.0 && !is_sub {
+                    self.prewarm_instance(
+                        device,
+                        queue,
+                        ikey,
+                        idx,
+                        di.warmup,
+                        di.seed,
+                        ctx.frame_index,
+                        origin,
+                        capacity,
+                        groups,
+                        &emit_pipeline,
+                        &sim_pipeline,
+                    );
+                } else {
+                    self.instances.get_mut(&ikey).unwrap().warmed = true;
+                }
+            }
+
             // Advance this instance's own spawn state and record its origin (for
             // the next frame's local-space delta). Simulating clears the culled
-            // "dropped" flag so a future cull drops its particles again, and bumps
-            // the per-instance sim-frame counter used by the deterministic seed.
-            let (spawn_count, sim_frame) = {
+            // "dropped" flag so a future cull drops its particles again, bumps the
+            // per-instance sim-frame counter used by the deterministic seed, marks
+            // the instance seen this frame (issue 013 idle GC), and advances its
+            // time-scaled local clock (issue 014).
+            let (spawn_count, sim_frame, time) = {
                 let inst = self.instances.get_mut(&ikey).unwrap();
                 inst.last_origin = Some(origin);
                 inst.dropped = false;
+                inst.last_seen = ctx.frame_index;
                 let f = inst.sim_frame;
                 inst.sim_frame = inst.sim_frame.wrapping_add(1);
-                let mut count = next_spawn_count(&mut inst.spawn_accum, &mut inst.burst_done, rate, dt);
+                let mut count = next_spawn_count(&mut inst.spawn_accum, &mut inst.burst_done, rate, inst_dt);
                 // Fire any timed burst whose time this instance has now reached,
                 // once each (tracked by a per-instance bitmask).
                 if !schedule.is_empty() {
-                    inst.elapsed += dt;
+                    inst.elapsed += inst_dt;
                     for (bi, b) in schedule.iter().enumerate() {
                         let bit = 1u64 << bi.min(63);
                         if inst.schedule_fired & bit == 0 && inst.elapsed >= b.time {
@@ -202,7 +240,8 @@ impl ItemTypePlugin for ParticlePlugin {
                         }
                     }
                 }
-                (count, f)
+                inst.local_time += inst_dt;
+                (count, f, inst.local_time)
             };
             // Emit RNG seed: deterministic from the host seed (Phase 28) when set,
             // else derived from the global frame counter.
@@ -276,7 +315,7 @@ impl ItemTypePlugin for ParticlePlugin {
                         ],
                         None => [0; 4],
                     };
-                    let sim = build_sim_params(modifiers, dt, time, event, space_delta);
+                    let sim = build_sim_params(modifiers, inst_dt, time, event, space_delta);
                     queue.write_buffer(&g.emit_buf, 0, bytemuck::bytes_of(&emit));
                     queue.write_buffer(&g.sim_buf, 0, bytemuck::bytes_of(&sim));
                     queue.write_buffer(&g.budget_buf, 0, bytemuck::bytes_of(&0u32));
@@ -298,7 +337,7 @@ impl ItemTypePlugin for ParticlePlugin {
                     let gp = GenParams {
                         origin: [origin[0], origin[1], origin[2], 0.0],
                         space: [space_delta[0], space_delta[1], space_delta[2], 0.0],
-                        dt,
+                        dt: inst_dt,
                         time,
                         spawn_count,
                         capacity,
@@ -472,6 +511,41 @@ impl ItemTypePlugin for ParticlePlugin {
                 cast_shadows,
             });
             any = true;
+        }
+
+        // Idle GC (issue 013): reclaim steady instances the host has stopped
+        // submitting for `IDLE_RETIRE_FRAMES` frames, bounding `self.instances` to
+        // the live working set across many scene reloads. Reaped instances are, by
+        // definition, not in `driven`/`draw_list` this frame, so their GPU buffers
+        // are safe to drop. Pooled transients and sub-emitter instances are exempt
+        // (they retire via their own paths / stay single-instance).
+        let frame = ctx.frame_index;
+        let effects = &self.effects;
+        let mut reaped: Vec<(u32, u64)> = Vec::new();
+        self.instances.retain(|k, inst| {
+            if k.key & TRANSIENT_KEY_BIT != 0 {
+                return true;
+            }
+            let idx = k.effect as usize;
+            if idx < effects.len()
+                && (effects[idx].asset.sub_emitter.is_some() || parent_of.contains_key(&idx))
+            {
+                return true;
+            }
+            let keep = frame.saturating_sub(inst.last_seen) <= IDLE_RETIRE_FRAMES;
+            if !keep {
+                reaped.push((k.effect, k.key));
+            }
+            keep
+        });
+        // Drop any live-count readback entries for reclaimed instances so the
+        // stats handle stops reporting a dead `(effect, key)`.
+        if !reaped.is_empty() {
+            if let Ok(mut g) = stats_shared.lock() {
+                for key in &reaped {
+                    g.entries.remove(key);
+                }
+            }
         }
 
         if any {
@@ -777,6 +851,15 @@ impl ParticlePlugin {
                 key,
             };
             if seen.insert(ikey) {
+                let asset = &self.effects[idx].asset;
+                let time_scale = (it.time_scale * asset.simulation_speed).max(0.0);
+                let warmup = it.warmup.unwrap_or_else(|| {
+                    if asset.prewarm {
+                        max_particle_lifetime(asset)
+                    } else {
+                        0.0
+                    }
+                });
                 driven.push(DrivenInstance {
                     ikey,
                     origin: it.position,
@@ -785,6 +868,8 @@ impl ParticlePlugin {
                     cast_shadows: it.settings.cast_shadows,
                     item_idx: Some(i),
                     seed: it.seed,
+                    time_scale,
+                    warmup,
                 });
             }
         }
@@ -836,6 +921,9 @@ impl ParticlePlugin {
                 // from the start instead of treating its bursts as already fired.
                 inst.elapsed = 0.0;
                 inst.schedule_fired = 0;
+                // A recycled slot plays fresh from t=0; transients never prewarm.
+                inst.local_time = 0.0;
+                inst.warmed = true;
             }
             let retire_at = transient_lifetime(&self.effects[idx].asset);
             self.transients.push(TransientInstance {
@@ -848,6 +936,12 @@ impl ParticlePlugin {
             });
         }
         for t in &self.transients {
+            // Transients inherit only the effect-level simulation_speed (no
+            // per-item time scale) and never prewarm.
+            let time_scale = self.effects[t.ikey.effect as usize]
+                .asset
+                .simulation_speed
+                .max(0.0);
             driven.push(DrivenInstance {
                 ikey: t.ikey,
                 origin: t.origin,
@@ -856,6 +950,8 @@ impl ParticlePlugin {
                 cast_shadows: t.cast_shadows,
                 item_idx: None,
                 seed: t.seed,
+                time_scale,
+                warmup: 0.0,
             });
         }
 
@@ -932,6 +1028,145 @@ impl ParticlePlugin {
             d
         };
         driven.sort_by_key(|di| ancestor_depth(di.ikey.effect as usize));
+
+        // Idle-GC bookkeeping (issue 013): mark every submitted steady instance
+        // seen this frame — whether or not it survived culling or the sim budget —
+        // so the sweep only reaps instances the host has stopped submitting.
+        // Instances created for the first time this frame don't exist yet; they
+        // stamp themselves in the simulate loop.
+        for ikey in &seen {
+            if let Some(inst) = self.instances.get_mut(ikey) {
+                inst.last_seen = ctx.frame_index;
+            }
+        }
         (driven, parent_of)
+    }
+
+    /// Fast-forward a fresh instance to steady state (issue 015): step its
+    /// emit+simulate kernels over `warmup` seconds before its first draw, so a
+    /// looping ambient effect presents full instead of visibly filling in.
+    ///
+    /// Runs at most [`MAX_PREWARM_STEPS`] sub-steps, each its own tiny command
+    /// buffer submitted immediately (a single uniform buffer per instance can't
+    /// carry distinct per-step params within one command buffer, since queued
+    /// writes all land before it executes). Seeds from the *registered* asset, so
+    /// it ignores this frame's per-frame overrides — a one-time activation seed.
+    #[allow(clippy::too_many_arguments)]
+    fn prewarm_instance(
+        &mut self,
+        device: &vwgpu::Device,
+        queue: &vwgpu::Queue,
+        ikey: InstanceKey,
+        idx: usize,
+        warmup: f32,
+        seed: Option<u64>,
+        frame_index: u64,
+        origin: [f32; 3],
+        capacity: u32,
+        groups: u32,
+        emit_pipeline: &vwgpu::ComputePipeline,
+        sim_pipeline: &vwgpu::ComputePipeline,
+    ) {
+        // Snapshot everything the loop needs from the effect so the mutable
+        // per-step borrow of `self.instances` has no live borrow of `self.effects`.
+        let asset = self.effects[idx].asset.clone();
+        let sample_count = self.effects[idx].spawn_sample_count;
+        let rate = match &asset.program {
+            Some(p) => p.rate,
+            None => asset.emitter.rate,
+        };
+
+        let steps = ((warmup / (1.0 / 60.0)).ceil() as u32).clamp(1, MAX_PREWARM_STEPS);
+        let sub_dt = warmup / steps as f32;
+
+        for _ in 0..steps {
+            let (spawn_count, sim_frame, time) = {
+                let inst = self.instances.get_mut(&ikey).unwrap();
+                let f = inst.sim_frame;
+                inst.sim_frame = inst.sim_frame.wrapping_add(1);
+                let mut count =
+                    next_spawn_count(&mut inst.spawn_accum, &mut inst.burst_done, rate, sub_dt);
+                if asset.program.is_none() && !asset.spawn_schedule.is_empty() {
+                    inst.elapsed += sub_dt;
+                    for (bi, b) in asset.spawn_schedule.iter().enumerate() {
+                        let bit = 1u64 << bi.min(63);
+                        if inst.schedule_fired & bit == 0 && inst.elapsed >= b.time {
+                            count = count.saturating_add(b.count);
+                            inst.schedule_fired |= bit;
+                        }
+                    }
+                }
+                inst.local_time += sub_dt;
+                (count, f, inst.local_time)
+            };
+            let rng_seed = instance_rng_seed(seed, frame_index, idx, ikey.key, sim_frame);
+
+            let mut encoder = device.create_command_encoder(&vwgpu::CommandEncoderDescriptor {
+                label: Some("particle_prewarm_encoder"),
+            });
+            let inst = self.instances.get(&ikey).unwrap();
+            match &inst.gpu {
+                EffectGpu::Fixed(g) => {
+                    let emit = build_emit_params(
+                        &asset.emitter,
+                        origin,
+                        capacity,
+                        spawn_count,
+                        rng_seed,
+                        false,
+                        0.0,
+                        sample_count,
+                        asset.rotation,
+                        asset.rotation_variance,
+                        asset.size_variance,
+                        asset.spawn_offset,
+                    );
+                    let sim = build_sim_params(&asset.modifiers, sub_dt, time, [0; 4], [0.0; 3]);
+                    queue.write_buffer(&g.emit_buf, 0, bytemuck::bytes_of(&emit));
+                    queue.write_buffer(&g.sim_buf, 0, bytemuck::bytes_of(&sim));
+                    queue.write_buffer(&g.budget_buf, 0, bytemuck::bytes_of(&0u32));
+                    dispatch_sim(
+                        &mut encoder,
+                        emit_pipeline,
+                        &g.emit_bg,
+                        sim_pipeline,
+                        &g.sim_bg,
+                        groups,
+                    );
+                }
+                EffectGpu::Gen(g) => {
+                    let gp = GenParams {
+                        origin: [origin[0], origin[1], origin[2], 0.0],
+                        space: [0.0; 4],
+                        dt: sub_dt,
+                        time,
+                        spawn_count,
+                        capacity,
+                        rng_seed,
+                        _pad: [0; 3],
+                    };
+                    queue.write_buffer(&g.params_buf, 0, bytemuck::bytes_of(&gp));
+                    let decls: &[PropertyDecl] = asset
+                        .program
+                        .as_ref()
+                        .map(|p| p.properties.as_slice())
+                        .unwrap_or(&[]);
+                    let props = build_props_data(decls, &[]);
+                    queue.write_buffer(&g.props_buf, 0, bytemuck::cast_slice(&props));
+                    queue.write_buffer(&g.budget_buf, 0, bytemuck::bytes_of(&0u32));
+                    dispatch_sim(
+                        &mut encoder,
+                        &g.emit_pipeline,
+                        &g.emit_bg,
+                        &g.sim_pipeline,
+                        &g.sim_bg,
+                        groups,
+                    );
+                }
+            }
+            queue.submit([encoder.finish()]);
+        }
+
+        self.instances.get_mut(&ikey).unwrap().warmed = true;
     }
 }

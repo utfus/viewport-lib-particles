@@ -157,6 +157,28 @@ pub struct EffectAsset {
     /// only.
     #[cfg_attr(feature = "serde", serde(default))]
     pub size_variance: f32,
+    /// Global simulation-time multiplier for every instance of this effect (issue
+    /// 014; maps Unity's `simulationSpeed`). `1.0` runs at real time; `2.0` runs
+    /// twice as fast, `0.5` half. Applied as a `dt` multiplier, so it composes
+    /// with the spawn rate, particle ageing, forces, burst-schedule times, and
+    /// flipbook fps — unlike pre-scaling `rate`/`lifetime`. A per-instance
+    /// [`ParticleItem::time_scale`] multiplies on top of this.
+    #[cfg_attr(feature = "serde", serde(default = "one"))]
+    pub simulation_speed: f32,
+    /// Start a looping effect at steady state instead of empty (issue 015; maps
+    /// Unity's `prewarm`). When `true`, an instance's simulation is fast-forwarded
+    /// by roughly one particle lifetime on its first activation (before its first
+    /// draw), so ambient set dressing is full the instant it appears rather than
+    /// visibly filling in. The warmup duration is derived from the effect's max
+    /// particle lifetime; [`ParticleItem::warmup`] overrides it per instance.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub prewarm: bool,
+}
+
+/// Serde default for [`EffectAsset::simulation_speed`] (`1.0`).
+#[cfg(feature = "serde")]
+fn one() -> f32 {
+    1.0
 }
 
 impl Default for EffectAsset {
@@ -184,6 +206,8 @@ impl Default for EffectAsset {
             spawn_schedule: Vec::new(),
             spawn_offset: [0.0, 0.0, 0.0],
             size_variance: 0.0,
+            simulation_speed: 1.0,
+            prewarm: false,
         }
     }
 }
@@ -346,6 +370,23 @@ impl EffectAsset {
     /// units as [`Emitter::size`]. Fixed-function only.
     pub fn with_size_variance(mut self, variance: f32) -> Self {
         self.size_variance = variance;
+        self
+    }
+
+    /// Set the global simulation-time multiplier for every instance of this
+    /// effect (issue 014). `1.0` is real time; `2.0` runs twice as fast. A
+    /// per-instance [`ParticleItem::time_scale`] multiplies on top. Negative
+    /// values are clamped to `0` at simulation time.
+    pub fn with_simulation_speed(mut self, speed: f32) -> Self {
+        self.simulation_speed = speed;
+        self
+    }
+
+    /// Start instances of this effect at steady state on first activation
+    /// (issue 015), fast-forwarding by one particle lifetime so the effect is
+    /// full when it first appears. See [`prewarm`](Self::prewarm).
+    pub fn with_prewarm(mut self, prewarm: bool) -> Self {
+        self.prewarm = prewarm;
         self
     }
 }

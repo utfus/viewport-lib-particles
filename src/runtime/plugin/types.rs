@@ -525,6 +525,21 @@ pub(crate) struct EffectInstance {
     /// Bitmask of timed bursts (by index in the effect's `spawn_schedule`) that
     /// have already fired, so each fires once. Bursts past index 63 share bit 63.
     pub(crate) schedule_fired: u64,
+    /// Frame index this instance was last *submitted* by the host (issue 013).
+    /// The idle GC reclaims a steady instance whose key has gone
+    /// [`IDLE_RETIRE_FRAMES`] frames without submission. Submission — not
+    /// simulation — resets it, so a paused / culled / budget-frozen instance the
+    /// host still submits is kept.
+    pub(crate) last_seen: u64,
+    /// Seconds this instance has simulated, scaled by its time scale (issue 014).
+    /// Drives the time-varying-force `time` uniform per instance (so a time-scaled
+    /// or prewarmed instance advances its noise fields at its own rate) and is
+    /// seeded by the prewarm fast-forward (issue 015).
+    pub(crate) local_time: f32,
+    /// Whether this instance's one-time prewarm fast-forward has run (issue 015).
+    /// Set once on first activation (or immediately when no warmup applies) so it
+    /// never re-warms.
+    pub(crate) warmed: bool,
 }
 
 /// A live transient (burst) instance (Phase 25): a pooled particle set playing a
@@ -746,6 +761,14 @@ pub(crate) struct DrivenInstance {
     pub(crate) item_idx: Option<usize>,
     /// Deterministic seed for this instance's emit, if any (Phase 28).
     pub(crate) seed: Option<u64>,
+    /// Effective per-instance time scale (issue 014): the item's `time_scale`
+    /// times the effect's `simulation_speed` (asset-only for transients),
+    /// clamped at `0`.
+    pub(crate) time_scale: f32,
+    /// Effective prewarm duration in seconds (issue 015): the item's `warmup`
+    /// override, else one particle lifetime when the effect sets `prewarm`, else
+    /// `0`. Transients never prewarm.
+    pub(crate) warmup: f32,
 }
 
 /// Per-effect pick-id uniform (group 2 of the pick pipeline). 16 bytes.

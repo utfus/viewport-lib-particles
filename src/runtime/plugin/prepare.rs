@@ -98,6 +98,10 @@ impl ItemTypePlugin for ParticlePlugin {
             }
         }
 
+        // Upload any inline textures (issue 017) queued by add / replace, now that
+        // a queue is available and before instances build their draw bind groups.
+        self.drain_pending_textures(device, queue);
+
         let (driven, parent_of) =
             self.build_frame_plan(device, queue, ctx, items, dt, &emit_bgl, &sim_bgl, &draw_bgl);
 

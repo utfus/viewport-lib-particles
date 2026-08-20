@@ -1,5 +1,25 @@
 use super::*;
 
+/// An effect's texture carried as CPU pixels on the asset (issue 017), for hosts
+/// that cannot call [`ParticlePlugin::upload_texture`](crate::ParticlePlugin) —
+/// they hold no `device`/`queue` and no plugin handle after the renderer takes
+/// ownership. When [`EffectAsset::texture_data`] is set (via
+/// [`EffectAsset::with_texture_rgba`]) and [`EffectAsset::texture`] is not, the
+/// plugin uploads these bytes to a [`ParticleTextureId`] on its next frame, binds
+/// it, and drops the CPU copy — so a texture rides the normal
+/// `descriptor → asset → replace_effect` flow with no out-of-band upload.
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct InlineTexture {
+    /// Texture width in texels.
+    pub width: u32,
+    /// Texture height in texels.
+    pub height: u32,
+    /// `width * height * 4` bytes, row-major RGBA8 (sRGB), no row padding — the
+    /// same layout [`ParticlePlugin::upload_texture`](crate::ParticlePlugin) takes.
+    pub rgba: Vec<u8>,
+}
+
 /// When a parent effect produces spawn events for its child.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -96,6 +116,15 @@ pub struct EffectAsset {
     /// procedural soft round dot. Uploaded via
     /// `ParticlePlugin::upload_texture`. Applies to the billboard routes.
     pub texture: Option<ParticleTextureId>,
+    /// Optional inline texture pixels (issue 017): an alternative to a
+    /// pre-uploaded [`texture`](Self::texture) id for hosts that have no
+    /// `device`/`queue` at asset-build time. When set and [`texture`](Self::texture)
+    /// is `None`, the plugin uploads these bytes on its next frame, fills
+    /// [`texture`](Self::texture) with the resulting id, and drops the CPU copy.
+    /// Set via [`with_texture_rgba`](Self::with_texture_rgba). Ignored once
+    /// [`texture`](Self::texture) is set. See [`InlineTexture`].
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub texture_data: Option<InlineTexture>,
     /// How [`texture`](Self::texture) modulates the particle colour. Ignored
     /// when no texture is set.
     pub texture_mode: TextureMode,
@@ -193,6 +222,7 @@ impl Default for EffectAsset {
             gradient: None,
             render: ParticleRender::default(),
             texture: None,
+            texture_data: None,
             texture_mode: TextureMode::default(),
             flipbook: None,
             sub_emitter: None,
@@ -282,6 +312,23 @@ impl EffectAsset {
     /// or [`with_flipbook`](Self::with_flipbook).
     pub fn with_texture(mut self, texture: ParticleTextureId) -> Self {
         self.texture = Some(texture);
+        self
+    }
+
+    /// Sample a texture given as CPU pixels (issue 017), uploaded by the plugin
+    /// on its next frame — for hosts that cannot call
+    /// [`ParticlePlugin::upload_texture`](crate::ParticlePlugin) (no `device`/
+    /// `queue`, no plugin handle). `rgba` is `width * height * 4` bytes, row-major
+    /// RGBA8 (sRGB). Combine with [`with_texture_mode`](Self::with_texture_mode) /
+    /// [`with_flipbook`](Self::with_flipbook) as with a pre-uploaded texture.
+    /// Ignored if a [`texture`](Self::texture) id is already set. See
+    /// [`InlineTexture`].
+    pub fn with_texture_rgba(mut self, width: u32, height: u32, rgba: Vec<u8>) -> Self {
+        self.texture_data = Some(InlineTexture {
+            width,
+            height,
+            rgba,
+        });
         self
     }
 

@@ -7,7 +7,7 @@ use viewport_lib::wgpu as vwgpu;
 use std::sync::{Arc, Mutex};
 
 use crate::effect::{
-    EffectAsset, EffectId, EventCondition,
+    EffectAsset, EffectId, EventCondition, ParticleTextureId,
 };
 
 use super::*;
@@ -474,6 +474,11 @@ pub(crate) struct RegisteredEffect {
     pub(crate) spawn_samples: Option<vwgpu::Buffer>,
     /// Number of samples in `spawn_samples` (0 when it is the shared default).
     pub(crate) spawn_sample_count: u32,
+    /// The inline texture (issue 017) already uploaded for this slot, as
+    /// `(content signature, id)`. Lets `replace_effect` reuse a resident texture
+    /// when the incoming bytes are unchanged — no re-upload, no structural rebuild.
+    /// `None` until an inline texture has been uploaded for this effect.
+    pub(crate) texture_upload: Option<(u64, ParticleTextureId)>,
 }
 
 /// Identifies one live instance: a registered effect plus the host's stable
@@ -699,6 +704,10 @@ pub struct ParticlePlugin {
     /// Textures uploaded for the billboard texture / flipbook routes, indexed by
     /// `ParticleTextureId`.
     pub(crate) textures: Vec<ParticleTexture>,
+    /// Effect indices with an inline texture (issue 017) awaiting GPU upload.
+    /// Queued by `add_effect` / `replace_effect` (which lack a `queue`) and
+    /// drained at the top of `prepare`, where the plugin has `device`/`queue`.
+    pub(crate) pending_textures: Vec<usize>,
     /// A 1x1 white texture bound at group 3 for effects with no texture (so the
     /// billboard fragment always has a valid sampler). Built lazily in `prepare`.
     pub(crate) default_tex_view: Option<vwgpu::TextureView>,

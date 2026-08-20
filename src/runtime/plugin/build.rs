@@ -47,6 +47,19 @@ pub(crate) fn structural_sig(asset: &EffectAsset) -> u64 {
     h.finish()
 }
 
+/// Content signature of an inline texture (issue 017): dimensions plus a hash of
+/// the pixel bytes, so `replace_effect` can tell whether an incoming inline
+/// texture matches the one already resident for a slot and skip a re-upload.
+pub(crate) fn inline_tex_sig(t: &crate::effect::InlineTexture) -> u64 {
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+    let mut h = DefaultHasher::new();
+    t.width.hash(&mut h);
+    t.height.hash(&mut h);
+    t.rgba.hash(&mut h);
+    h.finish()
+}
+
 /// SplitMix64 finalizer, for deriving a well-mixed 64-bit value from a seed.
 pub(crate) fn splitmix64(x: u64) -> u64 {
     let mut z = x.wrapping_add(0x9E3779B97F4A7C15);

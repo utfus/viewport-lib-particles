@@ -53,13 +53,21 @@ impl ParticlePlugin {
                 .unwrap_or((None, 0)),
             _ => (None, 0),
         };
-        let id = EffectId(self.effects.len() as u32);
+        let idx = self.effects.len();
+        let id = EffectId(idx as u32);
+        // Inline texture (issue 017): if the asset carries pixels and no uploaded
+        // id yet, queue it for upload on the next frame (no `queue` here).
+        let needs_texture_upload = asset.texture.is_none() && asset.texture_data.is_some();
         self.effects.push(RegisteredEffect {
             asset,
             removed: false,
             spawn_samples,
             spawn_sample_count,
+            texture_upload: None,
         });
+        if needs_texture_upload {
+            self.pending_textures.push(idx);
+        }
         id
     }
 
@@ -105,7 +113,7 @@ impl ParticlePlugin {
     ///
     /// Callable at runtime via [`ParticleItems::replace_effect`] (which routes
     /// here in `prepare`), or directly when a handle to the plugin is held.
-    pub fn replace_effect(&mut self, id: EffectId, asset: EffectAsset) {
+    pub fn replace_effect(&mut self, id: EffectId, mut asset: EffectAsset) {
         let idx = id.0 as usize;
         let Some(eff) = self.effects.get(idx) else {
             return;
@@ -113,10 +121,28 @@ impl ParticlePlugin {
         if eff.removed {
             return;
         }
-        if structural_sig(&eff.asset) != structural_sig(&asset) {
+        let prev_upload = eff.texture_upload;
+        let old_sig = structural_sig(&eff.asset);
+        // Inline texture (issue 017): if the incoming asset carries the same pixels
+        // already resident for this slot, reuse the uploaded id so it neither
+        // re-uploads nor counts as a structural change (a hot-reload that keeps the
+        // texture but tweaks other params preserves the live particle set).
+        if asset.texture.is_none() {
+            if let (Some(data), Some((sig, tid))) = (asset.texture_data.as_ref(), prev_upload) {
+                if inline_tex_sig(data) == sig {
+                    asset.texture = Some(tid);
+                    asset.texture_data = None;
+                }
+            }
+        }
+        if old_sig != structural_sig(&asset) {
             self.purge_effect_gpu(idx);
         }
+        let needs_texture_upload = asset.texture.is_none() && asset.texture_data.is_some();
         self.effects[idx].asset = asset;
+        if needs_texture_upload {
+            self.pending_textures.push(idx);
+        }
     }
 
     /// Remove a registered effect (Phase 27): tombstone its slot (the
@@ -247,6 +273,36 @@ impl ParticlePlugin {
         let id = ParticleTextureId(self.textures.len() as u32);
         self.textures.push(ParticleTexture { texture, view });
         id
+    }
+
+    /// Upload any inline textures (issue 017) queued by `add_effect` /
+    /// `replace_effect`, now that a `queue` is available. Fills each effect's
+    /// `texture` id, records the content signature (for later reuse), and drops
+    /// the CPU pixel copy. Called at the top of `prepare`, before instances build
+    /// their draw bind groups, so a freshly-registered textured effect binds its
+    /// texture on the same frame.
+    pub(crate) fn drain_pending_textures(&mut self, device: &vwgpu::Device, queue: &vwgpu::Queue) {
+        if self.pending_textures.is_empty() {
+            return;
+        }
+        for idx in std::mem::take(&mut self.pending_textures) {
+            // Take the bytes out (owned) so `upload_texture`'s `&mut self` borrow
+            // does not alias `self.effects`. Skip removed slots or ones already
+            // resolved (e.g. a same-frame reuse cleared the pending bytes).
+            let data = match self.effects.get_mut(idx) {
+                Some(e) if !e.removed => e.asset.texture_data.take(),
+                _ => None,
+            };
+            let Some(data) = data else {
+                continue;
+            };
+            let id = self.upload_texture(device, queue, data.width, data.height, &data.rgba);
+            let sig = inline_tex_sig(&data);
+            if let Some(e) = self.effects.get_mut(idx) {
+                e.asset.texture = Some(id);
+                e.texture_upload = Some((sig, id));
+            }
+        }
     }
 
     /// Build effect `idx`'s GPU state if it does not exist yet. Fixed-function

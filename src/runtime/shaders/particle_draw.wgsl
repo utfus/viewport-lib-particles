@@ -77,6 +77,9 @@ struct VsOut {
     @location(1) uv: vec2<f32>,
     @location(2) age: f32,
     @location(3) age_sec: f32,
+    // World position, carried for the custom fragment hook (Phase 33). The
+    // built-in `fs` ignores it.
+    @location(4) world: vec3<f32>,
 };
 
 // Place billboard corner `c` (in [-1,1]) for particle `p`, honouring the
@@ -172,6 +175,7 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VsOut
     out.uv = c * 0.5 + vec2<f32>(0.5, 0.5);
     out.age = age;
     out.age_sec = max(p.max_lifetime - p.lifetime, 0.0);
+    out.world = world;
     return out;
 }
 
@@ -196,3 +200,7 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
     }
     return vec4<f32>(rgb * a, a); // premultiplied
 }
+
+// Custom fragment hook (Phase 33) is spliced in here for effects that carry one;
+// the base pipeline leaves this empty.
+// __PARTICLE_HOOK_SLOT__

@@ -78,6 +78,8 @@ struct VsOut {
     @location(2) view_z: f32,
     @location(3) age: f32,
     @location(4) age_sec: f32,
+    // World position for the custom fragment hook (Phase 33); base `fs` ignores.
+    @location(5) world: vec3<f32>,
 };
 
 // Place billboard corner `c` (in [-1,1]) for particle `p`, honouring the
@@ -166,6 +168,7 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VsOut
     out.view_z = (camera.view * vec4<f32>(world, 1.0)).z;
     out.age = age;
     out.age_sec = max(p.max_lifetime - p.lifetime, 0.0);
+    out.world = world;
     return out;
 }
 
@@ -189,3 +192,6 @@ fn fs(in: VsOut) -> OitOutput {
     // premultiplies internally.
     return viewport_oit_pack(rgb, a, in.view_z);
 }
+
+// Custom fragment hook (Phase 33) is spliced in here for effects that carry one.
+// __PARTICLE_HOOK_SLOT__

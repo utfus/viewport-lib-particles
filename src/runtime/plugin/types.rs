@@ -474,6 +474,10 @@ pub(crate) struct RegisteredEffect {
     pub(crate) spawn_samples: Option<vwgpu::Buffer>,
     /// Number of samples in `spawn_samples` (0 when it is the shared default).
     pub(crate) spawn_sample_count: u32,
+    /// Texture ids for a custom fragment hook's inputs (Phase 33), uploaded from
+    /// the hook's inline bytes during `drain_pending_textures`. Empty for effects
+    /// without a hook or with no hook textures.
+    pub(crate) hook_texture_ids: Vec<ParticleTextureId>,
     /// The inline texture (issue 017) already uploaded for this slot, as
     /// `(content signature, id)`. Lets `replace_effect` reuse a resident texture
     /// when the incoming bytes are unchanged — no re-upload, no structural rebuild.
@@ -545,6 +549,34 @@ pub(crate) struct EffectInstance {
     /// Set once on first activation (or immediately when no warmup applies) so it
     /// never re-warms.
     pub(crate) warmed: bool,
+    /// Custom fragment-hook draw state (Phase 33), present only for a billboard
+    /// effect carrying a [`FragmentHook`](crate::effect::FragmentHook): the cached
+    /// per-hook pipelines plus this instance's group-3 hook bind group and its
+    /// per-frame params buffer. `None` uses the shared built-in pipelines.
+    pub(crate) custom_draw: Option<CustomDraw>,
+}
+
+/// Cached custom draw pipelines for one fragment hook (Phase 33), shared by every
+/// effect with the same composed source. wgpu pipelines are `Arc`-backed, so
+/// clones are cheap.
+#[derive(Clone)]
+pub(crate) struct CustomDrawPipelines {
+    /// Additive HDR billboard pipeline (drawn in `paint`).
+    pub(crate) additive: vwgpu::RenderPipeline,
+    /// Weighted-blended OIT pipeline (drawn in `paint_transparent`).
+    pub(crate) oit: vwgpu::RenderPipeline,
+}
+
+/// Per-instance custom-shading draw state (Phase 33).
+pub(crate) struct CustomDraw {
+    /// The hook's cached pipelines (additive + OIT).
+    pub(crate) pipelines: CustomDrawPipelines,
+    /// Group 3 for the hooked pipeline: draw params + sprite + sampler +
+    /// `hook_params` + hook textures.
+    pub(crate) bind_group: vwgpu::BindGroup,
+    /// The `hook_params` uniform (lane 0 engine-reserved, `.w` = time), rewritten
+    /// each frame in `prepare`.
+    pub(crate) params_buf: vwgpu::Buffer,
 }
 
 /// A live transient (burst) instance (Phase 25): a pooled particle set playing a
@@ -728,6 +760,19 @@ pub struct ParticlePlugin {
     /// Compiled generated emit/simulate pipelines, keyed by the hash of their
     /// WGSL so effects with identical programs share pipelines.
     pub(crate) gen_cache: HashMap<u64, (vwgpu::ComputePipeline, vwgpu::ComputePipeline)>,
+
+    /// Custom fragment-hook draw pipelines (Phase 33), keyed by the hash of the
+    /// composed billboard source so effects with identical hooks share pipelines
+    /// (the analogue of `gen_cache` for the fragment stage).
+    pub(crate) custom_draw_cache: HashMap<u64, CustomDrawPipelines>,
+    /// The renderer's scene bind-group layout (group 0), cloned in `build_gpu` so
+    /// custom draw pipelines can be built lazily in `ensure_instance_gpu` (which
+    /// has no `SharedBindings`).
+    pub(crate) group0_layout: Option<vwgpu::BindGroupLayout>,
+    /// Group-3 layout for hooked billboard effects: draw params (0), sprite (1),
+    /// sampler (2), the `hook_params` uniform (3), and [`HOOK_TEXTURES`] hook
+    /// textures (4..). Fixed, so every hooked pipeline shares one layout.
+    pub(crate) hook_drawparams_bgl: Option<vwgpu::BindGroupLayout>,
 
     /// Effects with live simulation this frame, drawn in `paint` and the
     /// interaction passes.

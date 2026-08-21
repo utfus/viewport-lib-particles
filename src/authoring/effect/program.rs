@@ -120,6 +120,14 @@ impl EffectProgram {
         Self::default()
     }
 
+    /// Attach the expression [`Module`] the init / update modifiers reference.
+    /// The handles passed to [`set`](Self::set) / [`update`](Self::update) must
+    /// index this module.
+    pub fn with_module(mut self, module: Module) -> Self {
+        self.module = module;
+        self
+    }
+
     /// Set the emission schedule.
     pub fn with_rate(mut self, rate: SpawnRate) -> Self {
         self.rate = rate;

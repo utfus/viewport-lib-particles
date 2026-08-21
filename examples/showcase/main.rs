@@ -32,6 +32,8 @@ mod showcase_19_fire_improved;
 mod showcase_20_rotation;
 mod showcase_21_timedbursts;
 mod showcase_22_forces;
+mod showcase_23_exprops;
+mod showcase_24_iridescent;
 mod viewport_callback;
 
 use eframe::egui;
@@ -72,6 +74,8 @@ enum ShowcaseMode {
     Rotation,
     TimedBursts,
     Forces,
+    ExprOps,
+    Iridescence,
 }
 
 impl ShowcaseMode {
@@ -98,6 +102,8 @@ impl ShowcaseMode {
         ShowcaseMode::Rotation,
         ShowcaseMode::TimedBursts,
         ShowcaseMode::Forces,
+        ShowcaseMode::ExprOps,
+        ShowcaseMode::Iridescence,
     ];
 
     fn label(self) -> &'static str {
@@ -124,6 +130,8 @@ impl ShowcaseMode {
             ShowcaseMode::Rotation => "20: Rotation",
             ShowcaseMode::TimedBursts => "21: Timed bursts",
             ShowcaseMode::Forces => "22: Forces",
+            ShowcaseMode::ExprOps => "23: Expr ops",
+            ShowcaseMode::Iridescence => "24: Iridescence",
         }
     }
 
@@ -229,6 +237,14 @@ fn main() -> eframe::Result {
                 .into_iter()
                 .map(|(_, asset)| plugin.add_effect(device, asset))
                 .collect();
+            let exprops_ids: Vec<EffectId> = showcase_23_exprops::presets()
+                .into_iter()
+                .map(|(_, asset)| plugin.add_effect(device, asset))
+                .collect();
+            let iridescent_ids: Vec<EffectId> = showcase_24_iridescent::presets()
+                .into_iter()
+                .map(|(_, asset)| plugin.add_effect(device, asset))
+                .collect();
             let interaction_id = showcase_06_interaction::presets()
                 .into_iter()
                 .map(|(_, asset)| plugin.add_effect(device, asset))
@@ -312,6 +328,10 @@ fn main() -> eframe::Result {
                 timedbursts: showcase_21_timedbursts::State::default(),
                 forces_ids,
                 forces: showcase_22_forces::State::default(),
+                exprops_ids,
+                exprops: showcase_23_exprops::State::default(),
+                iridescent_ids,
+                iridescent: showcase_24_iridescent::State::default(),
             }))
         }),
     )
@@ -371,6 +391,10 @@ struct App {
     timedbursts: showcase_21_timedbursts::State,
     forces_ids: Vec<EffectId>,
     forces: showcase_22_forces::State,
+    exprops_ids: Vec<EffectId>,
+    exprops: showcase_23_exprops::State,
+    iridescent_ids: Vec<EffectId>,
+    iridescent: showcase_24_iridescent::State,
 }
 
 impl eframe::App for App {
@@ -471,6 +495,8 @@ impl eframe::App for App {
                     showcase_21_timedbursts::controls(&mut self.timedbursts, ui)
                 }
                 ShowcaseMode::Forces => showcase_22_forces::controls(&mut self.forces, ui),
+                ShowcaseMode::ExprOps => showcase_23_exprops::controls(&mut self.exprops, ui),
+                ShowcaseMode::Iridescence => showcase_24_iridescent::controls(&mut self.iridescent, ui),
             });
 
         // ---- Central panel: viewport ----
@@ -622,6 +648,12 @@ impl eframe::App for App {
                     }
                     ShowcaseMode::Forces => {
                         showcase_22_forces::items(&self.forces_ids, &self.forces, dt)
+                    }
+                    ShowcaseMode::ExprOps => {
+                        showcase_23_exprops::items(&self.exprops_ids, &self.exprops, dt)
+                    }
+                    ShowcaseMode::Iridescence => {
+                        showcase_24_iridescent::items(&self.iridescent_ids, &self.iridescent, dt)
                     }
                     ShowcaseMode::Refraction | ShowcaseMode::Interaction => {
                         unreachable!("handled above")

@@ -20,6 +20,112 @@ pub struct InlineTexture {
     pub rgba: Vec<u8>,
 }
 
+/// A custom WGSL fragment shading hook for a particle's colour (Phase 33 /
+/// issue 018). Lets an imported shader-graph material's real colour be recovered
+/// rather than approximated: the hook runs per fragment in the billboard draw,
+/// combining the sampled sprite, extra textures, and its own logic.
+///
+/// The contract mirrors viewport-lib's `MaterialPlugin` shading hooks so a
+/// shader-graph -> WGSL lowering targets one body format: [`body`](Self::body)
+/// defines
+///
+/// ```wgsl
+/// fn shade_particle(f: ParticleFragment) -> vec4<f32> { /* straight rgba */ }
+/// ```
+///
+/// where `ParticleFragment` carries `uv`, the base `texel`, the per-particle
+/// `colour`, life `age` / `age_sec`, `world` position, and `time`. Additional
+/// textures (up to `HOOK_TEXTURES`) are bound as
+/// `htex0..` and delivered as CPU bytes on the hook (issue 017's path); params
+/// (up to 7 `vec4` lanes) are read as `hook_params.lanes[1..]` (lane 0 is engine-
+/// reserved, `.w` = time). The wrapper premultiplies the returned colour.
+#[derive(Clone, Debug, Default)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct FragmentHook {
+    /// A WGSL identifier prefix for the hook's symbols, so a body is portable
+    /// across host shaders without colliding.
+    pub name: String,
+    /// WGSL body defining `fn shade_particle(f: ParticleFragment) -> vec4<f32>`
+    /// plus any helpers. Must not redefine the template's symbols (`vs`, `fs`,
+    /// `flip_uv`, `billboard_world`, `camera`, `particles`, …).
+    pub body: String,
+    /// Extra textures the hook samples (`htex0..`), as inline RGBA8 bytes uploaded
+    /// by the plugin (issue 017's delivery). At most
+    /// `HOOK_TEXTURES`.
+    pub textures: Vec<InlineTexture>,
+    /// Custom params, one `vec4` lane each, read as `hook_params.lanes[1 + i]`.
+    /// Rewritten per frame; overridable per instance. At most 7.
+    pub params: Vec<[f32; 4]>,
+}
+
+impl FragmentHook {
+    /// A hook with the given symbol `name` and WGSL `body`.
+    pub fn new(name: impl Into<String>, body: impl Into<String>) -> Self {
+        Self {
+            name: name.into(),
+            body: body.into(),
+            textures: Vec::new(),
+            params: Vec::new(),
+        }
+    }
+
+    /// Add a texture input (`htex0`, `htex1`, …), as inline RGBA8 bytes.
+    pub fn texture(mut self, width: u32, height: u32, rgba: Vec<u8>) -> Self {
+        self.textures.push(InlineTexture {
+            width,
+            height,
+            rgba,
+        });
+        self
+    }
+
+    /// Add a params lane (`hook_params.lanes[1 + i]`).
+    pub fn param(mut self, lane: [f32; 4]) -> Self {
+        self.params.push(lane);
+        self
+    }
+
+    /// Structural check before compilation (Phase 33): the `name` is a valid WGSL
+    /// identifier, the body defines `shade_particle`, and the texture / param
+    /// counts are within the fixed caps. A WGSL *compile* error in the body still
+    /// surfaces at pipeline build, as with the codegen path.
+    pub fn validate(&self) -> Result<(), String> {
+        let ident_ok = !self.name.is_empty()
+            && self
+                .name
+                .chars()
+                .next()
+                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+            && self
+                .name
+                .chars()
+                .all(|c| c.is_ascii_alphanumeric() || c == '_');
+        if !ident_ok {
+            return Err(format!("hook name {:?} is not a valid WGSL identifier", self.name));
+        }
+        if !self.body.contains("fn shade_particle(") {
+            return Err("hook body must define `fn shade_particle(f: ParticleFragment) -> vec4<f32>`"
+                .to_string());
+        }
+        if self.textures.len() > crate::plugin::HOOK_TEXTURES {
+            return Err(format!(
+                "hook has {} textures, max {}",
+                self.textures.len(),
+                crate::plugin::HOOK_TEXTURES
+            ));
+        }
+        // Lane 0 is engine-reserved, so effect params occupy lanes 1..LANES.
+        if self.params.len() > crate::plugin::HOOK_PARAM_LANES - 1 {
+            return Err(format!(
+                "hook has {} param lanes, max {}",
+                self.params.len(),
+                crate::plugin::HOOK_PARAM_LANES - 1
+            ));
+        }
+        Ok(())
+    }
+}
+
 /// When a parent effect produces spawn events for its child.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
@@ -125,6 +231,12 @@ pub struct EffectAsset {
     /// [`texture`](Self::texture) is set. See [`InlineTexture`].
     #[cfg_attr(feature = "serde", serde(default))]
     pub texture_data: Option<InlineTexture>,
+    /// Optional custom WGSL fragment hook (Phase 33 / issue 018) computing the
+    /// particle's colour, for recovering a shader-graph material's true look.
+    /// `None` uses the built-in fragment (`texture_mode` against the single
+    /// texture). Billboard route only (additive / OIT). See [`FragmentHook`].
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub fragment_hook: Option<FragmentHook>,
     /// How [`texture`](Self::texture) modulates the particle colour. Ignored
     /// when no texture is set.
     pub texture_mode: TextureMode,
@@ -223,6 +335,7 @@ impl Default for EffectAsset {
             render: ParticleRender::default(),
             texture: None,
             texture_data: None,
+            fragment_hook: None,
             texture_mode: TextureMode::default(),
             flipbook: None,
             sub_emitter: None,
@@ -329,6 +442,14 @@ impl EffectAsset {
             height,
             rgba,
         });
+        self
+    }
+
+    /// Compute the particle's colour from a custom WGSL fragment hook (Phase 33 /
+    /// issue 018) instead of the built-in `texture_mode`. Billboard route only.
+    /// See [`FragmentHook`].
+    pub fn with_fragment_hook(mut self, hook: FragmentHook) -> Self {
+        self.fragment_hook = Some(hook);
         self
     }
 

@@ -31,6 +31,18 @@ pub(crate) fn structural_sig(asset: &EffectAsset) -> u64 {
     // schedule are re-read per frame, so they need no structural rebuild.
     asset.rotation_rate.to_bits().hash(&mut h);
     asset.texture.map(|t| t.0).hash(&mut h);
+    // Custom fragment hook (Phase 33): the composed source (name + body + texture
+    // count) determines the pipeline, so it is structural; param *values* ride the
+    // per-frame `hook_params` uniform, so they are not.
+    match &asset.fragment_hook {
+        None => 0u8.hash(&mut h),
+        Some(hook) => {
+            1u8.hash(&mut h);
+            hook.name.hash(&mut h);
+            hook.body.hash(&mut h);
+            hook.textures.len().hash(&mut h);
+        }
+    }
     format!("{:?}", asset.texture_mode).hash(&mut h);
     format!("{:?}", asset.flipbook).hash(&mut h);
     format!("{:?}", asset.gradient).hash(&mut h);
@@ -514,6 +526,56 @@ pub(crate) fn build_drawparams_bg(
                 resource: vwgpu::BindingResource::Sampler(sampler),
             },
         ],
+    })
+}
+
+/// Group-3 bind group for a custom fragment hook (Phase 33): the draw-params
+/// uniform (0), the sprite texture (1) + sampler (2), the per-frame `hook_params`
+/// uniform (3), and the hook's textures (4..), padded with the shared white
+/// default so all [`HOOK_TEXTURES`] slots are bound. Matches `hook_drawparams_bgl`.
+pub(crate) fn build_hook_draw_bg(
+    device: &vwgpu::Device,
+    bgl: &vwgpu::BindGroupLayout,
+    params: DrawParams,
+    sprite_view: &vwgpu::TextureView,
+    sampler: &vwgpu::Sampler,
+    hook_params_buf: &vwgpu::Buffer,
+    hook_views: &[&vwgpu::TextureView],
+) -> vwgpu::BindGroup {
+    let dp_buf = buffer_with_data(
+        device,
+        "particle_hook_drawparams",
+        bytemuck::bytes_of(&params),
+        vwgpu::BufferUsages::UNIFORM,
+    );
+    let mut entries = vec![
+        vwgpu::BindGroupEntry {
+            binding: 0,
+            resource: dp_buf.as_entire_binding(),
+        },
+        vwgpu::BindGroupEntry {
+            binding: 1,
+            resource: vwgpu::BindingResource::TextureView(sprite_view),
+        },
+        vwgpu::BindGroupEntry {
+            binding: 2,
+            resource: vwgpu::BindingResource::Sampler(sampler),
+        },
+        vwgpu::BindGroupEntry {
+            binding: 3,
+            resource: hook_params_buf.as_entire_binding(),
+        },
+    ];
+    for (i, v) in hook_views.iter().enumerate() {
+        entries.push(vwgpu::BindGroupEntry {
+            binding: 4 + i as u32,
+            resource: vwgpu::BindingResource::TextureView(v),
+        });
+    }
+    device.create_bind_group(&vwgpu::BindGroupDescriptor {
+        label: Some("particle_hook_draw_bg"),
+        layout: bgl,
+        entries: &entries,
     })
 }
 

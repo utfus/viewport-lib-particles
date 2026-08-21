@@ -55,14 +55,19 @@ impl ParticlePlugin {
         };
         let idx = self.effects.len();
         let id = EffectId(idx as u32);
-        // Inline texture (issue 017): if the asset carries pixels and no uploaded
-        // id yet, queue it for upload on the next frame (no `queue` here).
-        let needs_texture_upload = asset.texture.is_none() && asset.texture_data.is_some();
+        // Inline texture (issue 017) and custom-hook textures (Phase 33): if the
+        // asset carries pixels not yet uploaded, queue it (no `queue` here).
+        let needs_texture_upload = (asset.texture.is_none() && asset.texture_data.is_some())
+            || asset
+                .fragment_hook
+                .as_ref()
+                .is_some_and(|h| !h.textures.is_empty());
         self.effects.push(RegisteredEffect {
             asset,
             removed: false,
             spawn_samples,
             spawn_sample_count,
+            hook_texture_ids: Vec::new(),
             texture_upload: None,
         });
         if needs_texture_upload {
@@ -135,12 +140,23 @@ impl ParticlePlugin {
                 }
             }
         }
-        if old_sig != structural_sig(&asset) {
+        let structural = old_sig != structural_sig(&asset);
+        if structural {
             self.purge_effect_gpu(idx);
         }
-        let needs_texture_upload = asset.texture.is_none() && asset.texture_data.is_some();
+        let needs_inline_texture = asset.texture.is_none() && asset.texture_data.is_some();
+        let has_hook_textures = asset
+            .fragment_hook
+            .as_ref()
+            .is_some_and(|hk| !hk.textures.is_empty());
         self.effects[idx].asset = asset;
-        if needs_texture_upload {
+        // A structural change may swap the hook: re-upload its textures next frame.
+        if structural {
+            self.effects[idx].hook_texture_ids.clear();
+        }
+        if needs_inline_texture
+            || (has_hook_textures && self.effects[idx].hook_texture_ids.is_empty())
+        {
             self.pending_textures.push(idx);
         }
     }
@@ -293,14 +309,34 @@ impl ParticlePlugin {
                 Some(e) if !e.removed => e.asset.texture_data.take(),
                 _ => None,
             };
-            let Some(data) = data else {
-                continue;
+            if let Some(data) = data {
+                let id = self.upload_texture(device, queue, data.width, data.height, &data.rgba);
+                let sig = inline_tex_sig(&data);
+                if let Some(e) = self.effects.get_mut(idx) {
+                    e.asset.texture = Some(id);
+                    e.texture_upload = Some((sig, id));
+                }
+            }
+            // Custom-hook textures (Phase 33): upload each once and record the ids.
+            // The hook body keeps its inline bytes (they are small and part of the
+            // authored asset); we upload only when the id list is not yet filled.
+            let hook_textures: Vec<crate::effect::InlineTexture> = match self.effects.get(idx) {
+                Some(e) if !e.removed && e.hook_texture_ids.is_empty() => e
+                    .asset
+                    .fragment_hook
+                    .as_ref()
+                    .map(|h| h.textures.clone())
+                    .unwrap_or_default(),
+                _ => Vec::new(),
             };
-            let id = self.upload_texture(device, queue, data.width, data.height, &data.rgba);
-            let sig = inline_tex_sig(&data);
-            if let Some(e) = self.effects.get_mut(idx) {
-                e.asset.texture = Some(id);
-                e.texture_upload = Some((sig, id));
+            if !hook_textures.is_empty() {
+                let ids: Vec<ParticleTextureId> = hook_textures
+                    .iter()
+                    .map(|t| self.upload_texture(device, queue, t.width, t.height, &t.rgba))
+                    .collect();
+                if let Some(e) = self.effects.get_mut(idx) {
+                    e.hook_texture_ids = ids;
+                }
             }
         }
     }
@@ -339,6 +375,10 @@ impl ParticlePlugin {
         let screen_space_size = self.effects[idx].asset.screen_space_size;
         let soft = self.effects[idx].asset.soft;
         let rotation_rate = self.effects[idx].asset.rotation_rate;
+        // Custom fragment hook (Phase 33): cloned out so the `self.effects` borrow
+        // ends before the pipeline cache / bind-group construction below.
+        let fragment_hook = self.effects[idx].asset.fragment_hook.clone();
+        let hook_texture_ids = self.effects[idx].hook_texture_ids.clone();
 
         // Draw order buffer, padded to a power of two so the bitonic sort has a
         // clean length. Identity for now; sorted per frame for non-additive
@@ -560,6 +600,57 @@ impl ParticlePlugin {
             }],
         });
 
+        // Custom fragment-hook draw state (Phase 33): billboard effects carrying a
+        // hook get per-hook pipelines (cached) plus a group-3 hook bind group and
+        // a per-frame params buffer.
+        let custom_draw = match (&fragment_hook, is_billboard) {
+            (Some(hook), true) => {
+                let pipelines = self.custom_draw_pipelines(device, hook);
+                // Params uniform: lane 0 is engine-reserved (time filled per
+                // frame); lanes 1.. are the effect's params.
+                let mut lanes = [[0.0f32; 4]; HOOK_PARAM_LANES];
+                for (i, p) in hook.params.iter().take(HOOK_PARAM_LANES - 1).enumerate() {
+                    lanes[1 + i] = *p;
+                }
+                let params_buf = buffer_with_data(
+                    device,
+                    "particle_hook_params",
+                    bytemuck::bytes_of(&lanes),
+                    vwgpu::BufferUsages::UNIFORM | vwgpu::BufferUsages::COPY_DST,
+                );
+                let default_view = self.default_tex_view.as_ref().unwrap();
+                let sprite_view = match texture.and_then(|t| self.textures.get(t.0 as usize)) {
+                    Some(t) => &t.view,
+                    None => default_view,
+                };
+                let sampler = self.ramp_sampler.as_ref().unwrap();
+                let hook_views: Vec<&vwgpu::TextureView> = (0..HOOK_TEXTURES)
+                    .map(|i| {
+                        hook_texture_ids
+                            .get(i)
+                            .and_then(|t| self.textures.get(t.0 as usize))
+                            .map(|t| &t.view)
+                            .unwrap_or(default_view)
+                    })
+                    .collect();
+                let bind_group = build_hook_draw_bg(
+                    device,
+                    self.hook_drawparams_bgl.as_ref().unwrap(),
+                    dp,
+                    sprite_view,
+                    sampler,
+                    &params_buf,
+                    &hook_views,
+                );
+                Some(CustomDraw {
+                    pipelines,
+                    bind_group,
+                    params_buf,
+                })
+            }
+            _ => None,
+        };
+
         self.instances.insert(
             ikey,
             EffectInstance {
@@ -580,6 +671,7 @@ impl ParticlePlugin {
                 last_seen: 0,
                 local_time: 0.0,
                 warmed: false,
+                custom_draw,
             },
         );
     }
@@ -720,6 +812,154 @@ impl ParticlePlugin {
         let sim = build_compute_pipeline(device, &shaders.sim, "sim_main", "gen_sim", sim_bgl);
         self.gen_cache.insert(key, (emit.clone(), sim.clone()));
         (emit, sim)
+    }
+
+    /// Compile (or reuse from `custom_draw_cache`) the additive + OIT billboard
+    /// pipelines for a fragment hook (Phase 33), composing the hook body into the
+    /// billboard templates. Keyed by the composed source so identical hooks share
+    /// pipelines. Uses the stored scene layout + the fixed hook group-3 layout.
+    pub(crate) fn custom_draw_pipelines(
+        &mut self,
+        device: &vwgpu::Device,
+        hook: &crate::effect::FragmentHook,
+    ) -> CustomDrawPipelines {
+        let add_src = compose_billboard(
+            SHARED_BINDINGS_WGSL,
+            include_str!("../shaders/particle_draw.wgsl"),
+            hook,
+            HookRoute::Draw,
+        );
+        let oit_prelude = format!("{SHARED_BINDINGS_WGSL}\n{SHARED_OIT_WGSL}");
+        let oit_src = compose_billboard(
+            &oit_prelude,
+            include_str!("../shaders/particle_oit.wgsl"),
+            hook,
+            HookRoute::Oit,
+        );
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        add_src.hash(&mut hasher);
+        oit_src.hash(&mut hasher);
+        let key = hasher.finish();
+        if let Some(p) = self.custom_draw_cache.get(&key) {
+            return p.clone();
+        }
+
+        let sample_count = self.sample_count;
+        let layout = vwgpu::pipeline_layout(
+            device,
+            "particle_hook_draw_layout",
+            &[
+                self.group0_layout.as_ref().unwrap(),
+                self.draw_bgl.as_ref().unwrap(),
+                self.ramp_bgl.as_ref().unwrap(),
+                self.hook_drawparams_bgl.as_ref().unwrap(),
+            ],
+        );
+        let one = vwgpu::BlendComponent {
+            src_factor: vwgpu::BlendFactor::One,
+            dst_factor: vwgpu::BlendFactor::One,
+            operation: vwgpu::BlendOperation::Add,
+        };
+
+        let add_shader = device.create_shader_module(vwgpu::ShaderModuleDescriptor {
+            label: Some("particle_hook_draw_shader"),
+            source: vwgpu::ShaderSource::Wgsl(add_src.into()),
+        });
+        let additive = vwgpu::render_pipeline(
+            device,
+            vwgpu::RenderPipelineDesc {
+                label: "particle_hook_draw_additive",
+                layout: &layout,
+                vertex: vwgpu::VertexState {
+                    module: &add_shader,
+                    entry_point: Some("vs"),
+                    buffers: &[],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(vwgpu::FragmentState {
+                    module: &add_shader,
+                    entry_point: Some("fs_hook"),
+                    targets: &[Some(vwgpu::ColorTargetState {
+                        format: HDR_COLOR_FORMAT,
+                        blend: Some(vwgpu::BlendState {
+                            color: one,
+                            alpha: one,
+                        }),
+                        write_mask: vwgpu::ColorWrites::ALL,
+                    })],
+                    compilation_options: Default::default(),
+                }),
+                primitive: vwgpu::PrimitiveState {
+                    topology: vwgpu::PrimitiveTopology::TriangleList,
+                    cull_mode: None,
+                    ..Default::default()
+                },
+                depth_stencil: Some(vwgpu::depth_stencil(
+                    SCENE_DEPTH_FORMAT,
+                    false,
+                    vwgpu::CompareFunction::LessEqual,
+                )),
+                multisample: vwgpu::MultisampleState {
+                    count: sample_count,
+                    ..Default::default()
+                },
+                cache: None,
+            },
+        );
+
+        let oit_shader = device.create_shader_module(vwgpu::ShaderModuleDescriptor {
+            label: Some("particle_hook_oit_shader"),
+            source: vwgpu::ShaderSource::Wgsl(oit_src.into()),
+        });
+        let oit = vwgpu::render_pipeline(
+            device,
+            vwgpu::RenderPipelineDesc {
+                label: "particle_hook_draw_oit",
+                layout: &layout,
+                vertex: vwgpu::VertexState {
+                    module: &oit_shader,
+                    entry_point: Some("vs"),
+                    buffers: &[],
+                    compilation_options: Default::default(),
+                },
+                fragment: Some(vwgpu::FragmentState {
+                    module: &oit_shader,
+                    entry_point: Some("fs_hook"),
+                    targets: &[
+                        Some(vwgpu::ColorTargetState {
+                            format: HDR_COLOR_FORMAT,
+                            blend: Some(OIT_ACCUM_BLEND),
+                            write_mask: vwgpu::ColorWrites::ALL,
+                        }),
+                        Some(vwgpu::ColorTargetState {
+                            format: MASK_COLOR_FORMAT,
+                            blend: Some(OIT_REVEAL_BLEND),
+                            write_mask: vwgpu::ColorWrites::RED,
+                        }),
+                    ],
+                    compilation_options: Default::default(),
+                }),
+                primitive: vwgpu::PrimitiveState {
+                    topology: vwgpu::PrimitiveTopology::TriangleList,
+                    cull_mode: None,
+                    ..Default::default()
+                },
+                depth_stencil: Some(vwgpu::depth_stencil(
+                    SCENE_DEPTH_FORMAT,
+                    false,
+                    vwgpu::CompareFunction::LessEqual,
+                )),
+                multisample: vwgpu::MultisampleState {
+                    count: sample_count,
+                    ..Default::default()
+                },
+                cache: None,
+            },
+        );
+
+        let pipelines = CustomDrawPipelines { additive, oit };
+        self.custom_draw_cache.insert(key, pipelines.clone());
+        pipelines
     }
 }
 
@@ -1682,6 +1922,59 @@ impl ParticlePlugin {
         self.gen_sim_bgl = Some(gen_sim_bgl);
         self.draw_bgl = Some(draw_bgl);
         self.drawparams_bgl = Some(drawparams_bgl);
+        // Custom fragment-hook group-3 layout (Phase 33): the base draw-params +
+        // sprite + sampler, then the `hook_params` uniform (binding 3) and
+        // HOOK_TEXTURES texture slots (4..). Fixed so every hooked pipeline shares
+        // one layout. Stored with the scene layout so custom pipelines build lazily.
+        let hook_tex = |binding| vwgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: vwgpu::ShaderStages::FRAGMENT,
+            ty: vwgpu::BindingType::Texture {
+                sample_type: vwgpu::TextureSampleType::Float { filterable: true },
+                view_dimension: vwgpu::TextureViewDimension::D2,
+                multisampled: false,
+            },
+            count: None,
+        };
+        let mut hook_entries = vec![
+            vwgpu::BindGroupLayoutEntry {
+                binding: 0,
+                visibility: vwgpu::ShaderStages::VERTEX | vwgpu::ShaderStages::FRAGMENT,
+                ty: vwgpu::BindingType::Buffer {
+                    ty: vwgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+            hook_tex(1),
+            vwgpu::BindGroupLayoutEntry {
+                binding: 2,
+                visibility: vwgpu::ShaderStages::FRAGMENT,
+                ty: vwgpu::BindingType::Sampler(vwgpu::SamplerBindingType::Filtering),
+                count: None,
+            },
+            vwgpu::BindGroupLayoutEntry {
+                binding: 3,
+                visibility: vwgpu::ShaderStages::FRAGMENT,
+                ty: vwgpu::BindingType::Buffer {
+                    ty: vwgpu::BufferBindingType::Uniform,
+                    has_dynamic_offset: false,
+                    min_binding_size: None,
+                },
+                count: None,
+            },
+        ];
+        for i in 0..HOOK_TEXTURES as u32 {
+            hook_entries.push(hook_tex(4 + i));
+        }
+        self.hook_drawparams_bgl = Some(device.create_bind_group_layout(
+            &vwgpu::BindGroupLayoutDescriptor {
+                label: Some("particle_hook_drawparams_bgl"),
+                entries: &hook_entries,
+            },
+        ));
+        self.group0_layout = Some(shared.group0_layout.clone());
         self.history_bgl = Some(history_bgl);
         self.trail_draw_bgl = Some(trail_draw_bgl);
         self.sort_init_bgl = Some(sort_init_bgl);

@@ -14,7 +14,7 @@
 //! bind group layouts and only swaps the pipelines.
 
 use crate::effect::{Attribute, EffectProgram, PropertyDecl, PropertyValue, UpdateOp};
-use crate::expr::{Expr, ExprHandle, Module};
+use crate::expr::{Expr, ExprHandle, Module, TernaryOp, TypeEnv, TypeError, ValueType};
 
 /// The WGSL source for one compiled effect.
 #[derive(Clone, Debug)]
@@ -209,6 +209,27 @@ fn lower_node(module: &Module, i: u32, ctx: Ctx) -> String {
         Expr::Clamp(x, lo, hi) => format!("clamp(v{}, v{}, v{})", x.0, lo.0, hi.0),
         Expr::Noise(a) => format!("value_noise(v{})", a.0),
         Expr::CurlNoise(a) => format!("curl_noise(v{})", a.0),
+        Expr::Unary(op, a) => format!("{}(v{})", op.wgsl_fn(), a.0),
+        Expr::Binary(op, a, b) => op.lower(&format!("v{}", a.0), &format!("v{}", b.0)),
+        Expr::Ternary(op, a, b, c) => match op {
+            TernaryOp::Mix => format!("mix(v{}, v{}, v{})", a.0, b.0, c.0),
+            TernaryOp::Smoothstep => format!("smoothstep(v{}, v{}, v{})", a.0, b.0, c.0),
+            // WGSL `select(false_value, true_value, condition)`; our Select is
+            // `cond ? a : b`, so a is the true value, b the false value.
+            TernaryOp::Select => format!("select(v{}, v{}, v{})", c.0, b.0, a.0),
+        },
+        Expr::Vec2(a, b) => format!("vec2<f32>(v{}, v{})", a.0, b.0),
+        Expr::Vec3(a, b, c) => format!("vec3<f32>(v{}, v{}, v{})", a.0, b.0, c.0),
+        Expr::Vec4(a, b, c, d) => format!("vec4<f32>(v{}, v{}, v{}, v{})", a.0, b.0, c.0, d.0),
+        Expr::Swizzle(v, comp) => format!("v{}.{}", v.0, comp.wgsl()),
+        Expr::Time => "params.time".to_string(),
+        Expr::DeltaTime => "params.dt".to_string(),
+        // In the simulate kernel a live particle reaches this code (`p` in scope);
+        // in emit there is no particle yet, so it is trivially alive.
+        Expr::IsAlive => match ctx.kind {
+            Kind::Sim => "(p.lifetime > 0.0)".to_string(),
+            Kind::Emit => "true".to_string(),
+        },
     }
 }
 
@@ -222,12 +243,104 @@ fn lower_block(module: &Module, roots: &[ExprHandle], ctx: Ctx, indent: &str) ->
     out
 }
 
+/// The value type of a built-in attribute read (kernel-independent for typing;
+/// availability per kernel is a separate concern). `None` for an unknown name.
+fn attribute_value_type(name: &str) -> Option<ValueType> {
+    match name {
+        "origin" | "position" | "velocity" => Some(ValueType::Vec3),
+        "lifetime" | "age" | "seed" => Some(ValueType::F32),
+        _ => None,
+    }
+}
+
+/// The value type an init modifier's expression must have to write `attr`.
+fn set_attribute_type(attr: Attribute) -> ValueType {
+    match attr {
+        Attribute::Position | Attribute::Velocity | Attribute::Colour => ValueType::Vec3,
+        Attribute::Lifetime | Attribute::Size => ValueType::F32,
+    }
+}
+
+impl EffectProgram {
+    /// Type-check the program's expression graph (Phase 13): infer every node's
+    /// [`ValueType`], verify each op's operand arity and types, and verify each
+    /// init / update modifier's expression matches the attribute it writes
+    /// (`vec3` for position/velocity/colour and acceleration, `f32` for
+    /// lifetime/size). Returns all errors found, or `Ok(())`.
+    ///
+    /// Call this before registering the effect to surface authoring errors with
+    /// node-level messages, instead of leaving them to the WGSL compiler on the
+    /// generated kernel.
+    pub fn validate(&self) -> Result<(), Vec<TypeError>> {
+        let props = &self.properties;
+        let env = TypeEnv {
+            attribute: &attribute_value_type,
+            property: &|name: &str| {
+                props.iter().find(|d| d.name == name).map(|d| match d.default {
+                    PropertyValue::F32(_) => ValueType::F32,
+                    PropertyValue::Vec3(_) => ValueType::Vec3,
+                    PropertyValue::Vec4(_) => ValueType::Vec4,
+                })
+            },
+        };
+
+        // Node-level inference first; on failure that is the whole story.
+        let types = match self.module.infer_types(&env) {
+            Ok(t) => t,
+            Err(e) => return Err(vec![e]),
+        };
+
+        // Then check each modifier root against the attribute it drives.
+        let mut errors = Vec::new();
+        let mut check = |handle: ExprHandle, expected: ValueType, what: &str| {
+            let got = types[handle.0 as usize];
+            if got != expected {
+                errors.push(TypeError {
+                    handle,
+                    message: format!(
+                        "{what} expects {:?} but expression is {:?}",
+                        expected, got
+                    ),
+                });
+            }
+        };
+        for m in &self.init {
+            check(
+                m.value,
+                set_attribute_type(m.attribute),
+                &format!("init {:?}", m.attribute),
+            );
+        }
+        for op in &self.update {
+            match op {
+                UpdateOp::Accelerate(h) => check(*h, ValueType::Vec3, "accelerate"),
+            }
+        }
+
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(errors)
+        }
+    }
+}
+
 /// Lower a program to its emit and simulate WGSL.
 pub(crate) fn generate_program(program: &EffectProgram) -> GeneratedShaders {
     GeneratedShaders {
         emit: generate_emit(program),
         sim: generate_sim(program),
     }
+}
+
+/// Whether any node reachable from `roots` draws a random value, so a kernel
+/// knows to seed an rng and pull in [`RNG_HELPERS`]. The emit kernel always seeds
+/// one (it randomises `p.seed`); the simulate kernel only when `rand` is used.
+fn uses_rng(module: &Module, roots: &[ExprHandle]) -> bool {
+    module
+        .reachable(roots)
+        .iter()
+        .any(|&i| matches!(module.get(ExprHandle(i)), Expr::Rand | Expr::RandUnit))
 }
 
 fn find_attr(program: &EffectProgram, attr: Attribute) -> Option<ExprHandle> {
@@ -324,6 +437,18 @@ fn generate_sim(program: &EffectProgram) -> String {
     let lets = lower_block(module, &roots, ctx, "    ");
     let props_struct = properties_struct(&program.properties);
 
+    // Per-particle rand in the update kernel (Phase 13): seed an rng from the
+    // particle's stored seed, decorrelated per frame by the params seed. Only
+    // pulled in when the update graph actually draws randoms.
+    let (rng_helpers, rng_seed) = if uses_rng(module, &roots) {
+        (
+            RNG_HELPERS,
+            "    var rng = hash_u32(bitcast<u32>(p.seed) ^ params.rng_seed ^ (i * 2654435761u));\n",
+        )
+    } else {
+        ("", "")
+    };
+
     let mut accel = String::new();
     for op in &program.update {
         match op {
@@ -340,6 +465,7 @@ fn generate_sim(program: &EffectProgram) -> String {
 @group(0) @binding(1) var<uniform> params: GenParams;
 @group(0) @binding(2) var<uniform> props: Properties;
 {NOISE_WGSL}
+{rng_helpers}
 @compute @workgroup_size(64)
 fn sim_main(@builtin(global_invocation_id) gid: vec3<u32>) {{
     let i = gid.x;
@@ -347,7 +473,7 @@ fn sim_main(@builtin(global_invocation_id) gid: vec3<u32>) {{
     var p = particles[i];
     if (p.lifetime <= 0.0) {{ return; }}
     let dt = params.dt;
-{lets}
+{rng_seed}{lets}
     var accel = vec3<f32>(0.0, 0.0, 0.0);
 {accel}
     p.velocity = p.velocity + accel * dt;

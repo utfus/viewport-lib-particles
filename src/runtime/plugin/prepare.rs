@@ -261,6 +261,14 @@ impl ItemTypePlugin for ParticlePlugin {
                 queue.write_buffer(&inst.pick_buf, 0, bytemuck::bytes_of(&pu));
             }
 
+            // Custom fragment hook (Phase 33): refresh the engine-reserved params
+            // lane (lane 0 `.w` = time) each frame. The effect's own params sit in
+            // later lanes, written once when the instance was built.
+            if let Some(cd) = self.instances.get(&ikey).and_then(|i| i.custom_draw.as_ref()) {
+                let lane0 = [0.0f32, 0.0, 0.0, time];
+                queue.write_buffer(&cd.params_buf, 0, bytemuck::bytes_of(&lane0));
+            }
+
             // Sub-emitter links (cloned out so the borrows end before the buffer
             // reads below). `child_link` present when this effect consumes a
             // parent's events; `parent_link` when it produces events for a child.
@@ -599,7 +607,14 @@ impl ItemTypePlugin for ParticlePlugin {
                     if !additive {
                         continue;
                     }
-                    pass.set_pipeline(bb_add);
+                    // Custom fragment hook (Phase 33): swap in the effect's hooked
+                    // pipeline and group-3 hook bind group; else the shared built-in.
+                    if let Some(cd) = inst.custom_draw.as_ref() {
+                        pass.set_pipeline(&cd.pipelines.additive);
+                        pass.set_bind_group(3, &cd.bind_group, &[]);
+                    } else {
+                        pass.set_pipeline(bb_add);
+                    }
                     pass.set_bind_group(1, gpu.draw_bg(), &[]);
                     pass.draw(0..6, 0..eff.asset.capacity);
                 }
@@ -639,8 +654,8 @@ impl ItemTypePlugin for ParticlePlugin {
         };
         // Group 0 (camera + scene) is bound by the lib inside the OIT pass.
         // Draw only Alpha/Premultiplied billboards; additive billboards and the
-        // mesh/trail routes stay in the main HDR draw (paint).
-        pass.set_pipeline(oit);
+        // mesh/trail routes stay in the main HDR draw (paint). The pipeline is set
+        // per draw because a custom-hook effect uses its own OIT pipeline.
         for entry in &self.draw_list {
             let eff = &self.effects[entry.key.effect as usize];
             let Some(inst) = self.instances.get(&entry.key) else {
@@ -659,7 +674,15 @@ impl ItemTypePlugin for ParticlePlugin {
             }
             pass.set_bind_group(1, gpu.draw_bg(), &[]);
             pass.set_bind_group(2, gpu.ramp_bg(), &[]);
-            pass.set_bind_group(3, gpu.drawparams_bg(), &[]);
+            // Custom fragment hook (Phase 33): hooked effects draw with their own
+            // OIT pipeline + group-3 hook bind group.
+            if let Some(cd) = inst.custom_draw.as_ref() {
+                pass.set_pipeline(&cd.pipelines.oit);
+                pass.set_bind_group(3, &cd.bind_group, &[]);
+            } else {
+                pass.set_pipeline(oit);
+                pass.set_bind_group(3, gpu.drawparams_bg(), &[]);
+            }
             pass.draw(0..6, 0..eff.asset.capacity);
         }
     }

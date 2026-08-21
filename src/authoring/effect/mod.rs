@@ -6,7 +6,7 @@ mod ids;
 mod program;
 mod render;
 
-pub use asset::{EffectAsset, EventCondition, InlineTexture, SubEmitter};
+pub use asset::{EffectAsset, EventCondition, FragmentHook, InlineTexture, SubEmitter};
 pub use emitter::{
     Emitter, ForceModifier, Modifier, SpawnRate, SpawnShape, TimedBurst, VelocityDist,
 };

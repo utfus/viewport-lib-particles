@@ -54,8 +54,8 @@ fn shadowed_frame() -> FrameData {
         direction: [0.3, 0.4, 0.9],
     };
     ls.lights = vec![light];
-    ls.shadows_enabled = true;
-    ls.shadow_cascade_count = 2;
+    ls.shadows.enabled = true;
+    ls.shadows.cascade_count = 2;
     frame.effects.lighting = ls;
     frame
 }

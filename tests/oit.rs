@@ -12,7 +12,7 @@
 
 use viewport_lib::Camera;
 use viewport_lib::renderer::{
-    EnvironmentMap, FrameData, RenderCamera, SurfaceSubmission, ViewportRenderer,
+    EnvironmentSettings, FrameData, RenderCamera, SurfaceSubmission, ViewportRenderer,
 };
 use viewport_lib::wgpu;
 
@@ -52,7 +52,7 @@ fn frame_looking_at_origin() -> FrameData {
     frame.viewport.show_axes_indicator = false;
     frame.scene.surfaces = SurfaceSubmission::Flat(vec![].into());
     // Render the uploaded environment as a visible skybox background.
-    frame.effects.environment = Some(EnvironmentMap {
+    frame.effects.environment = Some(EnvironmentSettings {
         show_skybox: true,
         ..Default::default()
     });

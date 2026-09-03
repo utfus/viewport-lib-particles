@@ -171,12 +171,9 @@ impl RefractionPlugin {
             vwgpu::RenderPipelineDesc {
                 label: "refraction_pipeline",
                 layout: &layout,
-                vertex: vwgpu::VertexState {
-                    module: &shader,
-                    entry_point: Some("vs"),
-                    buffers: &[],
-                    compilation_options: Default::default(),
-                },
+                vertex_module: &shader,
+                vertex_entry: "vs",
+                vertex_buffers: &[],
                 fragment: Some(vwgpu::FragmentState {
                     module: &shader,
                     entry_point: Some("fs"),

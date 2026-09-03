@@ -870,12 +870,9 @@ impl ParticlePlugin {
             vwgpu::RenderPipelineDesc {
                 label: "particle_hook_draw_additive",
                 layout: &layout,
-                vertex: vwgpu::VertexState {
-                    module: &add_shader,
-                    entry_point: Some("vs"),
-                    buffers: &[],
-                    compilation_options: Default::default(),
-                },
+                vertex_module: &add_shader,
+                vertex_entry: "vs",
+                vertex_buffers: &[],
                 fragment: Some(vwgpu::FragmentState {
                     module: &add_shader,
                     entry_point: Some("fs_hook"),
@@ -916,12 +913,9 @@ impl ParticlePlugin {
             vwgpu::RenderPipelineDesc {
                 label: "particle_hook_draw_oit",
                 layout: &layout,
-                vertex: vwgpu::VertexState {
-                    module: &oit_shader,
-                    entry_point: Some("vs"),
-                    buffers: &[],
-                    compilation_options: Default::default(),
-                },
+                vertex_module: &oit_shader,
+                vertex_entry: "vs",
+                vertex_buffers: &[],
                 fragment: Some(vwgpu::FragmentState {
                     module: &oit_shader,
                     entry_point: Some("fs_hook"),
@@ -1314,12 +1308,9 @@ impl ParticlePlugin {
                 vwgpu::RenderPipelineDesc {
                     label,
                     layout: &draw_layout,
-                    vertex: vwgpu::VertexState {
-                        module: &draw_shader,
-                        entry_point: Some("vs"),
-                        buffers: &[],
-                        compilation_options: Default::default(),
-                    },
+                    vertex_module: &draw_shader,
+                    vertex_entry: "vs",
+                    vertex_buffers: &[],
                     fragment: Some(vwgpu::FragmentState {
                         module: &draw_shader,
                         entry_point: Some("fs"),
@@ -1375,12 +1366,9 @@ impl ParticlePlugin {
             vwgpu::RenderPipelineDesc {
                 label: "particle_draw_oit",
                 layout: &draw_layout,
-                vertex: vwgpu::VertexState {
-                    module: &oit_shader,
-                    entry_point: Some("vs"),
-                    buffers: &[],
-                    compilation_options: Default::default(),
-                },
+                vertex_module: &oit_shader,
+                vertex_entry: "vs",
+                vertex_buffers: &[],
                 fragment: Some(vwgpu::FragmentState {
                     module: &oit_shader,
                     entry_point: Some("fs"),
@@ -1501,12 +1489,9 @@ impl ParticlePlugin {
                 vwgpu::RenderPipelineDesc {
                     label,
                     layout: &soft_layout,
-                    vertex: vwgpu::VertexState {
-                        module: &soft_shader,
-                        entry_point: Some("vs"),
-                        buffers: &[],
-                        compilation_options: Default::default(),
-                    },
+                    vertex_module: &soft_shader,
+                    vertex_entry: "vs",
+                    vertex_buffers: &[],
                     fragment: Some(vwgpu::FragmentState {
                         module: &soft_shader,
                         entry_point: Some("fs"),
@@ -1579,12 +1564,9 @@ impl ParticlePlugin {
                 vwgpu::RenderPipelineDesc {
                     label,
                     layout: &draw_layout,
-                    vertex: vwgpu::VertexState {
-                        module: &mesh_shader,
-                        entry_point: Some("vs"),
-                        buffers: &[mesh_vertex_layout.clone()],
-                        compilation_options: Default::default(),
-                    },
+                    vertex_module: &mesh_shader,
+                    vertex_entry: "vs",
+                    vertex_buffers: &[mesh_vertex_layout.clone()],
                     fragment: Some(vwgpu::FragmentState {
                         module: &mesh_shader,
                         entry_point: Some("fs"),
@@ -1655,12 +1637,9 @@ impl ParticlePlugin {
                 vwgpu::RenderPipelineDesc {
                     label,
                     layout: &trail_layout,
-                    vertex: vwgpu::VertexState {
-                        module: &trail_shader,
-                        entry_point: Some("vs"),
-                        buffers: &[],
-                        compilation_options: Default::default(),
-                    },
+                    vertex_module: &trail_shader,
+                    vertex_entry: "vs",
+                    vertex_buffers: &[],
                     fragment: Some(vwgpu::FragmentState {
                         module: &trail_shader,
                         entry_point: Some("fs"),
@@ -1761,12 +1740,9 @@ impl ParticlePlugin {
             vwgpu::RenderPipelineDesc {
                 label: "particle_pick",
                 layout: &pick_layout,
-                vertex: vwgpu::VertexState {
-                    module: &pick_shader,
-                    entry_point: Some("vs"),
-                    buffers: &[],
-                    compilation_options: Default::default(),
-                },
+                vertex_module: &pick_shader,
+                vertex_entry: "vs",
+                vertex_buffers: &[],
                 fragment: Some(vwgpu::FragmentState {
                     module: &pick_shader,
                     entry_point: Some("viewport_pick_fs"),
@@ -1813,12 +1789,9 @@ impl ParticlePlugin {
             vwgpu::RenderPipelineDesc {
                 label: "particle_mask",
                 layout: &mask_layout,
-                vertex: vwgpu::VertexState {
-                    module: &mask_shader,
-                    entry_point: Some("vs"),
-                    buffers: &[],
-                    compilation_options: Default::default(),
-                },
+                vertex_module: &mask_shader,
+                vertex_entry: "vs",
+                vertex_buffers: &[],
                 fragment: Some(vwgpu::FragmentState {
                     module: &mask_shader,
                     entry_point: Some("viewport_mask_fs"),
@@ -1861,12 +1834,9 @@ impl ParticlePlugin {
             vwgpu::RenderPipelineDesc {
                 label: "particle_shadow",
                 layout: &shadow_layout,
-                vertex: vwgpu::VertexState {
-                    module: &shadow_shader,
-                    entry_point: Some("vs"),
-                    buffers: &[],
-                    compilation_options: Default::default(),
-                },
+                vertex_module: &shadow_shader,
+                vertex_entry: "vs",
+                vertex_buffers: &[],
                 // Depth-only, but with a fragment stage that discards for a round,
                 // alpha-dithered footprint (no colour targets).
                 fragment: Some(vwgpu::FragmentState {

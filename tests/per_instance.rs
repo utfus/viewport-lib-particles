@@ -165,9 +165,14 @@ fn same_key_collapses() {
 
 fn read_back(device: &wgpu::Device, queue: &wgpu::Queue, target: &wgpu::Texture) -> Vec<u8> {
     let row_bytes = SIZE * 4;
+    // `copy_texture_to_buffer` requires `bytes_per_row` to be a multiple of
+    // COPY_BYTES_PER_ROW_ALIGNMENT (256). SIZE*4 = 384 is not, so pad each row up
+    // to the alignment for the copy and compact back to tight rows afterwards.
+    let align = wgpu::COPY_BYTES_PER_ROW_ALIGNMENT;
+    let padded_row = row_bytes.div_ceil(align) * align;
     let staging = device.create_buffer(&wgpu::BufferDescriptor {
         label: Some("particles-per-instance-readback"),
-        size: (row_bytes * SIZE) as u64,
+        size: (padded_row * SIZE) as u64,
         usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
         mapped_at_creation: false,
     });
@@ -185,7 +190,7 @@ fn read_back(device: &wgpu::Device, queue: &wgpu::Queue, target: &wgpu::Texture)
             buffer: &staging,
             layout: wgpu::TexelCopyBufferLayout {
                 offset: 0,
-                bytes_per_row: Some(row_bytes),
+                bytes_per_row: Some(padded_row),
                 rows_per_image: Some(SIZE),
             },
         },
@@ -210,5 +215,11 @@ fn read_back(device: &wgpu::Device, queue: &wgpu::Queue, target: &wgpu::Texture)
     rx.recv().unwrap().unwrap();
 
     let mapped = staging.slice(..).get_mapped_range();
-    mapped.to_vec()
+    // Compact the padded rows back to tight `SIZE * 4`-byte rows.
+    let mut tight = Vec::with_capacity((row_bytes * SIZE) as usize);
+    for y in 0..SIZE {
+        let start = (y * padded_row) as usize;
+        tight.extend_from_slice(&mapped[start..start + row_bytes as usize]);
+    }
+    tight
 }

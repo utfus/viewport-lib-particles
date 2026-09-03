@@ -129,7 +129,7 @@ fn center_over_occluder(soft: bool) -> i32 {
     occluder.model = glam::Mat4::from_translation(glam::Vec3::new(0.0, 0.0, -0.05))
         .to_cols_array_2d();
     occluder.material.shading_model = ShadingModel::Pbr;
-    occluder.material.base_colour = [0.12, 0.12, 0.12];
+    occluder.material.base_colour = viewport_lib::Colour::linear_rgb(0.12, 0.12, 0.12);
 
     for _ in 0..2 {
         let mut frame = frame_looking_at_origin();

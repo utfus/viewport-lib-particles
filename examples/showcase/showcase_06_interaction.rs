@@ -75,8 +75,8 @@ pub fn lighting() -> LightingSettings {
         direction: [0.35, 0.25, 0.9],
     };
     ls.lights = vec![light];
-    ls.shadows_enabled = true;
-    ls.shadow_cascade_count = 3;
+    ls.shadows.enabled = true;
+    ls.shadows.cascade_count = 3;
     ls
 }
 

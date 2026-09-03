@@ -37,7 +37,7 @@ mod showcase_24_iridescent;
 mod viewport_callback;
 
 use eframe::egui;
-use viewport_lib::renderer::{EnvironmentMap, PickBackend, PickMask};
+use viewport_lib::renderer::{EnvironmentSettings, PickBackend, PickMask};
 use viewport_lib::{
     ButtonState, Camera, CameraFrame, FrameData, MeshId, OrbitCameraController, SceneFrame,
     ScrollUnits, ViewportContext, ViewportEvent, ViewportRenderer, primitives,
@@ -670,7 +670,7 @@ impl eframe::App for App {
                 // Render routes can toggle a skybox to show the alpha route
                 // compositing over it through the OIT pass.
                 if self.mode == ShowcaseMode::RenderRoutes && self.render_routes.skybox {
-                    frame_data.effects.environment = Some(EnvironmentMap {
+                    frame_data.effects.environment = Some(EnvironmentSettings {
                         show_skybox: true,
                         ..Default::default()
                     });

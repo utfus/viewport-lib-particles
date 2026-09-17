@@ -567,11 +567,11 @@ impl ItemTypePlugin for ParticlePlugin {
         }
     }
 
-    fn paint<'a>(
-        &'a self,
-        pass: &mut vwgpu::RenderPass<'a>,
-        _ctx: &PaintContext<'a>,
-        _items: &'a dyn PluginItemCollection,
+    fn paint(
+        &self,
+        pass: &mut vwgpu::RenderPass<'_>,
+        _ctx: &PaintContext<'_>,
+        _items: &dyn PluginItemCollection,
     ) {
         let (Some(bb_add), Some(mesh_add), Some(mesh_over), Some(trail_add), Some(trail_over)) = (
             self.draw_pipeline_additive.as_ref(),
@@ -643,11 +643,11 @@ impl ItemTypePlugin for ParticlePlugin {
         }
     }
 
-    fn paint_transparent<'a>(
-        &'a self,
-        pass: &mut vwgpu::RenderPass<'a>,
-        _ctx: &PaintContext<'a>,
-        _items: &'a dyn PluginItemCollection,
+    fn paint_transparent(
+        &self,
+        pass: &mut vwgpu::RenderPass<'_>,
+        _ctx: &PaintContext<'_>,
+        _items: &dyn PluginItemCollection,
     ) {
         let Some(oit) = self.draw_pipeline_oit.as_ref() else {
             return;
@@ -696,11 +696,11 @@ impl ItemTypePlugin for ParticlePlugin {
         })
     }
 
-    fn paint_depth_read<'a>(
-        &'a self,
-        pass: &mut vwgpu::RenderPass<'a>,
-        ctx: &DepthReadContext<'a>,
-        _items: &'a dyn PluginItemCollection,
+    fn paint_depth_read(
+        &self,
+        pass: &mut vwgpu::RenderPass<'_>,
+        ctx: &DepthReadContext<'_>,
+        _items: &dyn PluginItemCollection,
     ) {
         let (Some(soft_over), Some(soft_add)) = (
             self.soft_pipeline_over.as_ref(),
@@ -738,11 +738,11 @@ impl ItemTypePlugin for ParticlePlugin {
         }
     }
 
-    fn render_pick<'a>(
-        &'a self,
-        pass: &mut vwgpu::RenderPass<'a>,
-        _ctx: &PickPassContext<'a>,
-        _items: &'a dyn PluginItemCollection,
+    fn render_pick(
+        &self,
+        pass: &mut vwgpu::RenderPass<'_>,
+        _ctx: &PickPassContext<'_>,
+        _items: &dyn PluginItemCollection,
     ) {
         let Some(pipeline) = self.pick_pipeline.as_ref() else {
             return;
@@ -764,11 +764,11 @@ impl ItemTypePlugin for ParticlePlugin {
         }
     }
 
-    fn outline_mask<'a>(
-        &'a self,
-        pass: &mut vwgpu::RenderPass<'a>,
-        _ctx: &OutlineMaskContext<'a>,
-        _items: &'a dyn PluginItemCollection,
+    fn outline_mask(
+        &self,
+        pass: &mut vwgpu::RenderPass<'_>,
+        _ctx: &OutlineMaskContext<'_>,
+        _items: &dyn PluginItemCollection,
     ) {
         let Some(pipeline) = self.mask_pipeline.as_ref() else {
             return;
@@ -789,11 +789,11 @@ impl ItemTypePlugin for ParticlePlugin {
         }
     }
 
-    fn cast_shadow_pass<'a>(
-        &'a self,
-        pass: &mut vwgpu::RenderPass<'a>,
-        _ctx: &ShadowCastContext<'a>,
-        _items: &'a dyn PluginItemCollection,
+    fn cast_shadow_pass(
+        &self,
+        pass: &mut vwgpu::RenderPass<'_>,
+        _ctx: &ShadowCastContext<'_>,
+        _items: &dyn PluginItemCollection,
     ) {
         let Some(pipeline) = self.shadow_pipeline.as_ref() else {
             return;

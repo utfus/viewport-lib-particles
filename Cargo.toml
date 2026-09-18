@@ -13,7 +13,7 @@ keywords = ["3d", "particles", "vfx", "viewport", "viewport-lib"]
 categories = ["graphics", "rendering"]
 
 [dependencies]
-viewport-lib = { path = "../viewport-lib/crates/viewport-lib", version = "0.21" }
+viewport-lib = { path = "../viewport-lib/crates/viewport-lib", version = "0.22" }
 glam = { version = "=0.30.10", features = ["bytemuck"] }
 bytemuck = { version = "1", features = ["derive"] }
 wgpu = "27.0"

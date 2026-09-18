@@ -6,9 +6,7 @@ use viewport_lib::wgpu as vwgpu;
 
 use std::sync::{Arc, Mutex};
 
-use crate::effect::{
-    EffectAsset, EffectId, EventCondition, ParticleTextureId,
-};
+use crate::effect::{EffectAsset, EffectId, EventCondition, ParticleTextureId};
 
 use super::*;
 
@@ -299,6 +297,30 @@ pub(crate) enum EffectGpu {
 }
 
 impl EffectGpu {
+    /// GPU buffer bytes this effect's state holds. Bind groups are views over
+    /// these buffers, so counting the buffers counts everything once.
+    pub(crate) fn resident_bytes(&self) -> u64 {
+        match self {
+            EffectGpu::Fixed(g) => {
+                g.particle_buf.size() + g.emit_buf.size() + g.sim_buf.size() + g.budget_buf.size()
+            }
+            EffectGpu::Gen(g) => {
+                g.particle_buf.size()
+                    + g.params_buf.size()
+                    + g.props_buf.size()
+                    + g.budget_buf.size()
+            }
+        }
+    }
+
+    /// The effect's own gradient LUT, when it has one.
+    pub(crate) fn ramp_lut(&self) -> Option<&vwgpu::Texture> {
+        match self {
+            EffectGpu::Fixed(g) => g.ramp_lut.as_ref(),
+            EffectGpu::Gen(g) => g.ramp_lut.as_ref(),
+        }
+    }
+
     pub(crate) fn draw_bg(&self) -> &vwgpu::BindGroup {
         match self {
             EffectGpu::Fixed(g) => &g.draw_bg,

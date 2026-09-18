@@ -1,11 +1,11 @@
 use std::collections::HashMap;
 
+use viewport_lib::Frustum;
 use viewport_lib::plugin_api::{
-    DepthReadContext, ItemFrameContext, ItemTypePlugin, OutlineMaskContext,
-    PaintContext, PickPassContext, PluginItemCollection, ShadowCastContext, SharedBindings,
+    DepthReadContext, ItemFrameContext, ItemTypePlugin, OutlineMaskContext, PaintContext,
+    PickPassContext, PluginItemCollection, ShadowCastContext, SharedBindings,
 };
 use viewport_lib::wgpu as vwgpu;
-use viewport_lib::Frustum;
 
 use crate::effect::{
     EventCondition, ParticleBlend, ParticleRender, PropertyDecl, SimulationSpace, TimedBurst,
@@ -21,6 +21,55 @@ impl ItemTypePlugin for ParticlePlugin {
     fn init_gpu(&mut self, device: &vwgpu::Device, shared: &SharedBindings<'_>) {
         self.build_gpu(device, shared);
     }
+    /// Every GPU byte the plugin holds: per-instance particle, trail, sort and
+    /// stats buffers, the uploaded meshes and textures, the baked spawn-sample
+    /// pools, and the sub-emitter event buffers.
+    ///
+    /// A particle-heavy scene's working set is mostly this, and none of it was
+    /// visible to `ResidentBytes` before, so a host budgeting against
+    /// `total()` counted an effect library as free. The figure is what a host
+    /// needs to decide when to `remove_effect`.
+    fn resident_bytes(&self) -> u64 {
+        let instances: u64 = self
+            .instances
+            .values()
+            .map(|inst| {
+                let trail = inst
+                    .trail
+                    .as_ref()
+                    .map_or(0, |t| t.history_buf.size() + t.params_buf.size());
+                let sort = inst.sort.as_ref().map_or(0, |s| {
+                    s.keys_buf.size() + s.init_buf.size() + s.stage_buf.size()
+                });
+                let stats = inst.stats.as_ref().map_or(0, |s| {
+                    s.stats_buf.size()
+                        + s.params_buf.size()
+                        + s.ring.iter().map(|r| r.buf.size()).sum::<u64>()
+                });
+                let ramp = inst.gpu.ramp_lut().map_or(0, texture_bytes);
+                inst.gpu.resident_bytes() + trail + sort + stats + ramp + inst.pick_buf.size()
+            })
+            .sum();
+        let meshes: u64 = self
+            .meshes
+            .iter()
+            .map(|m| m.vertex_buf.size() + m.index_buf.size())
+            .sum();
+        let textures: u64 = self
+            .textures
+            .iter()
+            .map(|t| texture_bytes(&t.texture))
+            .sum();
+        let spawn_pools: u64 = self
+            .effects
+            .iter()
+            .filter_map(|e| e.spawn_samples.as_ref())
+            .map(|b| b.size())
+            .sum();
+        let sub_emitters: u64 = self.subemitters.values().map(|s| s.event_buf.size()).sum();
+        instances + meshes + textures + spawn_pools + sub_emitters
+    }
+
     fn prepare(
         &mut self,
         device: &vwgpu::Device,
@@ -102,8 +151,9 @@ impl ItemTypePlugin for ParticlePlugin {
         // a queue is available and before instances build their draw bind groups.
         self.drain_pending_textures(device, queue);
 
-        let (driven, parent_of) =
-            self.build_frame_plan(device, queue, ctx, items, dt, &emit_bgl, &sim_bgl, &draw_bgl);
+        let (driven, parent_of) = self.build_frame_plan(
+            device, queue, ctx, items, dt, &emit_bgl, &sim_bgl, &draw_bgl,
+        );
 
         // Reset every existing event buffer's append count to zero. Queue writes
         // apply before this frame's command buffer runs, so parents append from a
@@ -151,8 +201,17 @@ impl ItemTypePlugin for ParticlePlugin {
             // with the emitter; under `Global` it stays zero.
             let space_delta = match self.effects[idx].asset.sim_space {
                 SimulationSpace::Local => {
-                    let last = self.instances.get(&ikey).unwrap().last_origin.unwrap_or(origin);
-                    [origin[0] - last[0], origin[1] - last[1], origin[2] - last[2]]
+                    let last = self
+                        .instances
+                        .get(&ikey)
+                        .unwrap()
+                        .last_origin
+                        .unwrap_or(origin);
+                    [
+                        origin[0] - last[0],
+                        origin[1] - last[1],
+                        origin[2] - last[2],
+                    ]
                 }
                 SimulationSpace::Global => [0.0; 3],
             };
@@ -196,8 +255,8 @@ impl ItemTypePlugin for ParticlePlugin {
             // are exempt — their shared event buffer makes a mid-stream warmup
             // unsafe — and simply mark themselves warmed.
             if !self.instances.get(&ikey).unwrap().warmed {
-                let is_sub = self.effects[idx].asset.sub_emitter.is_some()
-                    || parent_of.contains_key(&idx);
+                let is_sub =
+                    self.effects[idx].asset.sub_emitter.is_some() || parent_of.contains_key(&idx);
                 if di.warmup > 0.0 && !is_sub {
                     self.prewarm_instance(
                         device,
@@ -231,7 +290,8 @@ impl ItemTypePlugin for ParticlePlugin {
                 inst.last_seen = ctx.frame_index;
                 let f = inst.sim_frame;
                 inst.sim_frame = inst.sim_frame.wrapping_add(1);
-                let mut count = next_spawn_count(&mut inst.spawn_accum, &mut inst.burst_done, rate, inst_dt);
+                let mut count =
+                    next_spawn_count(&mut inst.spawn_accum, &mut inst.burst_done, rate, inst_dt);
                 // Fire any timed burst whose time this instance has now reached,
                 // once each (tracked by a per-instance bitmask).
                 if !schedule.is_empty() {
@@ -264,7 +324,11 @@ impl ItemTypePlugin for ParticlePlugin {
             // Custom fragment hook (Phase 33): refresh the engine-reserved params
             // lane (lane 0 `.w` = time) each frame. The effect's own params sit in
             // later lanes, written once when the instance was built.
-            if let Some(cd) = self.instances.get(&ikey).and_then(|i| i.custom_draw.as_ref()) {
+            if let Some(cd) = self
+                .instances
+                .get(&ikey)
+                .and_then(|i| i.custom_draw.as_ref())
+            {
                 let lane0 = [0.0f32, 0.0, 0.0, time];
                 queue.write_buffer(&cd.params_buf, 0, bytemuck::bytes_of(&lane0));
             }
@@ -333,16 +397,16 @@ impl ItemTypePlugin for ParticlePlugin {
                     queue.write_buffer(&g.budget_buf, 0, bytemuck::bytes_of(&0u32));
                     // Pick the emit / sim pipelines and bind groups: sub-emit when
                     // consuming events, parent-sim when producing them.
-                    let (emit_pipe, emit_bg) = match (child_link.as_ref(), subemit_pipeline.as_ref())
-                    {
-                        (Some((bg, _)), Some(pipe)) => (pipe, bg),
-                        _ => (&emit_pipeline, &g.emit_bg),
-                    };
-                    let (sim_pipe, sim_bg) = match (parent_link.as_ref(), sim_parent_pipeline.as_ref())
-                    {
-                        (Some((bg, ..)), Some(pipe)) => (pipe, bg),
-                        _ => (&sim_pipeline, &g.sim_bg),
-                    };
+                    let (emit_pipe, emit_bg) =
+                        match (child_link.as_ref(), subemit_pipeline.as_ref()) {
+                            (Some((bg, _)), Some(pipe)) => (pipe, bg),
+                            _ => (&emit_pipeline, &g.emit_bg),
+                        };
+                    let (sim_pipe, sim_bg) =
+                        match (parent_link.as_ref(), sim_parent_pipeline.as_ref()) {
+                            (Some((bg, ..)), Some(pipe)) => (pipe, bg),
+                            _ => (&sim_pipeline, &g.sim_bg),
+                        };
                     dispatch_sim(&mut encoder, emit_pipe, emit_bg, sim_pipe, sim_bg, groups);
                 }
                 EffectGpu::Gen(g) => {
@@ -473,14 +537,13 @@ impl ItemTypePlugin for ParticlePlugin {
                                 // The copy was encoded on a previous frame and has
                                 // since been submitted, so mapping is safe now.
                                 let done = rb.done.clone();
-                                rb.buf.slice(..).map_async(
-                                    vwgpu::MapMode::Read,
-                                    move |res| {
+                                rb.buf
+                                    .slice(..)
+                                    .map_async(vwgpu::MapMode::Read, move |res| {
                                         if res.is_ok() {
                                             done.store(true, std::sync::atomic::Ordering::Release);
                                         }
-                                    },
-                                );
+                                    });
                                 rb.state = ReadbackState::Mapping;
                             }
                             _ => {}
@@ -1002,9 +1065,9 @@ impl ParticlePlugin {
                 }
                 let pos = glam::Vec3::from(di.origin);
                 let too_far = cull_dist_sq.is_some_and(|c| (pos - eye).length_squared() > c);
-                let off_screen = frustum
-                    .as_ref()
-                    .is_some_and(|f| f.cull_sphere(pos, effect_cull_radius(&self.effects[idx].asset)));
+                let off_screen = frustum.as_ref().is_some_and(|f| {
+                    f.cull_sphere(pos, effect_cull_radius(&self.effects[idx].asset))
+                });
                 if too_far || off_screen {
                     // Drop this instance's particles once per cull episode.
                     if let Some(inst) = self.instances.get_mut(&di.ikey) {
@@ -1196,4 +1259,22 @@ impl ParticlePlugin {
 
         self.instances.get_mut(&ikey).unwrap().warmed = true;
     }
+}
+
+/// GPU bytes one texture occupies, summed over its mip chain.
+///
+/// Assumes an uncompressed format, which every texture this crate creates is:
+/// `block_copy_size` is bytes per block, and for a block-compressed format that
+/// is not bytes per texel.
+fn texture_bytes(t: &vwgpu::Texture) -> u64 {
+    let bytes_per_texel = t.format().block_copy_size(None).unwrap_or(4) as u64;
+    let layers = t.depth_or_array_layers() as u64;
+    let (mut w, mut h) = (t.width() as u64, t.height() as u64);
+    let mut total = 0;
+    for _ in 0..t.mip_level_count() {
+        total += w.max(1) * h.max(1) * layers * bytes_per_texel;
+        w /= 2;
+        h /= 2;
+    }
+    total
 }

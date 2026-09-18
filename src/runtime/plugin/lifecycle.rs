@@ -82,12 +82,18 @@ impl ParticlePlugin {
     }
 
     /// A cheap, cloneable handle to this plugin's live particle-count stats.
-    /// Clone it out before installing the plugin with
-    /// [`ViewportRenderer::with_item_type_plugin`](viewport_lib::renderer::ViewportRenderer::with_item_type_plugin),
-    /// which takes ownership; the plugin updates the shared store inside its
-    /// `prepare`, so the handle keeps reporting after install. Enable the readback
-    /// per frame with [`ParticleItems::with_stats_readback`]. See
-    /// [`ParticleStatsHandle`].
+    ///
+    /// Cloning it out before installing the plugin is no longer the only way to
+    /// keep reading stats: `ViewportRenderer::item_type_plugin::<ParticlePlugin>`
+    /// borrows a registered plugin back as its concrete type, so a host that
+    /// wants stats occasionally can ask for them at the point of use instead of
+    /// holding a handle from startup. The handle is still the cheaper choice
+    /// when the host reads them every frame, or reads them from somewhere that
+    /// has no renderer to hand.
+    ///
+    /// Either way the plugin updates the shared store inside its `prepare`.
+    /// Enable the readback per frame with [`ParticleItems::with_stats_readback`].
+    /// See [`ParticleStatsHandle`].
     pub fn stats_handle(&self) -> ParticleStatsHandle {
         ParticleStatsHandle {
             inner: self.stats.clone(),
@@ -446,8 +452,16 @@ impl ParticlePlugin {
         } else {
             (0u32, 0.0)
         };
-        let screen_size = if is_billboard && screen_space_size { 1u32 } else { 0u32 };
-        let soft_dist = if is_billboard { soft.unwrap_or(0.0) } else { 0.0 };
+        let screen_size = if is_billboard && screen_space_size {
+            1u32
+        } else {
+            0u32
+        };
+        let soft_dist = if is_billboard {
+            soft.unwrap_or(0.0)
+        } else {
+            0.0
+        };
         let roll_rate = if is_billboard { rotation_rate } else { 0.0 };
         let dp = DrawParams {
             stretch,
@@ -1212,8 +1226,12 @@ impl ParticlePlugin {
             include_str!("../shaders/particle_modifiers.wgsl"),
             include_str!("../shaders/particle_sim_parent.wgsl")
         );
-        let sim_parent_pipeline =
-            compute(&sim_parent_src, "sim_main", "particle_sim_parent", &sim_parent_bgl);
+        let sim_parent_pipeline = compute(
+            &sim_parent_src,
+            "sim_main",
+            "particle_sim_parent",
+            &sim_parent_bgl,
+        );
 
         let append_pipeline = compute(
             include_str!("../shaders/particle_history.wgsl"),
@@ -1481,7 +1499,12 @@ impl ParticlePlugin {
         let soft_layout = vwgpu::pipeline_layout(
             device,
             "particle_soft_layout",
-            &[shared.group0_layout, &soft_draw_bgl, &ramp_bgl, &depth_read_bgl],
+            &[
+                shared.group0_layout,
+                &soft_draw_bgl,
+                &ramp_bgl,
+                &depth_read_bgl,
+            ],
         );
         let make_soft = |blend: vwgpu::BlendState, label: &str| {
             vwgpu::render_pipeline(
@@ -1822,7 +1845,9 @@ impl ParticlePlugin {
 
         let shadow_shader = device.create_shader_module(vwgpu::ShaderModuleDescriptor {
             label: Some("particle_shadow_shader"),
-            source: vwgpu::ShaderSource::Wgsl(include_str!("../shaders/particle_shadow.wgsl").into()),
+            source: vwgpu::ShaderSource::Wgsl(
+                include_str!("../shaders/particle_shadow.wgsl").into(),
+            ),
         });
         let shadow_layout = vwgpu::pipeline_layout(
             device,
@@ -1953,5 +1978,4 @@ impl ParticlePlugin {
         self.ramp_sampler = Some(ramp_sampler);
         self.default_spawn_samples = Some(build_default_spawn_samples(device));
     }
-
 }

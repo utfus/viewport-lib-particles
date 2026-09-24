@@ -31,9 +31,23 @@ impl ParticlePlugin {
 
     /// Register an effect, returning a handle to submit instances of it later.
     ///
-    /// Register every effect before handing the plugin to the renderer; the
-    /// renderer owns the plugin afterward. GPU buffers are allocated lazily the
-    /// first frame the effect is simulated.
+    /// Easiest before the plugin is handed to the renderer, which owns it
+    /// afterward. A host that needs to register one later borrows the plugin
+    /// back:
+    ///
+    /// ```ignore
+    /// let host = renderer
+    ///     .item_type_plugin_host::<ParticlePlugin>(ParticlePlugin::TYPE_NAME)
+    ///     .expect("the particle plugin is registered");
+    /// let id = host.plugin.add_effect(&device, asset);
+    /// ```
+    ///
+    /// Replacing and removing can go the same way, or ride the frame as a
+    /// queued command through [`ParticleItems::replace_effect`] and
+    /// [`ParticleItems::remove_effect`].
+    ///
+    /// GPU buffers are allocated lazily the first frame the effect is
+    /// simulated.
     pub fn add_effect(&mut self, device: &vwgpu::Device, asset: EffectAsset) -> EffectId {
         // Phase 22: bake a spawn-sample pool if the (fixed-function) emitter draws
         // its positions from an uploaded mesh's surface or vertices. Meshes must

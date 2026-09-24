@@ -79,8 +79,28 @@ impl ItemTypePlugin for ParticlePlugin {
     ) -> Vec<vwgpu::CommandBuffer> {
         self.draw_list.clear();
 
-        let Some(items) = items.downcast::<ParticleItems>() else {
+        // Two submission forms, read together. `ParticleItems` carries the frame's own
+        // settings (the time step, the culls, the budgets) as well as its instances; a plain
+        // `Vec<ParticleItem>` is the terse path, for a host that wants the defaults and
+        // submits through `frame.scene.items_mut::<ParticleItem>()`. Either may be absent.
+        let plain = items.of::<ParticleItem>();
+        let submitted = items.downcast::<ParticleItems>();
+        if submitted.is_none() && plain.is_empty() {
             return Vec::new();
+        }
+        // Borrowed where one form arrived on its own, which is the ordinary case; the merge
+        // costs a clone only when a host submits both in the same frame.
+        let merged;
+        let items: &ParticleItems = match submitted {
+            Some(collection) if plain.is_empty() => collection,
+            Some(collection) => {
+                merged = collection.clone().with_items(plain);
+                &merged
+            }
+            None => {
+                merged = ParticleItems::new().with_items(plain);
+                &merged
+            }
         };
         let (Some(emit_bgl), Some(sim_bgl), Some(draw_bgl)) = (
             self.emit_bgl.as_ref(),

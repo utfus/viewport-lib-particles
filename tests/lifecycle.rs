@@ -7,6 +7,8 @@
 //!   but with `max_sim_instances = 1` only one is simulated.
 //! - `burst_plays_then_retires`: a one-shot burst submitted a single frame lights
 //!   up, then self-retires (goes dark) without being resubmitted.
+//! - `a_plain_item_list_simulates_and_draws`: instances submitted as a bare
+//!   `Vec<ParticleItem>` through the typed accessor draw like a `ParticleItems` does.
 //!
 //! Skips cleanly when no GPU adapter is available.
 
@@ -296,4 +298,57 @@ fn read_back(device: &wgpu::Device, queue: &wgpu::Queue, target: &wgpu::Texture)
         tight.extend_from_slice(&mapped[start..start + row_bytes as usize]);
     }
     tight
+}
+
+#[test]
+fn a_plain_item_list_simulates_and_draws() {
+    let Some((device, queue)) = headless_device() else {
+        eprintln!("skipping: no GPU adapter available");
+        return;
+    };
+
+    // The terse submission form: a host with nothing to say about the frame's time step or
+    // its culls pushes instances straight onto the typed collection and never names the
+    // plugin's type string.
+    let mut renderer = ViewportRenderer::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
+    let mut plugin = ParticlePlugin::new();
+    let id = plugin.add_effect(
+        &device,
+        cloud_effect(SpawnRate::PerSecond(3_000.0), (2.0, 2.5)),
+    );
+    renderer.with_item_type_plugin(&device, Box::new(plugin));
+
+    let target = device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("particles-plain-target"),
+        size: wgpu::Extent3d {
+            width: SIZE,
+            height: SIZE,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: wgpu::TextureFormat::Rgba8UnormSrgb,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = target.create_view(&wgpu::TextureViewDescriptor::default());
+
+    for _ in 0..16 {
+        let mut frame = frame_looking_at_origin();
+        frame
+            .scene
+            .items_mut::<ParticleItem>()
+            .push(ParticleItem::new(id).at([0.0, 0.0, 0.0]));
+        let cmd = renderer.owned().render(&device, &queue, &view, &frame);
+        queue.submit(std::iter::once(cmd));
+    }
+
+    let pixels = read_back(&device, &queue, &target);
+    let luma = |i: usize| pixels[i] as i32 + pixels[i + 1] as i32 + pixels[i + 2] as i32;
+    let corner = luma(((SIZE + 1) * 4) as usize);
+    let lit = (0..(SIZE * SIZE) as usize)
+        .filter(|p| luma(p * 4) > corner + 60)
+        .count();
+    assert!(lit > 0, "the plain item list draws ({lit} lit)");
 }

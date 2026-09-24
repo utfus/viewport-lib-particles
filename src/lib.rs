@@ -52,10 +52,16 @@
 //! let effect = plugin.add_effect(&device, EffectAsset::default());
 //! renderer.with_item_type_plugin(&device, Box::new(plugin));
 //!
-//! // Each frame, submit live effect instances under the plugin's type name.
+//! // Each frame, submit live effect instances. `ParticleItems` carries the frame's own
+//! // settings -- the time step, the culls, the budgets -- alongside its instances.
 //! let mut items = ParticleItems::new().with_dt(dt);
 //! items.push(ParticleItem::new(effect).at([0.0, 0.0, 0.0]));
 //! frame.scene.submit_plugin_items(ParticlePlugin::TYPE_NAME, items);
+//!
+//! // Or, for a host with nothing to say about the frame, the terse form: push instances
+//! // onto the typed collection and never name the type string. Both forms may be
+//! // submitted in the same frame; their instances simulate together.
+//! frame.scene.items_mut::<ParticleItem>().push(ParticleItem::new(effect));
 //! ```
 
 mod authoring;

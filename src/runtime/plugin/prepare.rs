@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use viewport_lib::Frustum;
 use viewport_lib::plugin_api::{
     DepthReadContext, ItemFrameContext, ItemTypePlugin, OutlineMaskContext, PaintContext,
-    PickPassContext, PluginItemCollection, ShadowCastContext, SharedBindings,
+    ItemCollections, PickPassContext, ShadowCastContext, SharedBindings,
 };
 use viewport_lib::wgpu as vwgpu;
 
@@ -75,11 +75,11 @@ impl ItemTypePlugin for ParticlePlugin {
         device: &vwgpu::Device,
         queue: &vwgpu::Queue,
         ctx: &ItemFrameContext<'_>,
-        items: &dyn PluginItemCollection,
+        items: &ItemCollections<'_>,
     ) -> Vec<vwgpu::CommandBuffer> {
         self.draw_list.clear();
 
-        let Some(items) = items.as_any().downcast_ref::<ParticleItems>() else {
+        let Some(items) = items.downcast::<ParticleItems>() else {
             return Vec::new();
         };
         let (Some(emit_bgl), Some(sim_bgl), Some(draw_bgl)) = (
@@ -634,7 +634,7 @@ impl ItemTypePlugin for ParticlePlugin {
         &self,
         pass: &mut vwgpu::RenderPass<'_>,
         _ctx: &PaintContext<'_>,
-        _items: &dyn PluginItemCollection,
+        _items: &ItemCollections<'_>,
     ) {
         let (Some(bb_add), Some(mesh_add), Some(mesh_over), Some(trail_add), Some(trail_over)) = (
             self.draw_pipeline_additive.as_ref(),
@@ -710,7 +710,7 @@ impl ItemTypePlugin for ParticlePlugin {
         &self,
         pass: &mut vwgpu::RenderPass<'_>,
         _ctx: &PaintContext<'_>,
-        _items: &dyn PluginItemCollection,
+        _items: &ItemCollections<'_>,
     ) {
         let Some(oit) = self.draw_pipeline_oit.as_ref() else {
             return;
@@ -763,7 +763,7 @@ impl ItemTypePlugin for ParticlePlugin {
         &self,
         pass: &mut vwgpu::RenderPass<'_>,
         ctx: &DepthReadContext<'_>,
-        _items: &dyn PluginItemCollection,
+        _items: &ItemCollections<'_>,
     ) {
         let (Some(soft_over), Some(soft_add)) = (
             self.soft_pipeline_over.as_ref(),
@@ -805,7 +805,7 @@ impl ItemTypePlugin for ParticlePlugin {
         &self,
         pass: &mut vwgpu::RenderPass<'_>,
         _ctx: &PickPassContext<'_>,
-        _items: &dyn PluginItemCollection,
+        _items: &ItemCollections<'_>,
     ) {
         let Some(pipeline) = self.pick_pipeline.as_ref() else {
             return;
@@ -831,7 +831,7 @@ impl ItemTypePlugin for ParticlePlugin {
         &self,
         pass: &mut vwgpu::RenderPass<'_>,
         _ctx: &OutlineMaskContext<'_>,
-        _items: &dyn PluginItemCollection,
+        _items: &ItemCollections<'_>,
     ) {
         let Some(pipeline) = self.mask_pipeline.as_ref() else {
             return;
@@ -856,7 +856,7 @@ impl ItemTypePlugin for ParticlePlugin {
         &self,
         pass: &mut vwgpu::RenderPass<'_>,
         _ctx: &ShadowCastContext<'_>,
-        _items: &dyn PluginItemCollection,
+        _items: &ItemCollections<'_>,
     ) {
         let Some(pipeline) = self.shadow_pipeline.as_ref() else {
             return;

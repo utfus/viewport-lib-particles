@@ -39,8 +39,9 @@ mod viewport_callback;
 use eframe::egui;
 use viewport_lib::renderer::{EnvironmentSettings, PickBackend, PickMask};
 use viewport_lib::{
-    ButtonState, Camera, CameraFrame, FrameData, MeshId, OrbitCameraController, SceneFrame,
-    ScrollUnits, ViewportContext, ViewportEvent, ViewportRenderer, primitives,
+    BindingPreset, ButtonState, Camera, CameraFrame, FrameData, MeshId, OrbitCameraController,
+    SceneFrame, ScrollUnits, ViewportContext, ViewportEvent, ViewportInput, ViewportRenderer,
+    primitives,
 };
 use viewport_lib_particles::{EffectId, ParticlePlugin};
 
@@ -281,7 +282,8 @@ fn main() -> eframe::Result {
                         * glam::Quat::from_rotation_x(1.1),
                     ..Camera::default()
                 },
-                controller: OrbitCameraController::viewport_primitives(),
+                controller: OrbitCameraController::new_stateless(),
+                input: ViewportInput::from_preset(BindingPreset::Viewer),
                 mode: ShowcaseMode::Emitters,
                 emitter_ids,
                 expression_ids,
@@ -343,7 +345,11 @@ fn main() -> eframe::Result {
 
 struct App {
     camera: Camera,
+    /// Turns the camera from a frame of resolved actions. The control scheme lives on
+    /// `input`, so there is one answer to what a drag means.
     controller: OrbitCameraController,
+    /// The frame's events, and the scheme that reads them.
+    input: ViewportInput,
     mode: ShowcaseMode,
     /// Registered effects, aligned with each showcase's `presets()`.
     emitter_ids: Vec<EffectId>,
@@ -507,14 +513,19 @@ impl eframe::App for App {
                     ui.allocate_exact_size(ui.available_size(), egui::Sense::click_and_drag());
                 let (w, h) = (rect.width(), rect.height());
 
-                self.controller.begin_frame(ViewportContext {
+                // The size stays on the controller, which needs it to turn a pan in pixels
+                // into one in world units; the events go to the input, which owns the
+                // scheme that reads them.
+                self.controller.set_viewport_size([w, h]);
+                self.input.begin_frame(ViewportContext {
                     hovered: response.hovered(),
                     focused: response.has_focus(),
                     viewport_size: [w, h],
                 });
                 self.feed_input(ui, rect);
 
-                self.controller.apply_to_camera(&mut self.camera);
+                let actions = self.input.resolve();
+                self.controller.apply(&mut self.camera, &actions);
                 self.camera.set_aspect_ratio(w, h);
 
                 let dt = ctx.input(|i| i.stable_dt).min(1.0 / 30.0);
@@ -738,7 +749,7 @@ impl App {
     /// controller.
     fn feed_input(&mut self, ui: &egui::Ui, rect: egui::Rect) {
         ui.input(|i| {
-            self.controller
+            self.input
                 .push_event(ViewportEvent::ModifiersChanged(viewport_lib::Modifiers {
                     alt: i.modifiers.alt,
                     shift: i.modifiers.shift,
@@ -747,7 +758,7 @@ impl App {
 
             if let Some(p) = i.pointer.interact_pos() {
                 let local = glam::Vec2::new(p.x - rect.left(), p.y - rect.top());
-                self.controller
+                self.input
                     .push_event(ViewportEvent::PointerMoved { position: local });
             }
 
@@ -762,7 +773,7 @@ impl App {
                             egui::PointerButton::Middle => viewport_lib::MouseButton::Middle,
                             _ => continue,
                         };
-                        self.controller.push_event(ViewportEvent::MouseButton {
+                        self.input.push_event(ViewportEvent::MouseButton {
                             button: vp_button,
                             state: if *pressed {
                                 ButtonState::Pressed
@@ -777,7 +788,7 @@ impl App {
                             egui::MouseWheelUnit::Point => ScrollUnits::Pixels,
                             egui::MouseWheelUnit::Page => ScrollUnits::Pages,
                         };
-                        self.controller.push_event(ViewportEvent::Wheel {
+                        self.input.push_event(ViewportEvent::Wheel {
                             delta: glam::Vec2::new(delta.x, delta.y),
                             units,
                         });

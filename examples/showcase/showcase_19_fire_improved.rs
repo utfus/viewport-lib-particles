@@ -147,7 +147,7 @@ pub fn ground_item(mesh: viewport_lib::MeshId) -> SceneRenderItem {
     item.mesh_id = mesh;
     item.model =
         glam::Mat4::from_translation(glam::Vec3::new(0.0, 0.0, -0.25)).to_cols_array_2d();
-    item.material = Material::from_colour([0.14, 0.09, 0.05]); // dark brown dirt
+    item.material = Material::from_colour(viewport_lib::Colour::srgb_rgb(0.14, 0.09, 0.05)); // dark brown dirt
     item.material.shading_model = ShadingModel::Pbr;
     item.material.roughness = 0.98;
     item
@@ -158,7 +158,7 @@ pub fn logs_item(mesh: viewport_lib::MeshId) -> SceneRenderItem {
     let mut item = SceneRenderItem::default();
     item.mesh_id = mesh;
     item.model = glam::Mat4::IDENTITY.to_cols_array_2d();
-    item.material = Material::from_colour([0.09, 0.06, 0.04]);
+    item.material = Material::from_colour(viewport_lib::Colour::srgb_rgb(0.09, 0.06, 0.04));
     item.material.shading_model = ShadingModel::Pbr;
     item.material.roughness = 0.95;
     item

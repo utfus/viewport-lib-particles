@@ -53,7 +53,7 @@ fn frame_looking_at_origin() -> FrameData {
     // Turn on the selection outline in a distinct red so it is separable from the
     // blue particles.
     frame.interaction.outline_selected = true;
-    frame.interaction.outline_colour = [1.0, 0.0, 0.0, 1.0].into();
+    frame.interaction.outline_colour = viewport_lib::Colour::srgb(1.0, 0.0, 0.0, 1.0);
     frame.interaction.outline_width_px = 4.0;
     frame
 }

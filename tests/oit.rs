@@ -12,8 +12,9 @@
 
 use viewport_lib::Camera;
 use viewport_lib::renderer::{
-    EnvironmentSettings, FrameData, RenderCamera, SurfaceSubmission, ViewportRenderer,
+    EnvironmentLighting, FrameData, RenderCamera, SurfaceSubmission, ViewportRenderer,
 };
+use viewport_lib::{EnvironmentOptions, TextureData};
 use viewport_lib::wgpu;
 
 use viewport_lib_particles::{
@@ -39,7 +40,7 @@ fn headless_device() -> Option<(wgpu::Device, wgpu::Queue)> {
     Some((device, queue))
 }
 
-fn frame_looking_at_origin() -> FrameData {
+fn frame_looking_at_origin(sky: viewport_lib::EnvironmentMapId) -> FrameData {
     let cam = Camera::default();
     let mut frame = FrameData::default();
     let mut render_camera = RenderCamera::from_camera(&cam);
@@ -52,10 +53,7 @@ fn frame_looking_at_origin() -> FrameData {
     frame.viewport.show_axes_indicator = false;
     frame.scene.surfaces = SurfaceSubmission::Flat(vec![].into());
     // Render the uploaded environment as a visible skybox background.
-    frame.effects.environment = Some(EnvironmentSettings {
-        show_skybox: true,
-        ..Default::default()
-    });
+    frame.effects.environment = Some(EnvironmentLighting::new(sky));
     frame
 }
 
@@ -99,8 +97,13 @@ fn render(blend: ParticleBlend) -> Option<Readout> {
     for _ in 0..(env_w * env_h) {
         env.extend_from_slice(&[1.5, 0.02, 0.02, 1.0]);
     }
-    renderer
-        .upload_environment_map(&device, &queue, &env, env_w, env_h)
+    let sky = renderer
+        .upload_environment(
+            &device,
+            &queue,
+            TextureData::hdr(env_w, env_h, env),
+            EnvironmentOptions::default(),
+        )
         .expect("upload env map");
 
     let mut plugin = ParticlePlugin::new();
@@ -124,7 +127,7 @@ fn render(blend: ParticleBlend) -> Option<Readout> {
     let view = target.create_view(&wgpu::TextureViewDescriptor::default());
 
     for _ in 0..6 {
-        let mut frame = frame_looking_at_origin();
+        let mut frame = frame_looking_at_origin(sky);
         let mut items = ParticleItems::new().with_dt(1.0 / 60.0);
         items.push(ParticleItem::new(id).at([0.0, 0.0, 0.0]));
         frame

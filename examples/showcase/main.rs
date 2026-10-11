@@ -37,7 +37,8 @@ mod showcase_24_iridescent;
 mod viewport_callback;
 
 use eframe::egui;
-use viewport_lib::renderer::{EnvironmentSettings, PickBackend, PickMask};
+use viewport_lib::renderer::{EnvironmentLighting, PickBackend, PickMask};
+use viewport_lib::{EnvironmentMapId, EnvironmentOptions, TextureData};
 use viewport_lib::{
     BindingPreset, ButtonState, Camera, CameraFrame, FrameData, MeshId, OrbitCameraController,
     SceneFrame, ScrollUnits, ViewportContext, ViewportEvent, ViewportInput, ViewportRenderer,
@@ -171,8 +172,13 @@ fn main() -> eframe::Result {
             // Environment map for the Render routes skybox toggle: a simple sky
             // gradient the alpha route can be shown compositing over via OIT.
             let (sky, sky_w, sky_h) = showcase_04_render_routes::skybox_pixels();
-            renderer
-                .upload_environment_map(device, queue, &sky, sky_w, sky_h)
+            let sky_env = renderer
+                .upload_environment(
+                    device,
+                    queue,
+                    TextureData::hdr(sky_w, sky_h, sky),
+                    EnvironmentOptions::default(),
+                )
                 .expect("skybox env map");
 
             // Register the plugin and its preset effects. Effects must be added
@@ -276,6 +282,7 @@ fn main() -> eframe::Result {
             drop(writer);
 
             Ok(Box::new(App {
+                sky_env,
                 camera: Camera {
                     distance: 10.0,
                     orientation: glam::Quat::from_rotation_z(0.6)
@@ -344,6 +351,7 @@ fn main() -> eframe::Result {
 // ---------------------------------------------------------------------------
 
 struct App {
+    sky_env: EnvironmentMapId,
     camera: Camera,
     /// Turns the camera from a frame of resolved actions. The control scheme lives on
     /// `input`, so there is one answer to what a drag means.
@@ -681,10 +689,7 @@ impl eframe::App for App {
                 // Render routes can toggle a skybox to show the alpha route
                 // compositing over it through the OIT pass.
                 if self.mode == ShowcaseMode::RenderRoutes && self.render_routes.skybox {
-                    frame_data.effects.environment = Some(EnvironmentSettings {
-                        show_skybox: true,
-                        ..Default::default()
-                    });
+                    frame_data.effects.environment = Some(EnvironmentLighting::new(self.sky_env));
                 }
 
                 // Soft particles / improved fire: light the geometry they fade into.

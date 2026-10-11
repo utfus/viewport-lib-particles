@@ -61,7 +61,7 @@ pub fn ground_item(mesh: MeshId) -> SceneRenderItem {
     ground.mesh_id = mesh;
     ground.model =
         glam::Mat4::from_translation(glam::Vec3::new(0.0, 0.0, -0.25)).to_cols_array_2d();
-    ground.material = Material::from_colour([0.82, 0.80, 0.74]);
+    ground.material = Material::from_colour(viewport_lib::Colour::srgb_rgb(0.82, 0.80, 0.74));
     ground.material.roughness = 0.9;
     ground.material.backface_policy = BackfacePolicy::Cull;
     ground

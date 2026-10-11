@@ -7,19 +7,18 @@
 //! [`build`] (GPU-resource and uniform builders).
 
 mod build;
-mod items;
 mod lifecycle;
 mod prepare;
 mod shade;
 mod types;
 
-pub use items::{ParticleItem, ParticleItems};
+pub(crate) use crate::items::{ParticleItem, ParticleItems};
 pub use types::{ParticlePlugin, ParticleStats, ParticleStatsHandle};
 
 // Crate-internal re-exports so the submodules reach each other's items through
 // `use super::*`.
 pub(crate) use build::*;
-pub(crate) use items::EffectCommand;
+pub(crate) use crate::items::EffectCommand;
 pub(crate) use shade::*;
 pub(crate) use types::*;
 
@@ -79,12 +78,4 @@ pub(crate) const IDLE_RETIRE_FRAMES: u64 = 120;
 /// one-time cost even when many instances activate on the same frame.
 pub(crate) const MAX_PREWARM_STEPS: u32 = 120;
 
-/// Fixed number of texture slots a custom fragment hook (Phase 33 / issue 018)
-/// can bind. The group-3 hook layout always declares this many (unused slots bind
-/// the shared 1x1 white default), so every hooked billboard pipeline shares one
-/// layout and pipelines cache purely by composed-source hash.
-pub(crate) const HOOK_TEXTURES: usize = 4;
-
-/// Number of `vec4` lanes in a fragment hook's params uniform. Lane 0 is engine-
-/// reserved (`.w` carries `time`); lanes 1.. are the effect's own params.
-pub(crate) const HOOK_PARAM_LANES: usize = 8;
+pub(crate) use crate::effect::{HOOK_PARAM_LANES, HOOK_TEXTURES};

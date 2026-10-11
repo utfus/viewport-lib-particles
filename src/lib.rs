@@ -42,6 +42,13 @@
 //! into geometry as soft particles (`tests/soft_particles.rs`). See
 //! `docs/plans/particle-system-plan.md` for the phased build-out.
 //!
+//! The plugins, their pipelines and their shaders sit behind the `gpu`
+//! feature, which is on by default. With `default-features = false` the crate
+//! builds only the authoring half and the item types ([`EffectAsset`], the
+//! expression IR, [`ParticleItem`], [`ParticleItems`]) against
+//! viewport-lib-types, with neither viewport-lib nor wgpu in the tree, for an
+//! editor or an asset pipeline that builds effects without drawing them.
+//!
 //! Typical setup:
 //!
 //! ```ignore
@@ -64,13 +71,23 @@
 //! frame.scene.items_mut::<ParticleItem>().push(ParticleItem::new(effect));
 //! ```
 
+// The authoring helpers the runtime calls (gradient sampling, expression graph
+// walks, the effect command payloads) have no caller without it.
+#![cfg_attr(not(feature = "gpu"), allow(dead_code))]
+
 mod authoring;
+mod items;
+#[cfg(feature = "gpu")]
 mod runtime;
 
 // The crate is grouped into an `authoring` half (CPU model + compiler) and a
-// `runtime` half (the GPU plugins). Re-export their submodules at the crate root
-// so intra-crate paths stay `crate::effect`, `crate::plugin`, etc.
-pub(crate) use authoring::{codegen, effect, expr, registry};
+// `runtime` half (the GPU plugins, behind the `gpu` feature). Re-export their
+// submodules at the crate root so intra-crate paths stay `crate::effect`,
+// `crate::plugin`, etc.
+pub(crate) use authoring::{effect, expr, registry};
+#[cfg(feature = "gpu")]
+pub(crate) use authoring::codegen;
+#[cfg(feature = "gpu")]
 pub(crate) use runtime::{plugin, refraction};
 
 pub use effect::{
@@ -84,9 +101,10 @@ pub use expr::{
     BinaryOp, Component, Expr, ExprHandle, Module, TernaryOp, TypeEnv, TypeError, UnaryOp,
     ValueType,
 };
-pub use plugin::{
-    ParticleItem, ParticleItems, ParticlePlugin, ParticleStats, ParticleStatsHandle,
-};
+pub use items::{ParticleItem, ParticleItems};
+#[cfg(feature = "gpu")]
+pub use plugin::{ParticlePlugin, ParticleStats, ParticleStatsHandle};
+#[cfg(feature = "gpu")]
 pub use refraction::RefractionPlugin;
 pub use registry::ModifierRegistry;
 
@@ -98,6 +116,7 @@ pub use registry::ModifierRegistry;
 /// not a runtime mismatch.
 pub const VIEWPORT_LIB_WGSL_VERSION: u32 = 6;
 
+#[cfg(feature = "gpu")]
 const _: () = assert!(
     viewport_lib::plugin_api::shared_wgsl::WGSL_VERSION == VIEWPORT_LIB_WGSL_VERSION,
     "viewport-lib catalogue version drifted; update VIEWPORT_LIB_WGSL_VERSION and review the particle shaders",

@@ -1,5 +1,15 @@
 use super::*;
 
+/// Fixed number of texture slots a custom fragment hook can bind. The group-3
+/// hook layout always declares this many (unused slots bind the shared 1x1
+/// white default), so every hooked billboard pipeline shares one layout and
+/// pipelines cache purely by composed-source hash.
+pub(crate) const HOOK_TEXTURES: usize = 4;
+
+/// Number of `vec4` lanes in a fragment hook's params uniform. Lane 0 is engine-
+/// reserved (`.w` carries `time`); lanes 1.. are the effect's own params.
+pub(crate) const HOOK_PARAM_LANES: usize = 8;
+
 /// An effect's texture carried as CPU pixels on the asset (issue 017), for hosts
 /// that cannot call [`ParticlePlugin::upload_texture`](crate::ParticlePlugin) —
 /// they hold no `device`/`queue` and no plugin handle after the renderer takes
@@ -107,19 +117,19 @@ impl FragmentHook {
             return Err("hook body must define `fn shade_particle(f: ParticleFragment) -> vec4<f32>`"
                 .to_string());
         }
-        if self.textures.len() > crate::plugin::HOOK_TEXTURES {
+        if self.textures.len() > HOOK_TEXTURES {
             return Err(format!(
                 "hook has {} textures, max {}",
                 self.textures.len(),
-                crate::plugin::HOOK_TEXTURES
+                HOOK_TEXTURES
             ));
         }
         // Lane 0 is engine-reserved, so effect params occupy lanes 1..LANES.
-        if self.params.len() > crate::plugin::HOOK_PARAM_LANES - 1 {
+        if self.params.len() > HOOK_PARAM_LANES - 1 {
             return Err(format!(
                 "hook has {} param lanes, max {}",
                 self.params.len(),
-                crate::plugin::HOOK_PARAM_LANES - 1
+                HOOK_PARAM_LANES - 1
             ));
         }
         Ok(())

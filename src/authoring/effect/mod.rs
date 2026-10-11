@@ -7,6 +7,8 @@ mod program;
 mod render;
 
 pub use asset::{EffectAsset, EventCondition, FragmentHook, InlineTexture, SubEmitter};
+#[cfg(feature = "gpu")]
+pub(crate) use asset::{HOOK_PARAM_LANES, HOOK_TEXTURES};
 pub use emitter::{
     Emitter, ForceModifier, Modifier, SpawnRate, SpawnShape, TimedBurst, VelocityDist,
 };

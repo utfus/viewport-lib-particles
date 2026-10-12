@@ -533,7 +533,8 @@ impl eframe::App for App {
                 self.feed_input(ui, rect);
 
                 let actions = self.input.resolve();
-                self.controller.apply(&mut self.camera, &actions);
+                self.controller
+                    .apply(&mut self.camera, &actions, ctx.input(|i| i.stable_dt));
                 self.camera.set_aspect_ratio(w, h);
 
                 let dt = ctx.input(|i| i.stable_dt).min(1.0 / 30.0);

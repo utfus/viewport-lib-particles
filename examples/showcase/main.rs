@@ -37,12 +37,12 @@ mod showcase_24_iridescent;
 
 use eframe::{egui, egui_wgpu, wgpu};
 use viewport_lib::renderer::{EnvironmentLighting, PickBackend, PickMask};
-use viewport_lib::{EnvironmentMapId, EnvironmentOptions, TextureData};
 use viewport_lib::{
-    BindingPreset, ButtonState, Camera, CameraFrame, Colour, FrameData, MeshId,
+    BindingPreset, ButtonState, Camera, CameraFrame, Colour, FrameData, MaterialId, MeshId,
     OffscreenViewportTarget, OrbitCameraController, SceneFrame, ScrollUnits, ViewportContext,
     ViewportEvent, ViewportInput, ViewportRenderer, primitives,
 };
+use viewport_lib::{EnvironmentMapId, EnvironmentOptions, TextureData};
 use viewport_lib_particles::{EffectId, ParticlePlugin};
 
 const BG_COLOUR: egui::Color32 = egui::Color32::from_rgb(18, 18, 22);
@@ -272,6 +272,12 @@ fn main() -> eframe::Result {
                 .upload_mesh_data(device, &showcase_19_fire_improved::logs_mesh_data())
                 .expect("fire logs mesh");
 
+            let ground_material =
+                showcase_06_interaction::ground_material(renderer.resources_mut());
+            let dirt_material =
+                showcase_19_fire_improved::ground_material(renderer.resources_mut());
+            let logs_material = showcase_19_fire_improved::logs_material(renderer.resources_mut());
+
             let mut writer = rs.renderer.write();
             writer.callback_resources.insert(renderer);
             // The refraction showcase drives a GpuPlugin directly; its GPU
@@ -308,6 +314,9 @@ fn main() -> eframe::Result {
                 refraction: showcase_05_refraction::State::default(),
                 interaction_id,
                 ground_mesh,
+                ground_material,
+                dirt_material,
+                logs_material,
                 interaction: showcase_06_interaction::State::default(),
                 textures: showcase_07_textures::State::default(),
                 turbulence: showcase_08_turbulence::State::default(),
@@ -376,6 +385,9 @@ struct App {
     refraction: showcase_05_refraction::State,
     interaction_id: EffectId,
     ground_mesh: MeshId,
+    ground_material: MaterialId,
+    dirt_material: MaterialId,
+    logs_material: MaterialId,
     interaction: showcase_06_interaction::State,
     textures: showcase_07_textures::State,
     turbulence: showcase_08_turbulence::State,
@@ -486,41 +498,29 @@ impl eframe::App for App {
                 ShowcaseMode::SubEmitters => {
                     showcase_09_subemitters::controls(&mut self.subemitters, ui)
                 }
-                ShowcaseMode::SimSpace => {
-                    showcase_10_simspace::controls(&mut self.simspace, ui)
-                }
+                ShowcaseMode::SimSpace => showcase_10_simspace::controls(&mut self.simspace, ui),
                 ShowcaseMode::Serialization => {
                     showcase_11_serialization::controls(&mut self.serialization, ui)
                 }
-                ShowcaseMode::Instances => {
-                    showcase_12_instances::controls(&mut self.instances, ui)
-                }
-                ShowcaseMode::Bursts => {
-                    showcase_13_bursts::controls(&mut self.bursts, ui)
-                }
-                ShowcaseMode::Lifecycle => {
-                    showcase_14_lifecycle::controls(&mut self.lifecycle, ui)
-                }
+                ShowcaseMode::Instances => showcase_12_instances::controls(&mut self.instances, ui),
+                ShowcaseMode::Bursts => showcase_13_bursts::controls(&mut self.bursts, ui),
+                ShowcaseMode::Lifecycle => showcase_14_lifecycle::controls(&mut self.lifecycle, ui),
                 ShowcaseMode::Fire => showcase_15_fire::controls(&mut self.fire, ui),
-                ShowcaseMode::Rendering => {
-                    showcase_16_rendering::controls(&mut self.rendering, ui)
-                }
-                ShowcaseMode::MeshSpawn => {
-                    showcase_17_meshspawn::controls(&mut self.meshspawn, ui)
-                }
+                ShowcaseMode::Rendering => showcase_16_rendering::controls(&mut self.rendering, ui),
+                ShowcaseMode::MeshSpawn => showcase_17_meshspawn::controls(&mut self.meshspawn, ui),
                 ShowcaseMode::Soft => showcase_18_soft::controls(&mut self.soft, ui),
                 ShowcaseMode::FireImproved => {
                     showcase_19_fire_improved::controls(&mut self.fire2, ui)
                 }
-                ShowcaseMode::Rotation => {
-                    showcase_20_rotation::controls(&mut self.rotation, ui)
-                }
+                ShowcaseMode::Rotation => showcase_20_rotation::controls(&mut self.rotation, ui),
                 ShowcaseMode::TimedBursts => {
                     showcase_21_timedbursts::controls(&mut self.timedbursts, ui)
                 }
                 ShowcaseMode::Forces => showcase_22_forces::controls(&mut self.forces, ui),
                 ShowcaseMode::ExprOps => showcase_23_exprops::controls(&mut self.exprops, ui),
-                ShowcaseMode::Iridescence => showcase_24_iridescent::controls(&mut self.iridescent, ui),
+                ShowcaseMode::Iridescence => {
+                    showcase_24_iridescent::controls(&mut self.iridescent, ui)
+                }
             });
 
         // ---- Central panel: viewport ----
@@ -599,11 +599,20 @@ impl eframe::App for App {
                 // improved fire adds its crossed logs.
                 let surfaces = match self.mode {
                     ShowcaseMode::Soft => {
-                        vec![showcase_06_interaction::ground_item(self.ground_mesh)]
+                        vec![showcase_06_interaction::ground_item(
+                            self.ground_mesh,
+                            self.ground_material,
+                        )]
                     }
                     ShowcaseMode::FireImproved => vec![
-                        showcase_19_fire_improved::ground_item(self.ground_mesh),
-                        showcase_19_fire_improved::logs_item(self.fire2_logs_mesh),
+                        showcase_19_fire_improved::ground_item(
+                            self.ground_mesh,
+                            self.dirt_material,
+                        ),
+                        showcase_19_fire_improved::logs_item(
+                            self.fire2_logs_mesh,
+                            self.logs_material,
+                        ),
                     ],
                     _ => Vec::new(),
                 };
@@ -659,9 +668,7 @@ impl eframe::App for App {
                     ShowcaseMode::MeshSpawn => {
                         showcase_17_meshspawn::items(&self.meshspawn_ids, &self.meshspawn, dt)
                     }
-                    ShowcaseMode::Soft => {
-                        showcase_18_soft::items(&self.soft_ids, &self.soft, dt)
-                    }
+                    ShowcaseMode::Soft => showcase_18_soft::items(&self.soft_ids, &self.soft, dt),
                     ShowcaseMode::FireImproved => {
                         showcase_19_fire_improved::items(&self.fire2_ids, &self.fire2, dt)
                     }
@@ -670,11 +677,7 @@ impl eframe::App for App {
                     }
                     ShowcaseMode::TimedBursts => {
                         self.timedbursts.t += dt;
-                        showcase_21_timedbursts::items(
-                            &self.timedbursts_ids,
-                            &self.timedbursts,
-                            dt,
-                        )
+                        showcase_21_timedbursts::items(&self.timedbursts_ids, &self.timedbursts, dt)
                     }
                     ShowcaseMode::Forces => {
                         showcase_22_forces::items(&self.forces_ids, &self.forces, dt)
@@ -806,7 +809,7 @@ impl App {
     /// Build the Interaction mode's frame: the ground plane, the directional
     /// light, and the particle system tagged with its pick id / selection.
     fn interaction_frame(&self, size: [f32; 2], ppp: f32, dt: f32) -> FrameData {
-        let ground = showcase_06_interaction::ground_item(self.ground_mesh);
+        let ground = showcase_06_interaction::ground_item(self.ground_mesh, self.ground_material);
         let mut scene = SceneFrame::from_surface_items(vec![ground]);
         let items = showcase_06_interaction::items(self.interaction_id, &self.interaction, dt);
         scene.submit_plugin_items(ParticlePlugin::TYPE_NAME, items);

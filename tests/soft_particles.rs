@@ -124,12 +124,16 @@ fn center_over_occluder(soft: bool) -> i32 {
 
     // Opaque quad just behind the particle plane (farther from the +Z camera), a
     // stable dark baseline present in both runs so its colour cancels out.
-    let mut occluder = SceneRenderItem::default();
-    occluder.mesh_id = mesh_id;
+    let mut occluder_material = viewport_lib::Material::default();
+    occluder_material.shading_model = ShadingModel::Pbr;
+    occluder_material.base_colour = viewport_lib::Colour::linear_rgb(0.12, 0.12, 0.12);
+    let occluder_material = renderer
+        .resources_mut()
+        .upload_material(occluder_material)
+        .expect("upload occluder material");
+    let mut occluder = SceneRenderItem::new(mesh_id, occluder_material);
     occluder.model = glam::Mat4::from_translation(glam::Vec3::new(0.0, 0.0, -0.05))
         .to_cols_array_2d();
-    occluder.material.shading_model = ShadingModel::Pbr;
-    occluder.material.base_colour = viewport_lib::Colour::linear_rgb(0.12, 0.12, 0.12);
 
     for _ in 0..2 {
         let mut frame = frame_looking_at_origin();

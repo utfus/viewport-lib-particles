@@ -9,7 +9,8 @@
 use eframe::egui;
 use viewport_lib::renderer::PickId;
 use viewport_lib::{
-    BackfacePolicy, LightKind, LightSource, LightingSettings, Material, MeshId, SceneRenderItem,
+    BackfacePolicy, DeviceResources, LightKind, LightSource, LightingSettings, Material,
+    MaterialId, MeshId, SceneRenderItem,
 };
 use viewport_lib_particles::{
     EffectAsset, EffectId, Emitter, ForceModifier, Gradient, ParticleBlend, ParticleItem,
@@ -56,15 +57,19 @@ pub fn presets() -> Vec<(&'static str, EffectAsset)> {
 }
 
 /// A ground plane (a wide flat cuboid) with its top surface at z = 0.
-pub fn ground_item(mesh: MeshId) -> SceneRenderItem {
-    let mut ground = SceneRenderItem::default();
-    ground.mesh_id = mesh;
+pub fn ground_item(mesh: MeshId, material: MaterialId) -> SceneRenderItem {
+    let mut ground = SceneRenderItem::new(mesh, material);
     ground.model =
         glam::Mat4::from_translation(glam::Vec3::new(0.0, 0.0, -0.25)).to_cols_array_2d();
-    ground.material = Material::from_colour(viewport_lib::Colour::srgb_rgb(0.82, 0.80, 0.74));
-    ground.material.roughness = 0.9;
-    ground.material.backface_policy = BackfacePolicy::Cull;
     ground
+}
+
+/// The ground plane's material, uploaded once at setup.
+pub fn ground_material(res: &mut DeviceResources) -> MaterialId {
+    let mut material = Material::from_colour(viewport_lib::Colour::srgb_rgb(0.82, 0.80, 0.74));
+    material.roughness = 0.9;
+    material.backface_policy = BackfacePolicy::Cull;
+    res.upload_material(material).expect("ground material")
 }
 
 /// A directional light (overhead sun in Z-up) casting cascaded shadows.

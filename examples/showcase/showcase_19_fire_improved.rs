@@ -20,7 +20,7 @@ use viewport_lib::resources::MeshData;
 use viewport_lib::scene::material::{Material, ShadingModel};
 use viewport_lib_particles::{
     EffectAsset, EffectId, Emitter, ForceModifier, Gradient, ParticleBlend, ParticleItem,
-    ParticleItems, ParticleMeshId, ParticleTextureId, ParticlePlugin, SpawnRate, SpawnShape,
+    ParticleItems, ParticleMeshId, ParticlePlugin, ParticleTextureId, SpawnRate, SpawnShape,
     TextureMode, VelocityDist,
 };
 
@@ -142,26 +142,40 @@ pub fn logs_mesh_data() -> MeshData {
 /// A dark-brown dirt ground for the campfire (uses the shared ground cuboid,
 /// top surface at z = 0). Its own item so the grey interaction/soft ground is
 /// untouched.
-pub fn ground_item(mesh: viewport_lib::MeshId) -> SceneRenderItem {
-    let mut item = SceneRenderItem::default();
-    item.mesh_id = mesh;
-    item.model =
-        glam::Mat4::from_translation(glam::Vec3::new(0.0, 0.0, -0.25)).to_cols_array_2d();
-    item.material = Material::from_colour(viewport_lib::Colour::srgb_rgb(0.14, 0.09, 0.05)); // dark brown dirt
-    item.material.shading_model = ShadingModel::Pbr;
-    item.material.roughness = 0.98;
+pub fn ground_item(
+    mesh: viewport_lib::MeshId,
+    material: viewport_lib::MaterialId,
+) -> SceneRenderItem {
+    let mut item = SceneRenderItem::new(mesh, material);
+    item.model = glam::Mat4::from_translation(glam::Vec3::new(0.0, 0.0, -0.25)).to_cols_array_2d();
     item
 }
 
+/// The dirt ground's material, uploaded once at setup.
+pub fn ground_material(res: &mut viewport_lib::DeviceResources) -> viewport_lib::MaterialId {
+    // Dark brown dirt.
+    let mut material = Material::from_colour(viewport_lib::Colour::srgb_rgb(0.14, 0.09, 0.05));
+    material.shading_model = ShadingModel::Pbr;
+    material.roughness = 0.98;
+    res.upload_material(material).expect("dirt material")
+}
+
 /// A dark-wood scene item for the uploaded logs mesh.
-pub fn logs_item(mesh: viewport_lib::MeshId) -> SceneRenderItem {
-    let mut item = SceneRenderItem::default();
-    item.mesh_id = mesh;
+pub fn logs_item(
+    mesh: viewport_lib::MeshId,
+    material: viewport_lib::MaterialId,
+) -> SceneRenderItem {
+    let mut item = SceneRenderItem::new(mesh, material);
     item.model = glam::Mat4::IDENTITY.to_cols_array_2d();
-    item.material = Material::from_colour(viewport_lib::Colour::srgb_rgb(0.09, 0.06, 0.04));
-    item.material.shading_model = ShadingModel::Pbr;
-    item.material.roughness = 0.95;
     item
+}
+
+/// The logs' material, uploaded once at setup.
+pub fn logs_material(res: &mut viewport_lib::DeviceResources) -> viewport_lib::MaterialId {
+    let mut material = Material::from_colour(viewport_lib::Colour::srgb_rgb(0.09, 0.06, 0.04));
+    material.shading_model = ShadingModel::Pbr;
+    material.roughness = 0.95;
+    res.upload_material(material).expect("logs material")
 }
 
 // --- Particle effects -------------------------------------------------------

@@ -34,15 +34,14 @@ mod showcase_21_timedbursts;
 mod showcase_22_forces;
 mod showcase_23_exprops;
 mod showcase_24_iridescent;
-mod viewport_callback;
 
-use eframe::egui;
+use eframe::{egui, egui_wgpu, wgpu};
 use viewport_lib::renderer::{EnvironmentLighting, PickBackend, PickMask};
 use viewport_lib::{EnvironmentMapId, EnvironmentOptions, TextureData};
 use viewport_lib::{
-    BindingPreset, ButtonState, Camera, CameraFrame, FrameData, MeshId, OrbitCameraController,
-    SceneFrame, ScrollUnits, ViewportContext, ViewportEvent, ViewportInput, ViewportRenderer,
-    primitives,
+    BindingPreset, ButtonState, Camera, CameraFrame, Colour, FrameData, MeshId,
+    OffscreenViewportTarget, OrbitCameraController, SceneFrame, ScrollUnits, ViewportContext,
+    ViewportEvent, ViewportInput, ViewportRenderer, primitives,
 };
 use viewport_lib_particles::{EffectId, ParticlePlugin};
 
@@ -167,7 +166,10 @@ fn main() -> eframe::Result {
             let queue = &rs.queue;
             let format = rs.target_format;
 
-            let mut renderer = ViewportRenderer::new(device, format);
+            // The renderer draws into an offscreen target built as the sRGB
+            // variant of egui's format, so build it for that format.
+            let mut renderer =
+                ViewportRenderer::new(device, OffscreenViewportTarget::render_format(format));
 
             // Environment map for the Render routes skybox toggle: a simple sky
             // gradient the alpha route can be shown compositing over via OIT.
@@ -283,6 +285,7 @@ fn main() -> eframe::Result {
 
             Ok(Box::new(App {
                 sky_env,
+                target: None,
                 camera: Camera {
                     distance: 10.0,
                     orientation: glam::Quat::from_rotation_z(0.6)
@@ -409,6 +412,13 @@ struct App {
     exprops: showcase_23_exprops::State,
     iridescent_ids: Vec<EffectId>,
     iridescent: showcase_24_iridescent::State,
+    target: Option<Target>,
+}
+
+/// The offscreen render target and its egui texture registration.
+struct Target {
+    inner: OffscreenViewportTarget,
+    id: egui::TextureId,
 }
 
 impl eframe::App for App {
@@ -514,6 +524,10 @@ impl eframe::App for App {
             });
 
         // ---- Central panel: viewport ----
+        let rs = eframe_frame
+            .wgpu_render_state()
+            .expect("wgpu backend required")
+            .clone();
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE.fill(BG_COLOUR))
             .show(ctx, |ui| {
@@ -571,11 +585,7 @@ impl eframe::App for App {
                         }
                     }
                     let frame_data = self.interaction_frame([w, h], ppp, dt);
-                    ui.painter()
-                        .add(eframe::egui_wgpu::Callback::new_paint_callback(
-                            rect,
-                            viewport_callback::ViewportCallback { frame: frame_data },
-                        ));
+                    self.paint_viewport(ui, rect, &rs, frame_data);
                     if response.dragged() {
                         ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
                     } else if response.hovered() {
@@ -698,11 +708,7 @@ impl eframe::App for App {
                     frame_data.effects.lighting = showcase_06_interaction::lighting();
                 }
 
-                ui.painter()
-                    .add(eframe::egui_wgpu::Callback::new_paint_callback(
-                        rect,
-                        viewport_callback::ViewportCallback { frame: frame_data },
-                    ));
+                self.paint_viewport(ui, rect, &rs, frame_data);
 
                 if response.dragged() {
                     ui.ctx().set_cursor_icon(egui::CursorIcon::Grabbing);
@@ -735,6 +741,68 @@ impl eframe::App for App {
 }
 
 impl App {
+    /// Render `frame_data` into the offscreen target and show it in `rect`.
+    ///
+    /// The renderer draws into the target's sRGB view, so its linear output is
+    /// encoded on write, and egui samples the non-sRGB view so the encoded bytes
+    /// are shown as-is.
+    fn paint_viewport(
+        &mut self,
+        ui: &egui::Ui,
+        rect: egui::Rect,
+        rs: &egui_wgpu::RenderState,
+        mut frame_data: FrameData,
+    ) {
+        // The offscreen render clears to its own background rather than
+        // drawing over the panel fill, so match the panel colour.
+        let [r, g, b, _] = BG_COLOUR.to_array();
+        frame_data.viewport.background_colour = Some(Colour::srgb_rgb(
+            r as f32 / 255.0,
+            g as f32 / 255.0,
+            b as f32 / 255.0,
+        ));
+
+        let ppp = ui.ctx().pixels_per_point();
+        let size_px = [
+            (rect.width() * ppp).round().max(1.0) as u32,
+            (rect.height() * ppp).round().max(1.0) as u32,
+        ];
+        let mut guard = rs.renderer.write();
+        if self
+            .target
+            .as_ref()
+            .map_or(true, |t| t.inner.size() != size_px)
+        {
+            if let Some(old) = self.target.take() {
+                guard.free_texture(&old.id);
+            }
+            let inner = OffscreenViewportTarget::new(&rs.device, rs.target_format, size_px);
+            let id = guard.register_native_texture(
+                &rs.device,
+                inner.sample_view(),
+                wgpu::FilterMode::Linear,
+            );
+            self.target = Some(Target { inner, id });
+        }
+        let target = self.target.as_ref().unwrap();
+        if let Some(renderer) = guard.callback_resources.get_mut::<ViewportRenderer>() {
+            let cmd = renderer.owned().render(
+                &rs.device,
+                &rs.queue,
+                target.inner.render_view(),
+                &frame_data,
+            );
+            rs.queue.submit(std::iter::once(cmd));
+        }
+        drop(guard);
+        ui.painter().image(
+            target.id,
+            rect,
+            egui::Rect::from_min_max(egui::pos2(0.0, 0.0), egui::pos2(1.0, 1.0)),
+            egui::Color32::WHITE,
+        );
+    }
+
     /// Build the Interaction mode's frame: the ground plane, the directional
     /// light, and the particle system tagged with its pick id / selection.
     fn interaction_frame(&self, size: [f32; 2], ppp: f32, dt: f32) -> FrameData {

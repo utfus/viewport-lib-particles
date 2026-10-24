@@ -1735,22 +1735,6 @@ impl ParticlePlugin {
                 count: None,
             }],
         });
-        // The shadow pass binds a single cascade light-space matrix with a
-        // dynamic offset (the lib's shadow_camera group), not the scene camera.
-        let shadow_group0_bgl =
-            device.create_bind_group_layout(&vwgpu::BindGroupLayoutDescriptor {
-                label: Some("particle_shadow_group0_bgl"),
-                entries: &[vwgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: vwgpu::ShaderStages::VERTEX,
-                    ty: vwgpu::BindingType::Buffer {
-                        ty: vwgpu::BufferBindingType::Uniform,
-                        has_dynamic_offset: true,
-                        min_binding_size: None,
-                    },
-                    count: None,
-                }],
-            });
 
         let pick_src = format!(
             "{SHARED_BINDINGS_WGSL}\n{SHARED_PICK_WGSL}\n{}",
@@ -1866,7 +1850,7 @@ impl ParticlePlugin {
         let shadow_layout = vwgpu::pipeline_layout(
             device,
             "particle_shadow_layout",
-            &[&shadow_group0_bgl, &draw_bgl],
+            &[shared.shadow_group0_layout, &draw_bgl],
         );
         let shadow_pipeline = vwgpu::render_pipeline(
             device,
@@ -1912,7 +1896,6 @@ impl ParticlePlugin {
         self.mask_pipeline = Some(mask_pipeline);
         self.shadow_pipeline = Some(shadow_pipeline);
         self.pick_bgl = Some(pick_bgl);
-        self.shadow_group0_bgl = Some(shadow_group0_bgl);
 
         self.emit_pipeline = Some(emit_pipeline);
         self.sim_pipeline = Some(sim_pipeline);

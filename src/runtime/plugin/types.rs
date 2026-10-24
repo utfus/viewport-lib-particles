@@ -736,7 +736,6 @@ pub struct ParticlePlugin {
     pub(crate) mask_pipeline: Option<vwgpu::RenderPipeline>,
     pub(crate) shadow_pipeline: Option<vwgpu::RenderPipeline>,
     pub(crate) pick_bgl: Option<vwgpu::BindGroupLayout>,
-    pub(crate) shadow_group0_bgl: Option<vwgpu::BindGroupLayout>,
 
     /// Live per-instance GPU + emission state, keyed by `(effect, key)`. Each
     /// entry owns an independent particle buffer, trail / sort state, and pick

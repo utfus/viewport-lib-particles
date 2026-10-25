@@ -49,8 +49,9 @@ struct DrawParams {
 @group(2) @binding(0) var ramp_tex: texture_2d<f32>;
 @group(2) @binding(1) var ramp_samp: sampler;
 
-// Group 3: read-only scene depth (matches the renderer's depth_read_bgl).
-@group(3) @binding(0) var scene_depth: texture_depth_2d;
+// Group 3: read-only scene depth (matches the renderer's depth_read_bgl: the
+// depth is bound as unfilterable float).
+@group(3) @binding(0) var scene_depth: texture_2d<f32>;
 @group(3) @binding(1) var scene_depth_samp: sampler;
 
 fn flip_uv(uv: vec2<f32>, age: f32, age_sec: f32) -> vec2<f32> {
@@ -187,7 +188,7 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
     // dimensions give the screen UV.
     let dims = vec2<f32>(textureDimensions(scene_depth));
     let screen_uv = in.pos.xy / dims;
-    let scene_ndc_z = textureSample(scene_depth, scene_depth_samp, screen_uv);
+    let scene_ndc_z = textureSample(scene_depth, scene_depth_samp, screen_uv).r;
     let fade = viewport_soft_fade_from_ndc(in.world_pos, screen_uv, scene_ndc_z, draw_params.soft_dist);
     a = a * fade;
 

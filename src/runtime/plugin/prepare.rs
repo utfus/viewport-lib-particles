@@ -3,7 +3,7 @@ use std::collections::HashMap;
 use viewport_lib::Frustum;
 use viewport_lib::plugin_api::{
     DepthReadContext, ItemFrameContext, ItemTypePlugin, OutlineMaskContext, PaintContext,
-    ItemCollections, PickPassContext, ShadowCastContext, SharedBindings,
+    ItemCollections, PickPassContext, PluginResources, ShadowCastContext,
 };
 use viewport_lib::wgpu as vwgpu;
 
@@ -18,8 +18,8 @@ impl ItemTypePlugin for ParticlePlugin {
         Self::TYPE_NAME
     }
 
-    fn init_gpu(&mut self, device: &vwgpu::Device, shared: &SharedBindings<'_>) {
-        self.build_gpu(device, shared);
+    fn init_gpu(&mut self, device: &vwgpu::Device, resources: &dyn PluginResources) {
+        self.build_gpu(device, resources);
     }
     /// Every GPU byte the plugin holds: per-instance particle, trail, sort and
     /// stats buffers, the uploaded meshes and textures, the baked spawn-sample
@@ -792,8 +792,8 @@ impl ItemTypePlugin for ParticlePlugin {
             return;
         };
         // Group 0 (camera + scene) is bound by the lib on pass entry. Group 3 is
-        // the scene depth, from the context's prebuilt bind group (its layout
-        // matches our replicated `depth_read_bgl`). Each soft effect picks the
+        // the scene depth, from the context's prebuilt bind group. Each soft
+        // effect picks the
         // over / additive blend by its own blend mode.
         pass.set_bind_group(3, ctx.scene_depth_bind_group, &[]);
         for entry in &self.draw_list {

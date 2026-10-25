@@ -681,14 +681,13 @@ pub struct ParticlePlugin {
     pub(crate) mesh_pipeline_over: Option<vwgpu::RenderPipeline>,
     // Soft-particle (Phase 9) billboard draw for the read-only-depth pass. Its
     // group 1 folds particles+order+draw-params+sprite so group 3 carries the
-    // scene depth; `depth_read_bgl` replicates the renderer's `depth_read_bgl`
-    // so the context's prebuilt `scene_depth_bind_group` binds against it. Two
+    // scene depth, in the renderer's depth-read layout so the context's
+    // prebuilt `scene_depth_bind_group` binds against it. Two
     // blend variants (over / additive) so soft alpha smoke and soft additive
     // flame both fade against geometry; chosen per effect by its blend.
     pub(crate) soft_pipeline_over: Option<vwgpu::RenderPipeline>,
     pub(crate) soft_pipeline_additive: Option<vwgpu::RenderPipeline>,
     pub(crate) soft_draw_bgl: Option<vwgpu::BindGroupLayout>,
-    pub(crate) depth_read_bgl: Option<vwgpu::BindGroupLayout>,
     pub(crate) emit_bgl: Option<vwgpu::BindGroupLayout>,
     pub(crate) sim_bgl: Option<vwgpu::BindGroupLayout>,
     // Sub-emitter variants: a child emit that also reads a spawn-event buffer
@@ -786,10 +785,9 @@ pub struct ParticlePlugin {
     /// composed billboard source so effects with identical hooks share pipelines
     /// (the analogue of `gen_cache` for the fragment stage).
     pub(crate) custom_draw_cache: HashMap<u64, CustomDrawPipelines>,
-    /// The renderer's scene bind-group layout (group 0), cloned in `build_gpu` so
-    /// custom draw pipelines can be built lazily in `ensure_instance_gpu` (which
-    /// has no `SharedBindings`).
-    pub(crate) group0_layout: Option<vwgpu::BindGroupLayout>,
+    /// The renderer's pipeline builder, kept from `build_gpu` so custom draw
+    /// pipelines can be built lazily in `ensure_instance_gpu`.
+    pub(crate) builder: Option<viewport_lib::plugin_api::PipelineBuilder>,
     /// Group-3 layout for hooked billboard effects: draw params (0), sprite (1),
     /// sampler (2), the `hook_params` uniform (3), and [`HOOK_TEXTURES`] hook
     /// textures (4..). Fixed, so every hooked pipeline shares one layout.
@@ -802,14 +800,6 @@ pub struct ParticlePlugin {
     /// Elapsed simulation time in seconds, accumulated from each frame's `dt`.
     /// Scrolls time-varying fields such as the `CurlNoise` force.
     pub(crate) time: f32,
-
-    /// MSAA sample count of the renderer's HDR scene target, read from
-    /// `SharedBindings.sample_count` in `build_gpu`. The HDR colour-pass pipelines
-    /// (billboard, OIT, mesh, trail, soft) build with this so they match an MSAA
-    /// host; the interaction passes stay at [`INTERACTION_SAMPLE_COUNT`]. Set in
-    /// `build_gpu` before any pipeline is built; `0` from `Default` beforehand,
-    /// never read until then.
-    pub(crate) sample_count: u32,
 }
 
 /// One instance drawn this frame, with the driving item's interaction flags.

@@ -22,13 +22,6 @@ pub(crate) use crate::items::EffectCommand;
 pub(crate) use shade::*;
 pub(crate) use types::*;
 
-/// Sample count for the plugin's single-sampled interaction passes (shadow,
-/// pick, outline-mask). The library pegs those pass targets to 1 regardless of
-/// the scene MSAA level (see [`SharedBindings::sample_count`]), so the plugin uses
-/// 1 there. The HDR colour passes instead build against `self.sample_count`, read
-/// from `SharedBindings.sample_count` in `build_gpu`.
-pub(crate) const INTERACTION_SAMPLE_COUNT: u32 = 1;
-
 /// High bit of an `InstanceKey`'s `key`, reserved for internal transient (burst)
 /// instances so they never collide with host-supplied keys.
 pub(crate) const TRANSIENT_KEY_BIT: u64 = 1 << 63;

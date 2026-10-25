@@ -4,11 +4,7 @@ use viewport_lib::plugin_api::shared_wgsl::{
     SHARED_BINDINGS_WGSL, SHARED_DEPTH_READ_WGSL, SHARED_MASK_WGSL, SHARED_OIT_WGSL,
     SHARED_PICK_WGSL,
 };
-use viewport_lib::plugin_api::{OIT_ACCUM_BLEND, OIT_REVEAL_BLEND, SharedBindings};
-use viewport_lib::resources::{
-    HDR_COLOR_FORMAT, MASK_COLOR_FORMAT, PICK_COLOR_FORMAT, PICK_DEPTH_CHANNEL_FORMAT,
-    SCENE_DEPTH_FORMAT, SHADOW_DEPTH_FORMAT,
-};
+use viewport_lib::plugin_api::{PluginPipelineOpts, PluginResources};
 use viewport_lib::wgpu as vwgpu;
 
 use crate::codegen;
@@ -872,111 +868,42 @@ impl ParticlePlugin {
             return p.clone();
         }
 
-        let sample_count = self.sample_count;
-        let layout = vwgpu::pipeline_layout(
-            device,
-            "particle_hook_draw_layout",
-            &[
-                self.group0_layout.as_ref().unwrap(),
-                self.draw_bgl.as_ref().unwrap(),
-                self.ramp_bgl.as_ref().unwrap(),
-                self.hook_drawparams_bgl.as_ref().unwrap(),
-            ],
-        );
-        let one = vwgpu::BlendComponent {
-            src_factor: vwgpu::BlendFactor::One,
-            dst_factor: vwgpu::BlendFactor::One,
-            operation: vwgpu::BlendOperation::Add,
-        };
-
+        let builder = self.builder.as_ref().unwrap();
+        let extra = [
+            self.draw_bgl.as_ref().unwrap(),
+            self.ramp_bgl.as_ref().unwrap(),
+            self.hook_drawparams_bgl.as_ref().unwrap(),
+        ];
         let add_shader = device.create_shader_module(vwgpu::ShaderModuleDescriptor {
             label: Some("particle_hook_draw_shader"),
             source: vwgpu::ShaderSource::Wgsl(add_src.into()),
         });
-        let additive = vwgpu::render_pipeline(
+        let additive = builder.build_opaque_pipeline(
             device,
-            vwgpu::RenderPipelineDesc {
-                label: "particle_hook_draw_additive",
-                layout: &layout,
-                vertex_module: &add_shader,
-                vertex_entry: "vs",
-                vertex_buffers: &[],
-                fragment: Some(vwgpu::FragmentState {
-                    module: &add_shader,
-                    entry_point: Some("fs_hook"),
-                    targets: &[Some(vwgpu::ColorTargetState {
-                        format: HDR_COLOR_FORMAT,
-                        blend: Some(vwgpu::BlendState {
-                            color: one,
-                            alpha: one,
-                        }),
-                        write_mask: vwgpu::ColorWrites::ALL,
-                    })],
-                    compilation_options: Default::default(),
-                }),
-                primitive: vwgpu::PrimitiveState {
-                    topology: vwgpu::PrimitiveTopology::TriangleList,
-                    cull_mode: None,
-                    ..Default::default()
-                },
-                depth_stencil: Some(vwgpu::depth_stencil(
-                    SCENE_DEPTH_FORMAT,
-                    false,
-                    vwgpu::CompareFunction::LessEqual,
-                )),
-                multisample: vwgpu::MultisampleState {
-                    count: sample_count,
-                    ..Default::default()
-                },
-                cache: None,
-            },
+            &route_opts(
+                "particle_hook_draw_additive",
+                &add_shader,
+                "fs_hook",
+                &[],
+                &extra,
+                Some(ADDITIVE),
+            ),
         );
 
         let oit_shader = device.create_shader_module(vwgpu::ShaderModuleDescriptor {
             label: Some("particle_hook_oit_shader"),
             source: vwgpu::ShaderSource::Wgsl(oit_src.into()),
         });
-        let oit = vwgpu::render_pipeline(
+        let oit = builder.build_oit_pipeline(
             device,
-            vwgpu::RenderPipelineDesc {
-                label: "particle_hook_draw_oit",
-                layout: &layout,
-                vertex_module: &oit_shader,
-                vertex_entry: "vs",
-                vertex_buffers: &[],
-                fragment: Some(vwgpu::FragmentState {
-                    module: &oit_shader,
-                    entry_point: Some("fs_hook"),
-                    targets: &[
-                        Some(vwgpu::ColorTargetState {
-                            format: HDR_COLOR_FORMAT,
-                            blend: Some(OIT_ACCUM_BLEND),
-                            write_mask: vwgpu::ColorWrites::ALL,
-                        }),
-                        Some(vwgpu::ColorTargetState {
-                            format: MASK_COLOR_FORMAT,
-                            blend: Some(OIT_REVEAL_BLEND),
-                            write_mask: vwgpu::ColorWrites::RED,
-                        }),
-                    ],
-                    compilation_options: Default::default(),
-                }),
-                primitive: vwgpu::PrimitiveState {
-                    topology: vwgpu::PrimitiveTopology::TriangleList,
-                    cull_mode: None,
-                    ..Default::default()
-                },
-                depth_stencil: Some(vwgpu::depth_stencil(
-                    SCENE_DEPTH_FORMAT,
-                    false,
-                    vwgpu::CompareFunction::LessEqual,
-                )),
-                multisample: vwgpu::MultisampleState {
-                    count: sample_count,
-                    ..Default::default()
-                },
-                cache: None,
-            },
+            &route_opts(
+                "particle_hook_draw_oit",
+                &oit_shader,
+                "fs_hook",
+                &[],
+                &extra,
+                None,
+            ),
         );
 
         let pipelines = CustomDrawPipelines { additive, oit };
@@ -986,13 +913,7 @@ impl ParticlePlugin {
 }
 
 impl ParticlePlugin {
-    pub(crate) fn build_gpu(&mut self, device: &vwgpu::Device, shared: &SharedBindings<'_>) {
-        // MSAA sample count of the renderer's HDR scene target. The HDR
-        // colour-pass pipelines below build with this; the interaction passes
-        // (shadow, pick, mask) stay single-sampled. Captured into a local so the
-        // pipeline-building closures don't borrow `self`.
-        let sample_count = shared.sample_count.max(1);
-        self.sample_count = sample_count;
+    pub(crate) fn build_gpu(&mut self, device: &vwgpu::Device, resources: &dyn PluginResources) {
         let storage_rw = |binding| vwgpu::BindGroupLayoutEntry {
             binding,
             visibility: vwgpu::ShaderStages::COMPUTE,
@@ -1318,68 +1239,17 @@ impl ParticlePlugin {
             label: Some("particle_draw_shader"),
             source: vwgpu::ShaderSource::Wgsl(draw_src.into()),
         });
-        let draw_layout = vwgpu::pipeline_layout(
+        let draw_extra = [&draw_bgl, &ramp_bgl, &drawparams_bgl];
+        self.draw_pipeline_additive = Some(resources.build_opaque_pipeline(
             device,
-            "particle_draw_layout",
-            &[shared.group0_layout, &draw_bgl, &ramp_bgl, &drawparams_bgl],
-        );
-
-        let one = vwgpu::BlendComponent {
-            src_factor: vwgpu::BlendFactor::One,
-            dst_factor: vwgpu::BlendFactor::One,
-            operation: vwgpu::BlendOperation::Add,
-        };
-        let over = vwgpu::BlendComponent {
-            src_factor: vwgpu::BlendFactor::One,
-            dst_factor: vwgpu::BlendFactor::OneMinusSrcAlpha,
-            operation: vwgpu::BlendOperation::Add,
-        };
-        let make_draw = |blend: vwgpu::BlendState, label: &str| {
-            vwgpu::render_pipeline(
-                device,
-                vwgpu::RenderPipelineDesc {
-                    label,
-                    layout: &draw_layout,
-                    vertex_module: &draw_shader,
-                    vertex_entry: "vs",
-                    vertex_buffers: &[],
-                    fragment: Some(vwgpu::FragmentState {
-                        module: &draw_shader,
-                        entry_point: Some("fs"),
-                        targets: &[Some(vwgpu::ColorTargetState {
-                            format: HDR_COLOR_FORMAT,
-                            blend: Some(blend),
-                            write_mask: vwgpu::ColorWrites::ALL,
-                        })],
-                        compilation_options: Default::default(),
-                    }),
-                    primitive: vwgpu::PrimitiveState {
-                        topology: vwgpu::PrimitiveTopology::TriangleList,
-                        cull_mode: None,
-                        ..Default::default()
-                    },
-                    // Depth-test against opaque geometry, but do not write depth
-                    // so overlapping particles blend instead of occluding.
-                    depth_stencil: Some(vwgpu::depth_stencil(
-                        SCENE_DEPTH_FORMAT,
-                        false,
-                        vwgpu::CompareFunction::LessEqual,
-                    )),
-                    multisample: vwgpu::MultisampleState {
-                        count: sample_count,
-                        ..Default::default()
-                    },
-                    cache: None,
-                },
-            )
-        };
-
-        self.draw_pipeline_additive = Some(make_draw(
-            vwgpu::BlendState {
-                color: one,
-                alpha: one,
-            },
-            "particle_draw_additive",
+            &route_opts(
+                "particle_draw_additive",
+                &draw_shader,
+                "fs",
+                &[],
+                &draw_extra,
+                Some(ADDITIVE),
+            ),
         ));
         // OIT billboard variant: same vertex stage, but the fragment writes the
         // two weighted-blended MRT targets (accum + reveal). Drawn inside the
@@ -1393,59 +1263,23 @@ impl ParticlePlugin {
             label: Some("particle_oit_shader"),
             source: vwgpu::ShaderSource::Wgsl(oit_src.into()),
         });
-        self.draw_pipeline_oit = Some(vwgpu::render_pipeline(
+        self.draw_pipeline_oit = Some(resources.build_oit_pipeline(
             device,
-            vwgpu::RenderPipelineDesc {
-                label: "particle_draw_oit",
-                layout: &draw_layout,
-                vertex_module: &oit_shader,
-                vertex_entry: "vs",
-                vertex_buffers: &[],
-                fragment: Some(vwgpu::FragmentState {
-                    module: &oit_shader,
-                    entry_point: Some("fs"),
-                    targets: &[
-                        // Target 0: accum (Rgba16Float, additive).
-                        Some(vwgpu::ColorTargetState {
-                            format: HDR_COLOR_FORMAT,
-                            blend: Some(OIT_ACCUM_BLEND),
-                            write_mask: vwgpu::ColorWrites::ALL,
-                        }),
-                        // Target 1: reveal (R8Unorm, multiplicative).
-                        Some(vwgpu::ColorTargetState {
-                            format: MASK_COLOR_FORMAT,
-                            blend: Some(OIT_REVEAL_BLEND),
-                            write_mask: vwgpu::ColorWrites::RED,
-                        }),
-                    ],
-                    compilation_options: Default::default(),
-                }),
-                primitive: vwgpu::PrimitiveState {
-                    topology: vwgpu::PrimitiveTopology::TriangleList,
-                    cull_mode: None,
-                    ..Default::default()
-                },
-                // Depth-test against opaques, read-only (the OIT pass never
-                // writes depth).
-                depth_stencil: Some(vwgpu::depth_stencil(
-                    SCENE_DEPTH_FORMAT,
-                    false,
-                    vwgpu::CompareFunction::LessEqual,
-                )),
-                multisample: vwgpu::MultisampleState {
-                    count: sample_count,
-                    ..Default::default()
-                },
-                cache: None,
-            },
+            &route_opts(
+                "particle_draw_oit",
+                &oit_shader,
+                "fs",
+                &[],
+                &draw_extra,
+                None,
+            ),
         ));
 
-        // Soft-particle (Phase 9) billboard pipeline for the read-only-depth
-        // pass. It folds particles+order+draw-params+sprite into group 1 so
-        // group 3 can carry the scene depth (we are already at four groups), and
-        // its group-3 layout replicates the renderer's `depth_read_bgl` so the
-        // context's prebuilt `scene_depth_bind_group` binds against it (wgpu
-        // deduplicates identical layout descriptors).
+        // Soft-particle billboard pipeline for the read-only-depth pass. It
+        // folds particles+order+draw-params+sprite into group 1 so group 3 can
+        // carry the scene depth (we are already at four groups), with the
+        // renderer's depth-read layout there so the context's prebuilt
+        // `scene_depth_bind_group` binds against it.
         let soft_draw_bgl = device.create_bind_group_layout(&vwgpu::BindGroupLayoutDescriptor {
             label: Some("particle_soft_draw_bgl"),
             entries: &[
@@ -1479,29 +1313,9 @@ impl ParticlePlugin {
                 },
             ],
         });
-        // Replica of the renderer's depth_read_bgl: binding 0 = depth texture,
-        // binding 1 = non-filtering sampler, both fragment-visible.
-        let depth_read_bgl = device.create_bind_group_layout(&vwgpu::BindGroupLayoutDescriptor {
-            label: Some("particle_depth_read_bgl"),
-            entries: &[
-                vwgpu::BindGroupLayoutEntry {
-                    binding: 0,
-                    visibility: vwgpu::ShaderStages::FRAGMENT,
-                    ty: vwgpu::BindingType::Texture {
-                        sample_type: vwgpu::TextureSampleType::Depth,
-                        view_dimension: vwgpu::TextureViewDimension::D2,
-                        multisampled: false,
-                    },
-                    count: None,
-                },
-                vwgpu::BindGroupLayoutEntry {
-                    binding: 1,
-                    visibility: vwgpu::ShaderStages::FRAGMENT,
-                    ty: vwgpu::BindingType::Sampler(vwgpu::SamplerBindingType::NonFiltering),
-                    count: None,
-                },
-            ],
-        });
+        let depth_read_bgl = resources
+            .depth_read_bind_group_layout()
+            .expect("the plugin registers only on the full tier");
         let soft_src = format!(
             "{SHARED_BINDINGS_WGSL}\n{SHARED_DEPTH_READ_WGSL}\n{}",
             include_str!("../shaders/particle_soft.wgsl")
@@ -1510,71 +1324,16 @@ impl ParticlePlugin {
             label: Some("particle_soft_shader"),
             source: vwgpu::ShaderSource::Wgsl(soft_src.into()),
         });
-        let soft_layout = vwgpu::pipeline_layout(
-            device,
-            "particle_soft_layout",
-            &[
-                shared.group0_layout,
-                &soft_draw_bgl,
-                &ramp_bgl,
-                &depth_read_bgl,
-            ],
-        );
+        let soft_extra = [&soft_draw_bgl, &ramp_bgl, depth_read_bgl];
         let make_soft = |blend: vwgpu::BlendState, label: &str| {
-            vwgpu::render_pipeline(
+            resources.build_depth_read_pipeline(
                 device,
-                vwgpu::RenderPipelineDesc {
-                    label,
-                    layout: &soft_layout,
-                    vertex_module: &soft_shader,
-                    vertex_entry: "vs",
-                    vertex_buffers: &[],
-                    fragment: Some(vwgpu::FragmentState {
-                        module: &soft_shader,
-                        entry_point: Some("fs"),
-                        targets: &[Some(vwgpu::ColorTargetState {
-                            format: HDR_COLOR_FORMAT,
-                            blend: Some(blend),
-                            write_mask: vwgpu::ColorWrites::ALL,
-                        })],
-                        compilation_options: Default::default(),
-                    }),
-                    primitive: vwgpu::PrimitiveState {
-                        topology: vwgpu::PrimitiveTopology::TriangleList,
-                        cull_mode: None,
-                        ..Default::default()
-                    },
-                    // Test against opaque depth, read-only (the depth-read pass
-                    // binds scene depth read-only and never writes it).
-                    depth_stencil: Some(vwgpu::depth_stencil(
-                        SCENE_DEPTH_FORMAT,
-                        false,
-                        vwgpu::CompareFunction::LessEqual,
-                    )),
-                    multisample: vwgpu::MultisampleState {
-                        count: sample_count,
-                        ..Default::default()
-                    },
-                    cache: None,
-                },
+                &route_opts(label, &soft_shader, "fs", &[], &soft_extra, Some(blend)),
             )
         };
-        self.soft_pipeline_over = Some(make_soft(
-            vwgpu::BlendState {
-                color: over,
-                alpha: over,
-            },
-            "particle_soft_over",
-        ));
-        self.soft_pipeline_additive = Some(make_soft(
-            vwgpu::BlendState {
-                color: one,
-                alpha: one,
-            },
-            "particle_soft_additive",
-        ));
+        self.soft_pipeline_over = Some(make_soft(OVER, "particle_soft_over"));
+        self.soft_pipeline_additive = Some(make_soft(ADDITIVE, "particle_soft_additive"));
         self.soft_draw_bgl = Some(soft_draw_bgl);
-        self.depth_read_bgl = Some(depth_read_bgl);
 
         // Mesh render route: instance an uploaded mesh per particle. Same bind
         // group layouts plus a per-vertex position stream.
@@ -1586,7 +1345,7 @@ impl ParticlePlugin {
             label: Some("particle_mesh_shader"),
             source: vwgpu::ShaderSource::Wgsl(mesh_src.into()),
         });
-        let mesh_vertex_layout = vwgpu::VertexBufferLayout {
+        let mesh_vertex_layout = [vwgpu::VertexBufferLayout {
             array_stride: 12,
             step_mode: vwgpu::VertexStepMode::Vertex,
             attributes: &[vwgpu::VertexAttribute {
@@ -1594,58 +1353,22 @@ impl ParticlePlugin {
                 offset: 0,
                 shader_location: 0,
             }],
-        };
+        }];
         let make_mesh = |blend: vwgpu::BlendState, label: &str| {
-            vwgpu::render_pipeline(
+            resources.build_opaque_pipeline(
                 device,
-                vwgpu::RenderPipelineDesc {
+                &route_opts(
                     label,
-                    layout: &draw_layout,
-                    vertex_module: &mesh_shader,
-                    vertex_entry: "vs",
-                    vertex_buffers: &[mesh_vertex_layout.clone()],
-                    fragment: Some(vwgpu::FragmentState {
-                        module: &mesh_shader,
-                        entry_point: Some("fs"),
-                        targets: &[Some(vwgpu::ColorTargetState {
-                            format: HDR_COLOR_FORMAT,
-                            blend: Some(blend),
-                            write_mask: vwgpu::ColorWrites::ALL,
-                        })],
-                        compilation_options: Default::default(),
-                    }),
-                    primitive: vwgpu::PrimitiveState {
-                        topology: vwgpu::PrimitiveTopology::TriangleList,
-                        cull_mode: None,
-                        ..Default::default()
-                    },
-                    depth_stencil: Some(vwgpu::depth_stencil(
-                        SCENE_DEPTH_FORMAT,
-                        false,
-                        vwgpu::CompareFunction::LessEqual,
-                    )),
-                    multisample: vwgpu::MultisampleState {
-                        count: sample_count,
-                        ..Default::default()
-                    },
-                    cache: None,
-                },
+                    &mesh_shader,
+                    "fs",
+                    &mesh_vertex_layout,
+                    &draw_extra,
+                    Some(blend),
+                ),
             )
         };
-        self.mesh_pipeline_additive = Some(make_mesh(
-            vwgpu::BlendState {
-                color: one,
-                alpha: one,
-            },
-            "particle_mesh_additive",
-        ));
-        self.mesh_pipeline_over = Some(make_mesh(
-            vwgpu::BlendState {
-                color: over,
-                alpha: over,
-            },
-            "particle_mesh_over",
-        ));
+        self.mesh_pipeline_additive = Some(make_mesh(ADDITIVE, "particle_mesh_additive"));
+        self.mesh_pipeline_over = Some(make_mesh(OVER, "particle_mesh_over"));
 
         // Trail render route: a camera-facing ribbon swept through the history
         // ring. Group 1 is the trail bindings (particles + history + params);
@@ -1658,67 +1381,15 @@ impl ParticlePlugin {
             label: Some("particle_trail_shader"),
             source: vwgpu::ShaderSource::Wgsl(trail_src.into()),
         });
-        let trail_layout = vwgpu::pipeline_layout(
-            device,
-            "particle_trail_layout",
-            &[
-                shared.group0_layout,
-                &trail_draw_bgl,
-                &ramp_bgl,
-                &drawparams_bgl,
-            ],
-        );
+        let trail_extra = [&trail_draw_bgl, &ramp_bgl, &drawparams_bgl];
         let make_trail = |blend: vwgpu::BlendState, label: &str| {
-            vwgpu::render_pipeline(
+            resources.build_opaque_pipeline(
                 device,
-                vwgpu::RenderPipelineDesc {
-                    label,
-                    layout: &trail_layout,
-                    vertex_module: &trail_shader,
-                    vertex_entry: "vs",
-                    vertex_buffers: &[],
-                    fragment: Some(vwgpu::FragmentState {
-                        module: &trail_shader,
-                        entry_point: Some("fs"),
-                        targets: &[Some(vwgpu::ColorTargetState {
-                            format: HDR_COLOR_FORMAT,
-                            blend: Some(blend),
-                            write_mask: vwgpu::ColorWrites::ALL,
-                        })],
-                        compilation_options: Default::default(),
-                    }),
-                    primitive: vwgpu::PrimitiveState {
-                        topology: vwgpu::PrimitiveTopology::TriangleList,
-                        cull_mode: None,
-                        ..Default::default()
-                    },
-                    depth_stencil: Some(vwgpu::depth_stencil(
-                        SCENE_DEPTH_FORMAT,
-                        false,
-                        vwgpu::CompareFunction::LessEqual,
-                    )),
-                    multisample: vwgpu::MultisampleState {
-                        count: sample_count,
-                        ..Default::default()
-                    },
-                    cache: None,
-                },
+                &route_opts(label, &trail_shader, "fs", &[], &trail_extra, Some(blend)),
             )
         };
-        self.trail_pipeline_additive = Some(make_trail(
-            vwgpu::BlendState {
-                color: one,
-                alpha: one,
-            },
-            "particle_trail_additive",
-        ));
-        self.trail_pipeline_over = Some(make_trail(
-            vwgpu::BlendState {
-                color: over,
-                alpha: over,
-            },
-            "particle_trail_over",
-        ));
+        self.trail_pipeline_additive = Some(make_trail(ADDITIVE, "particle_trail_additive"));
+        self.trail_pipeline_over = Some(make_trail(OVER, "particle_trail_over"));
 
         // Interaction pipelines: pick id, outline mask, and shadow casting. They
         // reuse the draw bind group (particles + order) at group 1.
@@ -1744,52 +1415,17 @@ impl ParticlePlugin {
             label: Some("particle_pick_shader"),
             source: vwgpu::ShaderSource::Wgsl(pick_src.into()),
         });
-        let pick_layout = vwgpu::pipeline_layout(
+        let pick_extra = [&draw_bgl, &pick_bgl];
+        let pick_pipeline = resources.build_pick_pipeline(
             device,
-            "particle_pick_layout",
-            &[shared.group0_layout, &draw_bgl, &pick_bgl],
-        );
-        let pick_color = |format| {
-            Some(vwgpu::ColorTargetState {
-                format,
-                blend: None,
-                write_mask: vwgpu::ColorWrites::ALL,
-            })
-        };
-        let pick_pipeline = vwgpu::render_pipeline(
-            device,
-            vwgpu::RenderPipelineDesc {
-                label: "particle_pick",
-                layout: &pick_layout,
-                vertex_module: &pick_shader,
-                vertex_entry: "vs",
-                vertex_buffers: &[],
-                fragment: Some(vwgpu::FragmentState {
-                    module: &pick_shader,
-                    entry_point: Some("viewport_pick_fs"),
-                    targets: &[
-                        pick_color(PICK_COLOR_FORMAT),
-                        pick_color(PICK_COLOR_FORMAT),
-                        pick_color(PICK_DEPTH_CHANNEL_FORMAT),
-                    ],
-                    compilation_options: Default::default(),
-                }),
-                primitive: vwgpu::PrimitiveState {
-                    topology: vwgpu::PrimitiveTopology::TriangleList,
-                    cull_mode: None,
-                    ..Default::default()
-                },
-                depth_stencil: Some(vwgpu::depth_stencil(
-                    SCENE_DEPTH_FORMAT,
-                    true,
-                    vwgpu::CompareFunction::LessEqual,
-                )),
-                multisample: vwgpu::MultisampleState {
-                    count: INTERACTION_SAMPLE_COUNT,
-                    ..Default::default()
-                },
-                cache: None,
-            },
+            &route_opts(
+                "particle_pick",
+                &pick_shader,
+                "viewport_pick_fs",
+                &[],
+                &pick_extra,
+                None,
+            ),
         );
 
         let mask_src = format!(
@@ -1800,45 +1436,17 @@ impl ParticlePlugin {
             label: Some("particle_mask_shader"),
             source: vwgpu::ShaderSource::Wgsl(mask_src.into()),
         });
-        let mask_layout = vwgpu::pipeline_layout(
+        let interaction_extra = [&draw_bgl];
+        let mask_pipeline = resources.build_mask_pipeline(
             device,
-            "particle_mask_layout",
-            &[shared.group0_layout, &draw_bgl],
-        );
-        let mask_pipeline = vwgpu::render_pipeline(
-            device,
-            vwgpu::RenderPipelineDesc {
-                label: "particle_mask",
-                layout: &mask_layout,
-                vertex_module: &mask_shader,
-                vertex_entry: "vs",
-                vertex_buffers: &[],
-                fragment: Some(vwgpu::FragmentState {
-                    module: &mask_shader,
-                    entry_point: Some("viewport_mask_fs"),
-                    targets: &[Some(vwgpu::ColorTargetState {
-                        format: MASK_COLOR_FORMAT,
-                        blend: None,
-                        write_mask: vwgpu::ColorWrites::RED,
-                    })],
-                    compilation_options: Default::default(),
-                }),
-                primitive: vwgpu::PrimitiveState {
-                    topology: vwgpu::PrimitiveTopology::TriangleList,
-                    cull_mode: None,
-                    ..Default::default()
-                },
-                depth_stencil: Some(vwgpu::depth_stencil(
-                    SCENE_DEPTH_FORMAT,
-                    false,
-                    vwgpu::CompareFunction::LessEqual,
-                )),
-                multisample: vwgpu::MultisampleState {
-                    count: INTERACTION_SAMPLE_COUNT,
-                    ..Default::default()
-                },
-                cache: None,
-            },
+            &route_opts(
+                "particle_mask",
+                &mask_shader,
+                "viewport_mask_fs",
+                &[],
+                &interaction_extra,
+                None,
+            ),
         );
 
         let shadow_shader = device.create_shader_module(vwgpu::ShaderModuleDescriptor {
@@ -1847,49 +1455,18 @@ impl ParticlePlugin {
                 include_str!("../shaders/particle_shadow.wgsl").into(),
             ),
         });
-        let shadow_layout = vwgpu::pipeline_layout(
+        // Depth-only, but with a fragment stage that discards for a round,
+        // alpha-dithered footprint. The builder's default bias.
+        let shadow_pipeline = resources.build_shadow_pipeline(
             device,
-            "particle_shadow_layout",
-            &[shared.shadow_group0_layout, &draw_bgl],
-        );
-        let shadow_pipeline = vwgpu::render_pipeline(
-            device,
-            vwgpu::RenderPipelineDesc {
-                label: "particle_shadow",
-                layout: &shadow_layout,
-                vertex_module: &shadow_shader,
-                vertex_entry: "vs",
-                vertex_buffers: &[],
-                // Depth-only, but with a fragment stage that discards for a round,
-                // alpha-dithered footprint (no colour targets).
-                fragment: Some(vwgpu::FragmentState {
-                    module: &shadow_shader,
-                    entry_point: Some("fs"),
-                    targets: &[],
-                    compilation_options: Default::default(),
-                }),
-                primitive: vwgpu::PrimitiveState {
-                    topology: vwgpu::PrimitiveTopology::TriangleList,
-                    cull_mode: None,
-                    ..Default::default()
-                },
-                depth_stencil: Some(vwgpu::DepthStencilState {
-                    format: SHADOW_DEPTH_FORMAT,
-                    depth_write_enabled: true,
-                    depth_compare: vwgpu::CompareFunction::LessEqual,
-                    stencil: vwgpu::StencilState::default(),
-                    bias: vwgpu::DepthBiasState {
-                        constant: 2,
-                        slope_scale: 2.0,
-                        clamp: 0.0,
-                    },
-                }),
-                multisample: vwgpu::MultisampleState {
-                    count: INTERACTION_SAMPLE_COUNT,
-                    ..Default::default()
-                },
-                cache: None,
-            },
+            &route_opts(
+                "particle_shadow",
+                &shadow_shader,
+                "fs",
+                &[],
+                &interaction_extra,
+                None,
+            ),
         );
 
         self.pick_pipeline = Some(pick_pipeline);
@@ -1966,7 +1543,7 @@ impl ParticlePlugin {
                 entries: &hook_entries,
             },
         ));
-        self.group0_layout = Some(shared.group0_layout.clone());
+        self.builder = Some(resources.pipeline_builder());
         self.history_bgl = Some(history_bgl);
         self.trail_draw_bgl = Some(trail_draw_bgl);
         self.sort_init_bgl = Some(sort_init_bgl);
@@ -1975,4 +1552,46 @@ impl ParticlePlugin {
         self.ramp_sampler = Some(ramp_sampler);
         self.default_spawn_samples = Some(build_default_spawn_samples(device));
     }
+}
+
+const ADDITIVE: vwgpu::BlendState = vwgpu::BlendState {
+    color: ONE,
+    alpha: ONE,
+};
+const OVER: vwgpu::BlendState = vwgpu::BlendState {
+    color: vwgpu::BlendComponent {
+        src_factor: vwgpu::BlendFactor::One,
+        dst_factor: vwgpu::BlendFactor::OneMinusSrcAlpha,
+        operation: vwgpu::BlendOperation::Add,
+    },
+    alpha: vwgpu::BlendComponent {
+        src_factor: vwgpu::BlendFactor::One,
+        dst_factor: vwgpu::BlendFactor::OneMinusSrcAlpha,
+        operation: vwgpu::BlendOperation::Add,
+    },
+};
+const ONE: vwgpu::BlendComponent = vwgpu::BlendComponent {
+    src_factor: vwgpu::BlendFactor::One,
+    dst_factor: vwgpu::BlendFactor::One,
+    operation: vwgpu::BlendOperation::Add,
+};
+
+/// Options for a particle render pipeline: entry point `vs`, no culling (a
+/// billboard faces either way), and no depth write, so overlapping particles
+/// blend instead of occluding. The pick, mask, OIT and shadow builders set
+/// their own depth write.
+fn route_opts<'a>(
+    label: &'a str,
+    shader: &'a vwgpu::ShaderModule,
+    fs_entry: &'a str,
+    vertex_layouts: &'a [vwgpu::VertexBufferLayout<'a>],
+    extra: &'a [&'a vwgpu::BindGroupLayout],
+    blend: Option<vwgpu::BlendState>,
+) -> PluginPipelineOpts<'a> {
+    let mut opts = PluginPipelineOpts::new(Some(label), shader, "vs", fs_entry, vertex_layouts);
+    opts.extra_bind_group_layouts = extra;
+    opts.primitive.cull_mode = None;
+    opts.depth_write = false;
+    opts.color_blend = blend;
+    opts
 }

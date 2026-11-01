@@ -68,7 +68,10 @@ fn rot_from_seed_age(seed: f32, age: f32) -> mat3x3<f32> {
 
 @vertex
 fn vs(@location(0) v_pos: vec3<f32>, @builtin(instance_index) ii: u32) -> VsOut {
-    let p = particles[order[ii]];
+    // Particles simulate in world coordinates; group 0 is relative to the
+    // renderer's world origin.
+    var p = particles[order[ii]];
+    p.position = p.position - camera.world_origin;
 
     let age = clamp(1.0 - p.lifetime / max(p.max_lifetime, 1e-4), 0.0, 1.0);
     // Row 0 (v = 0.25) holds colour + size; the ramp LUT is 2 rows tall (Phase 15).

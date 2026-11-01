@@ -27,6 +27,12 @@ struct Light {
 @group(1) @binding(0) var<storage, read> particles: array<Particle>;
 @group(1) @binding(1) var<storage, read> order: array<u32>;
 
+// The renderer's world origin, which the cascade matrix is relative to.
+struct Origin {
+    world_origin: vec4<f32>,
+};
+@group(2) @binding(0) var<uniform> origin: Origin;
+
 struct VsOut {
     @builtin(position) pos: vec4<f32>,
     @location(0) uv: vec2<f32>,
@@ -50,7 +56,7 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VsOut
         half = 0.0;
     }
     // A world-axis quad (X/Y plane): cheap, casts a round blob for any light.
-    let world = p.position + vec3<f32>(c.x * half, c.y * half, 0.0);
+    let world = p.position - origin.world_origin.xyz + vec3<f32>(c.x * half, c.y * half, 0.0);
 
     var out: VsOut;
     out.pos = light.view_proj * vec4<f32>(world, 1.0);

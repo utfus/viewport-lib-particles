@@ -42,10 +42,7 @@ fn headless_device() -> Option<(wgpu::Device, wgpu::Queue)> {
 fn frame_looking_at_origin() -> FrameData {
     let cam = Camera::default();
     let mut frame = FrameData::default();
-    let mut render_camera = RenderCamera::from_camera(&cam);
-    render_camera.forward = [0.0, 0.0, -1.0];
-    render_camera.far = cam.zfar;
-    render_camera.aspect = 1.0;
+    let render_camera = RenderCamera::from_camera(&cam);
     frame.camera.render_camera = render_camera;
     frame.camera.viewport_size = [SIZE as f32, SIZE as f32];
     frame.viewport.show_grid = false;
@@ -96,7 +93,7 @@ fn horizontal_extent(device: &wgpu::Device, queue: &wgpu::Queue, space: Simulati
     let mut renderer = ViewportRenderer::new(device, wgpu::TextureFormat::Rgba8UnormSrgb);
     let mut plugin = ParticlePlugin::new();
     let id = plugin.add_effect(device, sweep_cloud(space));
-    renderer.with_item_type_plugin(device, Box::new(plugin));
+    renderer.with_item_type_plugin(device, Box::new(plugin)).expect("register item type plugin");
 
     let target = target(device);
     let view = target.create_view(&wgpu::TextureViewDescriptor::default());
@@ -179,7 +176,9 @@ fn spawn_shapes_draw() {
         let mut renderer = ViewportRenderer::new(&device, wgpu::TextureFormat::Rgba8UnormSrgb);
         let mut plugin = ParticlePlugin::new();
         let id = plugin.add_effect(&device, asset);
-        renderer.with_item_type_plugin(&device, Box::new(plugin));
+        renderer
+            .with_item_type_plugin(&device, Box::new(plugin))
+            .expect("register item type plugin");
 
         let target = target(&device);
         let view = target.create_view(&wgpu::TextureViewDescriptor::default());

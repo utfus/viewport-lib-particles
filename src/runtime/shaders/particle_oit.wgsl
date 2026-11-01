@@ -149,7 +149,10 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VsOut
         vec2<f32>(-1.0,  1.0),
     );
     let c = corners[vi];
-    let p = particles[order[ii]];
+    // Particles simulate in world coordinates; group 0 is relative to the
+    // renderer's world origin.
+    var p = particles[order[ii]];
+    p.position = p.position - camera.world_origin;
 
     // Row 0 (v = 0.25) colour + size; row 1 (v = 0.75) alpha ramp (Phase 15).
     let age = clamp(1.0 - p.lifetime / max(p.max_lifetime, 1e-4), 0.0, 1.0);
@@ -168,7 +171,8 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VsOut
     out.view_z = (camera.view * vec4<f32>(world, 1.0)).z;
     out.age = age;
     out.age_sec = max(p.max_lifetime - p.lifetime, 0.0);
-    out.world = world;
+    // The hook keys procedural effects on world position.
+    out.world = viewport_absolute_pos(world);
     return out;
 }
 

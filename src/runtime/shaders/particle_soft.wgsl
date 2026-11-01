@@ -146,7 +146,10 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VsOut
         vec2<f32>(-1.0,  1.0),
     );
     let c = corners[vi];
-    let p = particles[order[ii]];
+    // Particles simulate in world coordinates; group 0 is relative to the
+    // renderer's world origin.
+    var p = particles[order[ii]];
+    p.position = p.position - camera.world_origin;
 
     let age = clamp(1.0 - p.lifetime / max(p.max_lifetime, 1e-4), 0.0, 1.0);
     let ramp0 = textureSampleLevel(ramp_tex, ramp_samp, vec2<f32>(age, 0.25), 0.0);

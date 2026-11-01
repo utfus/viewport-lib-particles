@@ -735,6 +735,11 @@ pub struct ParticlePlugin {
     pub(crate) mask_pipeline: Option<vwgpu::RenderPipeline>,
     pub(crate) shadow_pipeline: Option<vwgpu::RenderPipeline>,
     pub(crate) pick_bgl: Option<vwgpu::BindGroupLayout>,
+    /// The world origin the shadow pass's cascade matrix is relative to, at
+    /// group 2 of the shadow pipeline, and the value last written to it.
+    pub(crate) shadow_origin_buf: Option<vwgpu::Buffer>,
+    pub(crate) shadow_origin_bg: Option<vwgpu::BindGroup>,
+    pub(crate) shadow_origin_written: Option<[f32; 3]>,
 
     /// Live per-instance GPU + emission state, keyed by `(effect, key)`. Each
     /// entry owns an independent particle buffer, trail / sort state, and pick

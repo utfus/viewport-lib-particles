@@ -147,7 +147,7 @@ pub fn ground_item(
     material: viewport_lib::MaterialId,
 ) -> SceneRenderItem {
     let mut item = SceneRenderItem::new(mesh, material);
-    item.model = glam::Mat4::from_translation(glam::Vec3::new(0.0, 0.0, -0.25)).to_cols_array_2d();
+    item.model = glam::Mat4::from_translation(glam::Vec3::new(0.0, 0.0, -0.25)).into();
     item
 }
 
@@ -166,7 +166,7 @@ pub fn logs_item(
     material: viewport_lib::MaterialId,
 ) -> SceneRenderItem {
     let mut item = SceneRenderItem::new(mesh, material);
-    item.model = glam::Mat4::IDENTITY.to_cols_array_2d();
+    item.model = glam::Mat4::IDENTITY.into();
     item
 }
 

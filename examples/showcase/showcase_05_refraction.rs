@@ -15,7 +15,6 @@ use eframe::egui;
 use eframe::wgpu;
 use glam::Vec2;
 use viewport_lib::Camera;
-use viewport_lib::resources::SCENE_DEPTH_FORMAT;
 use viewport_lib::runtime::{GpuFrameContext, GpuPlugin, PostPaintTargets};
 use viewport_lib_particles::RefractionPlugin;
 
@@ -83,7 +82,13 @@ pub struct RefractionResources {
 }
 
 impl RefractionResources {
-    pub fn new(device: &wgpu::Device, format: wgpu::TextureFormat) -> Self {
+    /// `depth_format` is the depth attachment of the egui pass the blit draws
+    /// into, which is the renderer's scene depth format.
+    pub fn new(
+        device: &wgpu::Device,
+        format: wgpu::TextureFormat,
+        depth_format: wgpu::TextureFormat,
+    ) -> Self {
         let fullscreen = |src: &str,
                           label: &str,
                           bgl: Option<&wgpu::BindGroupLayout>,
@@ -161,7 +166,7 @@ impl RefractionResources {
             BLIT_WGSL,
             "refraction_blit",
             Some(&blit_bgl),
-            Some(SCENE_DEPTH_FORMAT),
+            Some(depth_format),
         );
 
         let sampler = device.create_sampler(&wgpu::SamplerDescriptor {
@@ -181,7 +186,7 @@ impl RefractionResources {
             mip_level_count: 1,
             sample_count: 1,
             dimension: wgpu::TextureDimension::D2,
-            format: SCENE_DEPTH_FORMAT,
+            format: depth_format,
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             view_formats: &[],
         });

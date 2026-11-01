@@ -9,7 +9,6 @@
 
 use glam::Vec2;
 use viewport_lib::Camera;
-use viewport_lib::resources::SCENE_DEPTH_FORMAT;
 use viewport_lib::runtime::{GpuFrameContext, GpuPlugin, PostPaintTargets};
 use viewport_lib::wgpu;
 
@@ -93,7 +92,8 @@ fn refraction_distorts_scene() {
     let scene = gradient_scene(&device, &queue);
     let scene_view = scene.create_view(&wgpu::TextureViewDescriptor::default());
 
-    // post_paint requires a depth view; the plugin does not read it.
+    // post_paint requires a depth view; the plugin does not read it, so any
+    // depth format does.
     let depth = device.create_texture(&wgpu::TextureDescriptor {
         label: Some("refraction-depth"),
         size: wgpu::Extent3d {
@@ -104,7 +104,7 @@ fn refraction_distorts_scene() {
         mip_level_count: 1,
         sample_count: 1,
         dimension: wgpu::TextureDimension::D2,
-        format: SCENE_DEPTH_FORMAT,
+        format: wgpu::TextureFormat::Depth32Float,
         usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
         view_formats: &[],
     });

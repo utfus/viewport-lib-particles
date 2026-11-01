@@ -79,8 +79,10 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VsOut
         return out;
     }
 
-    let p_new = s_new.xyz;
-    let p_old = s_old.xyz;
+    // History is recorded in world coordinates; group 0 is relative to the
+    // renderer's world origin.
+    let p_new = s_new.xyz - camera.world_origin;
+    let p_old = s_old.xyz - camera.world_origin;
 
     let total = f32(max(draw_params.trail_segments, 1u));
     let t_new = f32(seg) / total;

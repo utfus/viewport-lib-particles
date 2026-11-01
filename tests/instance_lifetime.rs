@@ -43,10 +43,7 @@ fn headless_device() -> Option<(wgpu::Device, wgpu::Queue)> {
 fn frame_looking_at_origin() -> FrameData {
     let cam = Camera::default();
     let mut frame = FrameData::default();
-    let mut render_camera = RenderCamera::from_camera(&cam);
-    render_camera.forward = [0.0, 0.0, -1.0];
-    render_camera.far = cam.zfar;
-    render_camera.aspect = 1.0;
+    let render_camera = RenderCamera::from_camera(&cam);
     frame.camera.render_camera = render_camera;
     frame.camera.viewport_size = [SIZE as f32, SIZE as f32];
     frame.viewport.show_grid = false;
@@ -110,7 +107,7 @@ fn time_scale_scales_and_freezes() {
     let mut plugin = ParticlePlugin::new();
     let id = plugin.add_effect(&device, steady_effect());
     let stats = plugin.stats_handle();
-    renderer.with_item_type_plugin(&device, Box::new(plugin));
+    renderer.with_item_type_plugin(&device, Box::new(plugin)).expect("register item type plugin");
 
     let view = offscreen_target(&device).create_view(&wgpu::TextureViewDescriptor::default());
 
@@ -188,7 +185,7 @@ fn prewarm_starts_near_steady_state() {
     let mut plugin = ParticlePlugin::new();
     let id = plugin.add_effect(&device, effect);
     let stats = plugin.stats_handle();
-    renderer.with_item_type_plugin(&device, Box::new(plugin));
+    renderer.with_item_type_plugin(&device, Box::new(plugin)).expect("register item type plugin");
 
     let view = offscreen_target(&device).create_view(&wgpu::TextureViewDescriptor::default());
 
@@ -233,7 +230,7 @@ fn idle_instance_is_reclaimed() {
     let mut plugin = ParticlePlugin::new();
     let id = plugin.add_effect(&device, steady_effect());
     let stats = plugin.stats_handle();
-    renderer.with_item_type_plugin(&device, Box::new(plugin));
+    renderer.with_item_type_plugin(&device, Box::new(plugin)).expect("register item type plugin");
 
     let view = offscreen_target(&device).create_view(&wgpu::TextureViewDescriptor::default());
 

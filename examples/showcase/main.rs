@@ -259,7 +259,9 @@ fn main() -> eframe::Result {
                 .map(|(_, asset)| plugin.add_effect(device, asset))
                 .next()
                 .expect("one interaction effect");
-            renderer.with_item_type_plugin(device, Box::new(plugin));
+            renderer
+                .with_item_type_plugin(device, Box::new(plugin))
+                .expect("register item type plugin");
 
             // Ground plane for the interaction showcase (shadow receiver).
             let ground_mesh = renderer
@@ -278,6 +280,9 @@ fn main() -> eframe::Result {
                 showcase_19_fire_improved::ground_material(renderer.resources_mut());
             let logs_material = showcase_19_fire_improved::logs_material(renderer.resources_mut());
 
+            // The host pass the renderer paints into carries a depth attachment
+            // of the renderer's scene depth format.
+            let depth_format = renderer.scene_depth_format();
             let mut writer = rs.renderer.write();
             writer.callback_resources.insert(renderer);
             // The refraction showcase drives a GpuPlugin directly; its GPU
@@ -285,19 +290,20 @@ fn main() -> eframe::Result {
             writer
                 .callback_resources
                 .insert(showcase_05_refraction::RefractionResources::new(
-                    device, format,
+                    device,
+                    format,
+                    depth_format,
                 ));
             drop(writer);
 
             Ok(Box::new(App {
                 sky_env,
                 target: None,
-                camera: Camera {
-                    distance: 10.0,
-                    orientation: glam::Quat::from_rotation_z(0.6)
-                        * glam::Quat::from_rotation_x(1.1),
-                    ..Camera::default()
-                },
+                camera: Camera::orbit(
+                    glam::DVec3::ZERO,
+                    10.0,
+                    glam::Quat::from_rotation_z(0.6) * glam::Quat::from_rotation_x(1.1),
+                ),
                 controller: OrbitCameraController::new_stateless(),
                 input: ViewportInput::from_preset(BindingPreset::Viewer),
                 mode: ShowcaseMode::Emitters,
@@ -827,11 +833,12 @@ impl App {
     fn feed_input(&mut self, ui: &egui::Ui, rect: egui::Rect) {
         ui.input(|i| {
             self.input
-                .push_event(ViewportEvent::ModifiersChanged(viewport_lib::Modifiers {
-                    alt: i.modifiers.alt,
-                    shift: i.modifiers.shift,
-                    ctrl: i.modifiers.command,
-                }));
+                .push_event(ViewportEvent::ModifiersChanged(
+                    viewport_lib::Modifiers::NONE
+                        .with_alt(i.modifiers.alt)
+                        .with_shift(i.modifiers.shift)
+                        .with_ctrl(i.modifiers.command),
+                ));
 
             if let Some(p) = i.pointer.interact_pos() {
                 let local = glam::Vec2::new(p.x - rect.left(), p.y - rect.top());

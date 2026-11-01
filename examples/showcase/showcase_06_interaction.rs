@@ -59,8 +59,7 @@ pub fn presets() -> Vec<(&'static str, EffectAsset)> {
 /// A ground plane (a wide flat cuboid) with its top surface at z = 0.
 pub fn ground_item(mesh: MeshId, material: MaterialId) -> SceneRenderItem {
     let mut ground = SceneRenderItem::new(mesh, material);
-    ground.model =
-        glam::Mat4::from_translation(glam::Vec3::new(0.0, 0.0, -0.25)).to_cols_array_2d();
+    ground.model = glam::Mat4::from_translation(glam::Vec3::new(0.0, 0.0, -0.25)).into();
     ground
 }
 

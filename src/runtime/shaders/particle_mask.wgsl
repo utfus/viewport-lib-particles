@@ -32,7 +32,10 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VsOut
         vec2<f32>(-1.0, 1.0),
     );
     let c = corners[vi];
-    let p = particles[order[ii]];
+    // Particles simulate in world coordinates; group 0 is relative to the
+    // renderer's world origin.
+    var p = particles[order[ii]];
+    p.position = p.position - camera.world_origin;
 
     var half = p.size * 0.5;
     if (p.lifetime <= 0.0) {

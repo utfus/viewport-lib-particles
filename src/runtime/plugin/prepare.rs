@@ -79,6 +79,17 @@ impl ItemTypePlugin for ParticlePlugin {
     ) -> Vec<vwgpu::CommandBuffer> {
         self.draw_list.clear();
 
+        // The shadow pass's cascade matrix is relative to the world origin; its
+        // pipeline reads the origin from a uniform the plugin owns. The buffer
+        // is zero-initialised, which matches a zero origin.
+        if let Some(buf) = self.shadow_origin_buf.as_ref() {
+            let o = ctx.world_origin().as_vec3().to_array();
+            if self.shadow_origin_written.unwrap_or([0.0; 3]) != o {
+                queue.write_buffer(buf, 0, bytemuck::cast_slice(&[o[0], o[1], o[2], 0.0]));
+                self.shadow_origin_written = Some(o);
+            }
+        }
+
         // Two submission forms, read together. `ParticleItems` carries the frame's own
         // settings (the time step, the culls, the budgets) as well as its instances; a plain
         // `Vec<ParticleItem>` is the terse path, for a host that wants the defaults and
@@ -500,7 +511,7 @@ impl ItemTypePlugin for ParticlePlugin {
                     sort_stage_pipeline.as_ref(),
                     self.instances.get(&ikey).and_then(|i| i.sort.as_ref()),
                 ) {
-                    let eye = ctx.camera.eye_position;
+                    let eye = ctx.camera.eye_position().as_vec3();
                     let ip = SortInitParams {
                         eye: [eye[0], eye[1], eye[2], 0.0],
                         capacity,
@@ -878,7 +889,10 @@ impl ItemTypePlugin for ParticlePlugin {
         _ctx: &ShadowCastContext<'_>,
         _items: &ItemCollections<'_>,
     ) {
-        let Some(pipeline) = self.shadow_pipeline.as_ref() else {
+        let (Some(pipeline), Some(origin_bg)) = (
+            self.shadow_pipeline.as_ref(),
+            self.shadow_origin_bg.as_ref(),
+        ) else {
             return;
         };
         // Group 0 (the cascade light matrix), viewport, and scissor are set by
@@ -894,6 +908,7 @@ impl ItemTypePlugin for ParticlePlugin {
             };
             pass.set_pipeline(pipeline);
             pass.set_bind_group(1, inst.gpu.draw_bg(), &[]);
+            pass.set_bind_group(2, origin_bg, &[]);
             pass.draw(0..6, 0..eff.asset.capacity);
         }
     }
@@ -1068,9 +1083,9 @@ impl ParticlePlugin {
         // Culling + simulation budget (Phase 26). Distance/frustum-cull instances
         // (sub-emitter effects exempt), dropping culled instances' particles; then
         // keep the nearest `max_sim_instances`.
-        let eye = glam::Vec3::from(ctx.camera.eye_position);
+        let eye = ctx.camera.eye_position().as_vec3();
         let frustum = if items.frustum_cull {
-            Some(Frustum::from_view_proj(&ctx.camera.view_proj()))
+            Some(Frustum::from_view_proj(&ctx.camera.culling_view_proj()))
         } else {
             None
         };

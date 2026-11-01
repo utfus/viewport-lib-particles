@@ -1455,6 +1455,37 @@ impl ParticlePlugin {
                 include_str!("../shaders/particle_shadow.wgsl").into(),
             ),
         });
+        // The shadow pass binds the cascade matrix at group 0 in place of the
+        // scene camera, so the world origin it is relative to rides at group 2.
+        let shadow_origin_bgl =
+            device.create_bind_group_layout(&vwgpu::BindGroupLayoutDescriptor {
+                label: Some("particle_shadow_origin_bgl"),
+                entries: &[vwgpu::BindGroupLayoutEntry {
+                    binding: 0,
+                    visibility: vwgpu::ShaderStages::VERTEX,
+                    ty: vwgpu::BindingType::Buffer {
+                        ty: vwgpu::BufferBindingType::Uniform,
+                        has_dynamic_offset: false,
+                        min_binding_size: None,
+                    },
+                    count: None,
+                }],
+            });
+        let shadow_origin_buf = device.create_buffer(&vwgpu::BufferDescriptor {
+            label: Some("particle_shadow_origin"),
+            size: 16,
+            usage: vwgpu::BufferUsages::UNIFORM | vwgpu::BufferUsages::COPY_DST,
+            mapped_at_creation: false,
+        });
+        let shadow_origin_bg = device.create_bind_group(&vwgpu::BindGroupDescriptor {
+            label: Some("particle_shadow_origin_bg"),
+            layout: &shadow_origin_bgl,
+            entries: &[vwgpu::BindGroupEntry {
+                binding: 0,
+                resource: shadow_origin_buf.as_entire_binding(),
+            }],
+        });
+        let shadow_extra = [&draw_bgl, &shadow_origin_bgl];
         // Depth-only, but with a fragment stage that discards for a round,
         // alpha-dithered footprint. The builder's default bias.
         let shadow_pipeline = resources.build_shadow_pipeline(
@@ -1464,7 +1495,7 @@ impl ParticlePlugin {
                 &shadow_shader,
                 "fs",
                 &[],
-                &interaction_extra,
+                &shadow_extra,
                 None,
             ),
         );
@@ -1472,6 +1503,9 @@ impl ParticlePlugin {
         self.pick_pipeline = Some(pick_pipeline);
         self.mask_pipeline = Some(mask_pipeline);
         self.shadow_pipeline = Some(shadow_pipeline);
+        self.shadow_origin_buf = Some(shadow_origin_buf);
+        self.shadow_origin_bg = Some(shadow_origin_bg);
+        self.shadow_origin_written = None;
         self.pick_bgl = Some(pick_bgl);
 
         self.emit_pipeline = Some(emit_pipeline);

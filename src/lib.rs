@@ -114,7 +114,7 @@ pub use registry::ModifierRegistry;
 /// whenever the shared-WGSL contract changes. The compile-time assertion below
 /// catches accidental drift so a stale shared-binding layout is a build error,
 /// not a runtime mismatch.
-pub const VIEWPORT_LIB_WGSL_VERSION: u32 = 11;
+pub const VIEWPORT_LIB_WGSL_VERSION: u32 = 12;
 
 #[cfg(feature = "gpu")]
 const _: () = assert!(

@@ -271,15 +271,6 @@ impl GpuPlugin for RefractionPlugin {
         }
     }
 
-    fn on_device_recreated(&mut self, _device: &vwgpu::Device, _queue: &vwgpu::Queue) {
-        // Drop everything built against the old device; init_gpu rebuilds the
-        // sampler and uniform, and post_paint rebuilds the pipeline and output.
-        self.sampler = None;
-        self.uniform_buf = None;
-        self.pipeline = None;
-        self.output = None;
-    }
-
     fn post_paint(
         &mut self,
         device: &vwgpu::Device,

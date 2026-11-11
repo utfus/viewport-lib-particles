@@ -1,5 +1,6 @@
 use super::*;
 use viewport_lib_types::material::TextureFilter;
+use viewport_lib_types::plugin::material::{MaterialPlugin, ParamKind, ParamValue};
 use viewport_lib_types::render_item::PainterPlacement;
 
 /// Fixed number of texture slots a custom fragment hook can bind. The group-3
@@ -32,40 +33,104 @@ pub struct InlineTexture {
     pub rgba: Vec<u8>,
 }
 
-/// A custom WGSL fragment shading hook for a particle's colour. Lets an imported
-/// shader-graph material's real colour be recovered rather than approximated: the hook runs per fragment in the billboard draw,
-/// combining the sampled sprite, extra textures, and its own logic.
+/// Custom WGSL that colours a billboard particle and can move its corners.
 ///
-/// The contract mirrors viewport-lib's `MaterialPlugin` shading hooks so a
-/// shader-graph -> WGSL lowering targets one body format: [`body`](Self::body)
-/// defines
+/// The contract is viewport-lib's sprite material contract (its
+/// `SpriteMaterials` and `sprite_contract.wgsl`), so one body draws a sprite
+/// and a particle, and [`FragmentHook::from_material`] takes a sprite material
+/// plugin as it is. This is the description both sides follow.
 ///
-/// ```wgsl
-/// fn shade_particle(f: ParticleFragment) -> vec4<f32> { /* straight rgba */ }
+/// # Functions
+///
+/// [`body`](Self::body) defines at least one of these, plus any helpers:
+///
+/// ```text
+/// fn shade_particle(f: ParticleFragment) -> vec4<f32>
+/// fn shade_sprite(f: SpriteFragment) -> vec4<f32>
+/// fn displace_particle(v: ParticleVertex) -> vec3<f32>
+/// fn displace_sprite(v: SpriteVertex) -> vec3<f32>
 /// ```
 ///
-/// where `ParticleFragment` carries `uv`, the base `texel`, the per-particle
-/// `colour`, life `age` / `age_sec`, `world` position, and `time`. Additional
-/// textures (up to `HOOK_TEXTURES`) are bound as
-/// `htex0..` and delivered as CPU bytes on the hook (see [`InlineTexture`]); params
-/// (up to 7 `vec4` lanes) are read as `hook_params.lanes[1..]` (lane 0 is engine-
-/// reserved, `.w` = time). The wrapper premultiplies the returned colour.
+/// A shading function returns the particle's straight-alpha linear colour in
+/// place of the built-in tint and texture; the plugin premultiplies it, and
+/// fades and lights it on the routes that do. A displacing function returns
+/// where one corner of the quad goes, in world space. A body with no shading
+/// function keeps the built-in colour; one with no displacing function keeps
+/// the corners where they are.
+///
+/// # Inputs
+///
+/// ```text
+/// struct ParticleFragment {
+///     uv:      vec2<f32>, // texture UV, the flipbook cell applied
+///     texel:   vec4<f32>, // the texture at uv; white with no texture
+///     colour:  vec4<f32>, // the particle's tint, with its ramps
+///     age:     f32,       // life, 0 at birth to 1 at death
+///     age_sec: f32,       // seconds since birth
+///     world:   vec3<f32>,
+///     time:    f32,       // seconds, from the frame time
+/// };
+/// ```
+///
+/// `SpriteFragment` starts with the same seven fields and adds `local_uv` (0
+/// to 1 across the quad from its bottom-left), `uv_rect` (the flipbook cell),
+/// `flash`, `dissolve` and `palette_row` (always 0 on a particle), and `uv_ddx`
+/// / `uv_ddy` (the derivatives of `uv`, for `textureSampleGrad`).
+/// `ParticleVertex` and `SpriteVertex` are the same struct: `corner` (0 bottom
+/// left, 1 bottom right, 2 top left, 3 top right), `local_uv`, `world` (the
+/// corner), `anchor` (the particle position) and `time`.
+///
+/// # Bindings
+///
+/// Up to `HOOK_TEXTURES` (4) textures read as `htex0..htex3` through
+/// `sprite_samp`, given as CPU bytes on the hook (see [`InlineTexture`]); the
+/// particle's own texture is `sprite_tex`. Params are `vec4` lanes in
+/// `hook_params.lanes`: lane 0 is reserved, with the time in `.w`, and param
+/// `i` is lane `1 + i`, at most 7. Named params are also read as
+/// `params.<name>`, swizzled to their type (see [`named_param`](Self::named_param)),
+/// and set per instance with
+/// [`ParticleItem::with_hook_param`](crate::ParticleItem::with_hook_param).
+/// Textures are read in the fragment stage only; params in both.
+///
+/// # Routes
+///
+/// Billboards on every billboard pass: additive and the other order-independent
+/// blends, OIT, soft, and painter, where a lit placement takes 2D light. Not
+/// the mesh or trail routes. Picks use the unmoved, camera-facing quad.
 #[derive(Clone, Debug, Default)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct FragmentHook {
     /// A WGSL identifier prefix for the hook's symbols, so a body is portable
     /// across host shaders without colliding.
     pub name: String,
-    /// WGSL body defining `fn shade_particle(f: ParticleFragment) -> vec4<f32>`
-    /// plus any helpers. Must not redefine the template's symbols (`vs`, `fs`,
-    /// `flip_uv`, `billboard_world`, `camera`, `particles`, ...).
+    /// The WGSL body: the functions above plus any helpers. Must not redefine
+    /// the template's symbols (`vs`, `fs`, `shade`, `base_colour`, `flip_uv`,
+    /// `billboard_world`, `camera`, `particles`, `params`, ...).
     pub body: String,
     /// Extra textures the hook samples (`htex0..`), as inline RGBA8 bytes uploaded
     /// by the plugin. At most `HOOK_TEXTURES`.
     pub textures: Vec<InlineTexture>,
     /// Custom params, one `vec4` lane each, read as `hook_params.lanes[1 + i]`.
-    /// Rewritten per frame; overridable per instance. At most 7.
+    /// At most 7.
     pub params: Vec<[f32; 4]>,
+    /// Names for the params, read in the body as fields of a `params` struct
+    /// (`params.tint`), as viewport-lib's material bodies read theirs. Entry
+    /// `i` names lane `1 + i`. Either empty or one per param. A named param can
+    /// be set per instance with
+    /// [`ParticleItem::with_hook_param`](crate::ParticleItem::with_hook_param).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub param_names: Vec<HookParamDecl>,
+}
+
+/// The name and type of one [`FragmentHook`] param lane. The body reads it as
+/// `params.<name>`, the lane swizzled to the type.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
+pub struct HookParamDecl {
+    /// The field name, a WGSL identifier.
+    pub name: String,
+    /// The field's WGSL type.
+    pub kind: ParamKind,
 }
 
 impl FragmentHook {
@@ -76,7 +141,27 @@ impl FragmentHook {
             body: body.into(),
             textures: Vec::new(),
             params: Vec::new(),
+            param_names: Vec::new(),
         }
+    }
+
+    /// A hook from a viewport-lib material plugin's body and parameters, so
+    /// the body written for a sprite material draws a particle too. Its
+    /// parameters become named lanes at their defaults. Textures are not part
+    /// of a material plugin; add them with [`texture`](Self::texture).
+    pub fn from_material(plugin: &dyn MaterialPlugin) -> Self {
+        let mut hook = Self::new(plugin.name(), plugin.wgsl_body());
+        for p in plugin.param_layout() {
+            let lane = match p.default {
+                ParamValue::F32(v) => [v, 0.0, 0.0, 0.0],
+                ParamValue::Vec2(v) => [v[0], v[1], 0.0, 0.0],
+                ParamValue::Vec3(v) => [v[0], v[1], v[2], 0.0],
+                ParamValue::Vec4(v) => v,
+                ParamValue::Colour(c) => c.into(),
+            };
+            hook = hook.named_param(p.name, p.kind, lane);
+        }
+        hook
     }
 
     /// Add a texture input (`htex0`, `htex1`, ...), as inline RGBA8 bytes.
@@ -95,27 +180,52 @@ impl FragmentHook {
         self
     }
 
+    /// Add a named params lane, read in the body as `params.<name>` and set
+    /// per instance by name. Mixing with unnamed [`param`](Self::param) lanes
+    /// is refused by [`validate`](Self::validate).
+    pub fn named_param(mut self, name: impl Into<String>, kind: ParamKind, lane: [f32; 4]) -> Self {
+        self.params.push(lane);
+        self.param_names.push(HookParamDecl {
+            name: name.into(),
+            kind,
+        });
+        self
+    }
+
+    /// The lane of the param called `name`, counting from 1.
+    pub fn param_lane(&self, name: &str) -> Option<usize> {
+        self.param_names.iter().position(|d| d.name == name).map(|i| i + 1)
+    }
+
     /// Structural check before compilation: the `name` is a valid WGSL
-    /// identifier, the body defines `shade_particle`, and the texture / param
-    /// counts are within the fixed caps. A WGSL *compile* error in the body still
+    /// identifier, the body defines one of the hook functions, the params are
+    /// all named or none, and the texture / param counts are within the fixed
+    /// caps. A WGSL *compile* error in the body still
     /// shows up at pipeline build, as with the codegen path.
     pub fn validate(&self) -> Result<(), String> {
-        let ident_ok = !self.name.is_empty()
-            && self
-                .name
-                .chars()
-                .next()
-                .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
-            && self
-                .name
-                .chars()
-                .all(|c| c.is_ascii_alphanumeric() || c == '_');
-        if !ident_ok {
+        if !is_identifier(&self.name) {
             return Err(format!("hook name {:?} is not a valid WGSL identifier", self.name));
         }
-        if !self.body.contains("fn shade_particle(") {
-            return Err("hook body must define `fn shade_particle(f: ParticleFragment) -> vec4<f32>`"
+        let defines = |f: &str| self.body.contains(&format!("fn {f}("));
+        if !["shade_particle", "shade_sprite", "displace_particle", "displace_sprite"]
+            .iter()
+            .any(|f| defines(f))
+        {
+            return Err("hook body must define `shade_particle`, `shade_sprite`, \
+                 `displace_particle` or `displace_sprite`"
                 .to_string());
+        }
+        if !self.param_names.is_empty() && self.param_names.len() != self.params.len() {
+            return Err(format!(
+                "hook names {} of its {} params; name all of them or none",
+                self.param_names.len(),
+                self.params.len()
+            ));
+        }
+        for (i, d) in self.param_names.iter().enumerate() {
+            if !is_identifier(&d.name) || self.param_names[..i].iter().any(|e| e.name == d.name) {
+                return Err(format!("hook param name {:?} is not a unique WGSL identifier", d.name));
+            }
         }
         if self.textures.len() > HOOK_TEXTURES {
             return Err(format!(
@@ -134,6 +244,13 @@ impl FragmentHook {
         }
         Ok(())
     }
+}
+
+fn is_identifier(s: &str) -> bool {
+    s.chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
+        && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
 /// When a parent effect produces spawn events for its child.

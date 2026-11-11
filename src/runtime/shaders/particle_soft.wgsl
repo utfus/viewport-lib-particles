@@ -159,8 +159,42 @@ struct VsOut {
     @location(1) uv: vec2<f32>,
     @location(2) age: f32,
     @location(3) age_sec: f32,
-    @location(4) world_pos: vec3<f32>,
+    @location(4) world: vec3<f32>,
 };
+
+// One corner of a billboard as a vertex hook sees it, the same fields as
+// viewport-lib's `SpriteVertex`.
+struct ParticleVertex {
+    // Which corner: 0 bottom left, 1 bottom right, 2 top left, 3 top right.
+    corner: u32,
+    // The corner's position across the quad, 0 to 1 from its bottom-left.
+    local_uv: vec2<f32>,
+    // The corner in world space.
+    world: vec3<f32>,
+    // The particle's position in world space.
+    anchor: vec3<f32>,
+    // Seconds, from the frame time.
+    time: f32,
+};
+
+// __PARTICLE_DISPLACE_BEGIN__
+// Where a corner goes. A hook with a vertex body replaces this.
+fn particle_displace(v: ParticleVertex) -> vec3<f32> {
+    return v.world;
+}
+// __PARTICLE_DISPLACE_END__
+
+// The corner `c` (-1 or 1 on each axis) of the particle at `anchor`, moved by
+// the vertex hook.
+fn displace_corner(c: vec2<f32>, world: vec3<f32>, anchor: vec3<f32>) -> vec3<f32> {
+    var v: ParticleVertex;
+    v.corner = u32(c.x > 0.0) + 2u * u32(c.y > 0.0);
+    v.local_uv = c * 0.5 + vec2<f32>(0.5);
+    v.world = world;
+    v.anchor = anchor;
+    v.time = camera.time.x;
+    return particle_displace(v);
+}
 
 @vertex
 fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VsOut {
@@ -184,7 +218,7 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VsOut
 
     let age_sec = max(p.max_lifetime - p.lifetime, 0.0);
     let roll = p.pad.x + draw_params.roll_rate * age_sec;
-    let world = billboard_world(p, c, ramp0.a, roll);
+    let world = displace_corner(c, billboard_world(p, c, ramp0.a, roll), p.position);
 
     var out: VsOut;
     out.pos = camera.view_proj * vec4<f32>(world, 1.0);
@@ -197,15 +231,20 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VsOut
     out.uv = vec2<f32>(c.x * 0.5 + 0.5, 0.5 - c.y * 0.5);
     out.age = age;
     out.age_sec = max(p.max_lifetime - p.lifetime, 0.0);
-    out.world_pos = world;
+    out.world = world;
     return out;
 }
 
-fn shade(in: VsOut) -> vec4<f32> {
+// The particle's straight-alpha colour: its tint, the texture by
+// `tex_mode`, or the procedural soft dot when it has no texture.
+fn base_colour(in: VsOut) -> vec4<f32> {
+    // Sample unconditionally (a white default is always bound) so the texture op
+    // stays in uniform control flow; `tex_mode` then selects how it applies.
     let texel = textureSample(sprite_tex, sprite_samp, flip_uv(in.uv, in.age, in.age_sec));
     var rgb = in.color.rgb;
     var a = in.color.a;
     if (draw_params.tex_mode == 0u) {
+        // Procedural soft round dot (no texture).
         let d = distance(in.uv, vec2<f32>(0.5, 0.5));
         a = a * (1.0 - smoothstep(0.35, 0.5, d));
     } else if (draw_params.tex_mode == 1u) {
@@ -216,17 +255,24 @@ fn shade(in: VsOut) -> vec4<f32> {
     } else {
         a = a * texel.r;
     }
+    return vec4<f32>(rgb, a);
+}
 
-    // Soft fade against the opaque scene depth. `in.pos` is the framebuffer
-    // coordinate; the depth texture is the same render-target space, so its
-    // dimensions give the screen UV.
+// The soft fade against the opaque scene depth. `in.pos` is the framebuffer
+// coordinate; the depth texture is the same render-target space, so its
+// dimensions give the screen UV. One when the soft distance is zero.
+fn soft_fade(in: VsOut) -> f32 {
     let dims = vec2<f32>(textureDimensions(scene_depth));
     let screen_uv = in.pos.xy / dims;
     let scene_ndc_z = textureSample(scene_depth, scene_depth_samp, screen_uv).r;
-    let fade = viewport_soft_fade_from_ndc(in.world_pos, screen_uv, scene_ndc_z, draw_params.soft_dist);
-    a = a * fade;
+    return viewport_soft_fade_from_ndc(in.world, screen_uv, scene_ndc_z, draw_params.soft_dist);
+}
 
-    return vec4<f32>(rgb * a, a); // premultiplied
+// Premultiplied and faded.
+fn shade(in: VsOut) -> vec4<f32> {
+    let c = base_colour(in);
+    let a = c.a * soft_fade(in);
+    return vec4<f32>(c.rgb * a, a);
 }
 
 @fragment
@@ -242,3 +288,6 @@ fn fs_multiply(in: VsOut) -> @location(0) vec4<f32> {
     let c = shade(in);
     return vec4<f32>(c.rgb + vec3<f32>(1.0 - c.a), c.a);
 }
+
+// Custom fragment hook is spliced in here for effects that carry one.
+// __PARTICLE_HOOK_SLOT__

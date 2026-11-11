@@ -545,6 +545,60 @@ pub(crate) fn build_drawparams_bg(
     })
 }
 
+/// The folded hook bind group: group 1 of a hooked billboard's soft and painter
+/// pipelines. The folded billboard bindings (particles, order, draw params,
+/// sprite, sampler: 0 to 4), then the hook params (5) and textures (6..).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_hook_folded_bg(
+    device: &vwgpu::Device,
+    bgl: &vwgpu::BindGroupLayout,
+    particle_buf: &vwgpu::Buffer,
+    order_buf: &vwgpu::Buffer,
+    draw_params_buf: &vwgpu::Buffer,
+    sprite_view: &vwgpu::TextureView,
+    sampler: &vwgpu::Sampler,
+    hook_params_buf: &vwgpu::Buffer,
+    hook_views: &[&vwgpu::TextureView],
+) -> vwgpu::BindGroup {
+    let mut entries = vec![
+        vwgpu::BindGroupEntry {
+            binding: 0,
+            resource: particle_buf.as_entire_binding(),
+        },
+        vwgpu::BindGroupEntry {
+            binding: 1,
+            resource: order_buf.as_entire_binding(),
+        },
+        vwgpu::BindGroupEntry {
+            binding: 2,
+            resource: draw_params_buf.as_entire_binding(),
+        },
+        vwgpu::BindGroupEntry {
+            binding: 3,
+            resource: vwgpu::BindingResource::TextureView(sprite_view),
+        },
+        vwgpu::BindGroupEntry {
+            binding: 4,
+            resource: vwgpu::BindingResource::Sampler(sampler),
+        },
+        vwgpu::BindGroupEntry {
+            binding: 5,
+            resource: hook_params_buf.as_entire_binding(),
+        },
+    ];
+    for (i, v) in hook_views.iter().enumerate() {
+        entries.push(vwgpu::BindGroupEntry {
+            binding: 6 + i as u32,
+            resource: vwgpu::BindingResource::TextureView(v),
+        });
+    }
+    device.create_bind_group(&vwgpu::BindGroupDescriptor {
+        label: Some("particle_hook_folded_bg"),
+        layout: bgl,
+        entries: &entries,
+    })
+}
+
 /// Group-3 bind group for a custom fragment hook: the draw-params
 /// uniform (0), the sprite texture (1) + sampler (2), the per-frame `hook_params`
 /// uniform (3), and the hook's textures (4..), padded with the shared white

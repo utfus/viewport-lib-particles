@@ -2,13 +2,16 @@
 
 mod asset;
 mod collider;
+mod hook_presets;
 mod emitter;
 mod ids;
 mod plane;
 mod program;
 mod render;
 
-pub use asset::{EffectAsset, EventCondition, FragmentHook, InlineTexture, SubEmitter};
+pub use asset::{
+    EffectAsset, EventCondition, FragmentHook, HookParamDecl, InlineTexture, SubEmitter,
+};
 #[cfg(feature = "gpu")]
 pub(crate) use asset::{HOOK_PARAM_LANES, HOOK_TEXTURES};
 pub use emitter::{

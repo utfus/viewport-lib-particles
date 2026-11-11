@@ -5,7 +5,7 @@
 ### Breaking
 
 - **Billboard textures put row 0 at the top** - a billboard's texture, and each flipbook cell, now maps texture row 0 (the first row of `upload_texture` / `with_texture_rgba` bytes, and the top row as images load) to the quad's top edge, as viewport-lib's sprites and tilemaps read them; it was mapped to the bottom. A flipbook's first row of cells is the top row of the sheet. Remove any vertical flip added to compensate.
-- **`EffectAsset` and `ParticleItem` gain fields** - `EffectAsset::{plane_lock, painter, painter_depth_test, texture_filter, pixel_snap, texels_per_unit, collide}` and `ParticleItem::painter`. `EffectAsset` is `#[non_exhaustive]`; a `ParticleItem` struct literal needs the new field, or build it with `ParticleItem::new`.
+- **`EffectAsset`, `ParticleItem` and `FragmentHook` gain fields** - `EffectAsset::{plane_lock, painter, painter_depth_test, texture_filter, pixel_snap, texels_per_unit, collide}`, `ParticleItem::{painter, hook_params}` and `FragmentHook::param_names`. `EffectAsset` is `#[non_exhaustive]`; a `ParticleItem` or `FragmentHook` struct literal needs the new fields, or build it with `new`.
 
 ### Features
 
@@ -19,6 +19,10 @@
 - **Pixel-art billboards** - `EffectAsset::with_texture_filter(TextureFilter::Nearest)` samples the billboard texture without blending, `with_pixel_snap(true)` puts each billboard's centre on a whole device pixel as sprites snap, and `with_integer_scale(texels_per_unit)` sizes billboards from their texture or flipbook cell, ignoring the particle size and size ramp, so a camera at a whole number of pixels per texel draws each texel as a block of whole pixels. Integer-scale billboards can be non-square. `TextureFilter` is re-exported from viewport-lib-types.
 - **2D colliders** - `ParticlePlugin::add_collider_set` registers a `Collider2dSet` of `Collider2d` shapes (segments, rectangles, polygons and loose edges, the same shapes as viewport-lib's `Occluder2d`) in plane coordinates, and `EffectAsset::with_collide(Collide2d { set, response })` makes a plane-locked effect bounce off them (`CollisionResponse::Bounce { restitution, friction }`), die on them (`Kill`) or stick to them (`Stick`). Each step tests the particle's path, so fast particles do not pass thin walls. Replace a set with `replace_collider_set` or the queued `ParticleItems::replace_collider_set`; `collider_stats` reports a set's edge and cell counts. Fixed-function only.
 - **`EventCondition::OnContact`** - a sub-emitter fires when a parent particle hits a collider, for splashes. A `match` over `EventCondition` needs an arm for it.
+- **One hook contract with viewport-lib's sprite materials** - a `FragmentHook` body may define `shade_sprite(f: SpriteFragment)` as well as `shade_particle`, and `displace_particle` or `displace_sprite` to move the quad's corners, so one body draws a sprite and a particle. `FragmentHook::from_material` takes a `MaterialPlugin` written for sprites as it is. The contract is written out on `FragmentHook`.
+- **Named hook params** - `FragmentHook::named_param` declares a lane the body reads as `params.<name>`, and `ParticleItem::with_hook_param` sets it per instance. Hook params are rewritten every frame, so the per-instance value changes as it is set.
+- **Ready-made hooks** - `FragmentHook::flash`, `dissolve`, `palette_swap` and `outline` do what viewport-lib's sprite effects do, with the same maths. A particle's outline stays inside its quad.
+- **Hooks on the soft and painter routes** - hooked billboards draw soft, and in painter order they take the 2D light of their range like plain billboards.
 
 ## [0.1.0]
 

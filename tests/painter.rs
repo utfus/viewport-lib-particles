@@ -385,3 +385,37 @@ fn trails_and_hooked_billboards_draw_in_painter_order() {
     let trail = (-18..0).any(|y| green(scene.pixel(14.0, y as f32)));
     assert!(trail, "a painter trail should draw over the sprite");
 }
+
+#[test]
+fn hooked_painter_billboards_take_the_2d_light() {
+    use viewport_lib_particles::FragmentHook;
+    let hook = || FragmentHook::flash([1.0, 1.0, 1.0], 0.0);
+    let Some((mut scene, ids)) = Scene::new(|p, d| {
+        vec![
+            p.add_effect(d, square(PainterPlacement::new(1, 0.0), 14.0).with_fragment_hook(hook())),
+            p.add_effect(
+                d,
+                square(PainterPlacement::new(1, 0.0).with_unlit(true), 14.0)
+                    .with_fragment_hook(hook()),
+            ),
+        ]
+    }) else {
+        eprintln!("skipping: no GPU adapter available");
+        return;
+    };
+    let mut dark = Lighting2dItem::default();
+    dark.ambient = Colour::linear_rgb(0.1, 0.1, 0.1);
+    dark.use_frame_lights = false;
+    let particles = [
+        ParticleItem::new(ids[0]).with_key(1).at([-14.0, 0.0, 0.0]),
+        ParticleItem::new(ids[1]).with_key(2).at([14.0, 0.0, 0.0]),
+    ];
+    scene.render(&particles, &[], Some(dark), 3);
+    let lit = scene.pixel(-14.0, 0.0);
+    let unlit = scene.pixel(14.0, 0.0);
+    assert!(green(unlit), "an unlit hooked placement keeps its colour, got {unlit:?}");
+    assert!(
+        lit[1] < unlit[1] - 80,
+        "a lit hooked placement darkens under a dim ambient: lit {lit:?}, unlit {unlit:?}"
+    );
+}

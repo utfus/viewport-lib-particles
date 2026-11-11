@@ -87,7 +87,7 @@ pub(crate) use runtime::{plugin, refraction};
 
 pub use effect::{
     Attribute, EffectAsset, EffectId, EffectProgram, Emitter, EventCondition, Flipbook,
-    ForceModifier, FragmentHook, Gradient, InlineTexture, MeshAlign, Modifier, Orient,
+    ForceModifier, FragmentHook, Gradient, HookParamDecl, InlineTexture, MeshAlign, Modifier, Orient,
     ParticleBlend, ParticleMeshId, ParticlePlane, ParticleRender, ParticleTextureId, PlaneLock,
     PlaneLockMismatch, PropertyDecl, PropertyValue, SetAttribute, SimulationSpace, SpawnRate,
     SpawnShape, SubEmitter, TextureMode, TimedBurst, UpdateOp, VelocityDist,
@@ -100,6 +100,7 @@ pub use expr::{
 };
 pub use items::{ParticleItem, ParticleItems};
 pub use viewport_lib_types::material::TextureFilter;
+pub use viewport_lib_types::plugin::material::ParamKind;
 pub use viewport_lib_types::render_item::{PainterPlacement, painter_key};
 #[cfg(feature = "gpu")]
 pub use plugin::{ColliderStats, ParticlePlugin, ParticleStats, ParticleStatsHandle};

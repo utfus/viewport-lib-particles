@@ -621,8 +621,12 @@ pub(crate) struct EffectInstance {
 pub(crate) struct CustomDrawPipelines {
     /// The `custom_draw_cache` key, which names the hook's painter pipelines.
     pub(crate) key: u64,
-    /// The composed draw-route shader, for the hook's painter pipelines.
-    pub(crate) draw_shader: vwgpu::ShaderModule,
+    /// The composed folded-route shader, for the hook's painter pipelines.
+    pub(crate) folded_shader: vwgpu::ShaderModule,
+    /// The soft pass's pipelines: over, additive, then multiply and screen.
+    pub(crate) soft_over: vwgpu::RenderPipeline,
+    pub(crate) soft_additive: vwgpu::RenderPipeline,
+    pub(crate) soft_blends: BlendPipelines,
     /// Additive HDR billboard pipeline (drawn in `paint`).
     pub(crate) additive: vwgpu::RenderPipeline,
     /// Multiply and screen HDR billboard pipelines (drawn in `paint`).
@@ -646,7 +650,8 @@ pub(crate) enum PainterRoute {
     Billboard,
     Mesh,
     Trail,
-    /// A hooked billboard, by its `custom_draw_cache` key. Unlit.
+    /// A hooked billboard, by its `custom_draw_cache` key, through the hook's
+    /// folded shader. Lit like the plain billboard route.
     Hook(u64),
 }
 
@@ -705,6 +710,9 @@ pub(crate) struct CustomDraw {
     /// The `hook_params` uniform (lane 0 engine-reserved, `.w` = time), rewritten
     /// each frame in `prepare`.
     pub(crate) params_buf: vwgpu::Buffer,
+    /// Group 1 for the hooked folded pipelines (soft and painter passes): the
+    /// folded billboard bindings, the params and the hook textures.
+    pub(crate) folded_bind_group: vwgpu::BindGroup,
 }
 
 /// A live transient (burst) instance: a pooled particle set playing a
@@ -848,6 +856,8 @@ pub struct ParticlePlugin {
     /// The renderer's depth-read layout, group 3 of the folded billboard
     /// pipelines.
     pub(crate) depth_read_bgl: Option<vwgpu::BindGroupLayout>,
+    /// Group 1 of a hooked billboard's soft and painter pipelines.
+    pub(crate) hook_folded_bgl: Option<vwgpu::BindGroupLayout>,
     /// Nearest clamp sampler for billboards with `TextureFilter::Nearest`.
     /// Built here because `sampler_for` is on `DeviceResources`, which a
     /// plugin does not get.

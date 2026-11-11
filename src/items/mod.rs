@@ -81,6 +81,11 @@ pub struct ParticleItem {
     /// [`EffectAsset::painter`]. A y-sorted effect sets it every frame from the
     /// instance's own sort value. `None` keeps the effect's.
     pub painter: Option<PainterPlacement>,
+    /// Per-instance values for the effect's named [`FragmentHook`] params, by
+    /// name, over the hook's own. A name the hook does not declare is ignored.
+    ///
+    /// [`FragmentHook`]: crate::FragmentHook
+    pub hook_params: Vec<(&'static str, [f32; 4])>,
 }
 
 impl ParticleItem {
@@ -100,6 +105,7 @@ impl ParticleItem {
             time_scale: 1.0,
             warmup: None,
             painter: None,
+            hook_params: Vec::new(),
         }
     }
 
@@ -125,6 +131,13 @@ impl ParticleItem {
     /// sub-emitter parent/child effects, which stay single-instance.
     pub fn with_key(mut self, key: u64) -> Self {
         self.key = key;
+        self
+    }
+
+    /// Set the effect's named hook param `name` for this instance: a hit
+    /// flash's amount, a dissolve's threshold.
+    pub fn with_hook_param(mut self, name: &'static str, value: [f32; 4]) -> Self {
+        self.hook_params.push((name, value));
         self
     }
 

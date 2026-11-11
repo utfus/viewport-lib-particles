@@ -2,10 +2,10 @@
 //! batch each into viewport-lib's painter sequence and draw there, sorted with
 //! sprites and tile layers by layer and key, instead of in the 3D passes.
 //!
-//! Billboards draw through the folded billboard shader with the renderer's
-//! depth-read group at group 3, which carries the 2D light layers, so a lit
-//! placement takes its range's light. The mesh and trail routes and hooked
-//! billboards keep their own layouts, whose group 3 is taken, and draw unlit.
+//! Billboards, hooked or not, draw through the folded billboard shader with the
+//! renderer's depth-read group at group 3, which carries the 2D light layers,
+//! so a lit placement takes its range's light. The mesh and trail routes keep
+//! their own layouts, whose group 3 is taken, and draw unlit.
 //!
 //! [`PainterPlacement`]: viewport_lib_types::render_item::PainterPlacement
 
@@ -104,10 +104,14 @@ impl ParticlePlugin {
                     [self.trail_draw_bgl.as_ref()?, ramp, self.drawparams_bgl.as_ref()?],
                 ),
                 PainterRoute::Hook(hook) => (
-                    &self.custom_draw_cache.get(&hook)?.draw_shader,
-                    if multiply { "fs_hook_multiply" } else { "fs_hook" },
+                    &self.custom_draw_cache.get(&hook)?.folded_shader,
+                    if multiply {
+                        "fs_hook_painter_multiply"
+                    } else {
+                        "fs_hook_painter"
+                    },
                     &[],
-                    [self.draw_bgl.as_ref()?, ramp, self.hook_drawparams_bgl.as_ref()?],
+                    [self.hook_folded_bgl.as_ref()?, ramp, self.depth_read_bgl.as_ref()?],
                 ),
             };
         let mut opts = route_opts(
@@ -164,18 +168,16 @@ impl ParticlePlugin {
             pass.set_bind_group(2, inst.gpu.ramp_bg(), &[]);
             match eff.asset.render {
                 ParticleRender::Billboard { .. } => {
-                    if let Some(cd) = inst.custom_draw.as_ref() {
-                        pass.set_bind_group(1, inst.gpu.draw_bg(), &[]);
-                        pass.set_bind_group(3, &cd.bind_group, &[]);
-                    } else {
-                        let (Some(folded), Some(depth_read)) =
-                            (inst.soft_draw_bg.as_ref(), ctx.depth_read_bind_group)
-                        else {
-                            continue;
-                        };
-                        pass.set_bind_group(1, folded, &[]);
-                        pass.set_bind_group(3, depth_read, &[]);
-                    }
+                    let folded = match inst.custom_draw.as_ref() {
+                        Some(cd) => Some(&cd.folded_bind_group),
+                        None => inst.soft_draw_bg.as_ref(),
+                    };
+                    let (Some(folded), Some(depth_read)) = (folded, ctx.depth_read_bind_group)
+                    else {
+                        continue;
+                    };
+                    pass.set_bind_group(1, folded, &[]);
+                    pass.set_bind_group(3, depth_read, &[]);
                     pass.draw(0..6, 0..eff.asset.capacity);
                 }
                 ParticleRender::Mesh { mesh, .. } => {

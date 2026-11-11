@@ -790,10 +790,25 @@ impl ParticlePlugin {
                     &params_buf,
                     &hook_views,
                 );
+                // The folded group shares the folded billboard's draw params
+                // buffer, so the painter layer written each frame reaches it.
+                let (folded_params_buf, _) = folded_params.as_ref().unwrap();
+                let folded_bind_group = build_hook_folded_bg(
+                    device,
+                    self.hook_folded_bgl.as_ref().unwrap(),
+                    gpu.particle_buf(),
+                    &order_buf,
+                    folded_params_buf,
+                    sprite_view,
+                    sampler,
+                    &params_buf,
+                    &hook_views,
+                );
                 Some(CustomDraw {
                     pipelines,
                     bind_group,
                     params_buf,
+                    folded_bind_group,
                 })
             }
             _ => None,
@@ -1044,9 +1059,44 @@ impl ParticlePlugin {
             screen: blend("fs_hook", SCREEN, "particle_hook_draw_screen"),
         };
 
+        // The folded route: the soft pass and the painter pass, which binds the
+        // depth-read group at group 3 and so folds the hook bindings into group 1.
+        let folded_prelude =
+            format!("{SHARED_BINDINGS_WGSL}\n{SHARED_DEPTH_READ_WGSL}\n{SHARED_PAINTER_MASK_WGSL}");
+        let folded_template = format!(
+            "{}\n{}",
+            include_str!("../shaders/particle_soft.wgsl"),
+            include_str!("../shaders/particle_painter.wgsl")
+        );
+        let folded_src = compose_billboard(&folded_prelude, &folded_template, hook, HookRoute::Folded);
+        let folded_shader = device.create_shader_module(vwgpu::ShaderModuleDescriptor {
+            label: Some("particle_hook_folded_shader"),
+            source: vwgpu::ShaderSource::Wgsl(folded_src.into()),
+        });
+        let folded_extra = [
+            self.hook_folded_bgl.as_ref().unwrap(),
+            self.ramp_bgl.as_ref().unwrap(),
+            self.depth_read_bgl.as_ref().unwrap(),
+        ];
+        let soft = |fs: &str, state: vwgpu::BlendState, label: &str| {
+            builder.build_depth_read_pipeline(
+                device,
+                &route_opts(label, &folded_shader, fs, &[], &folded_extra, Some(state)),
+            )
+        };
+        let soft_over = soft("fs_hook", OVER, "particle_hook_soft_over");
+        let soft_additive = soft("fs_hook", ADDITIVE, "particle_hook_soft_additive");
+        let soft_blends = BlendPipelines {
+            multiply: soft("fs_hook_multiply", MULTIPLY, "particle_hook_soft_multiply"),
+            screen: soft("fs_hook", SCREEN, "particle_hook_soft_screen"),
+        };
+
         let pipelines = CustomDrawPipelines {
             key,
-            draw_shader: add_shader.clone(),
+            folded_shader,
+            soft_over,
+            soft_additive,
+            soft_blends,
             additive,
             blends,
             oit,
@@ -1482,9 +1532,7 @@ impl ParticlePlugin {
         // carry the scene depth (we are already at four groups), with the
         // renderer's depth-read layout there so the context's prebuilt
         // `scene_depth_bind_group` binds against it.
-        let soft_draw_bgl = device.create_bind_group_layout(&vwgpu::BindGroupLayoutDescriptor {
-            label: Some("particle_soft_draw_bgl"),
-            entries: &[
+        let soft_draw_entries = [
                 draw_storage(0),
                 draw_storage(1),
                 vwgpu::BindGroupLayoutEntry {
@@ -1513,7 +1561,10 @@ impl ParticlePlugin {
                     ty: vwgpu::BindingType::Sampler(vwgpu::SamplerBindingType::Filtering),
                     count: None,
                 },
-            ],
+        ];
+        let soft_draw_bgl = device.create_bind_group_layout(&vwgpu::BindGroupLayoutDescriptor {
+            label: Some("particle_soft_draw_bgl"),
+            entries: &soft_draw_entries,
         });
         let depth_read_bgl = resources
             .depth_read_bind_group_layout()
@@ -1781,9 +1832,10 @@ impl ParticlePlugin {
                 ty: vwgpu::BindingType::Sampler(vwgpu::SamplerBindingType::Filtering),
                 count: None,
             },
+            // The params are read by the vertex hook too.
             vwgpu::BindGroupLayoutEntry {
                 binding: 3,
-                visibility: vwgpu::ShaderStages::FRAGMENT,
+                visibility: vwgpu::ShaderStages::VERTEX | vwgpu::ShaderStages::FRAGMENT,
                 ty: vwgpu::BindingType::Buffer {
                     ty: vwgpu::BufferBindingType::Uniform,
                     has_dynamic_offset: false,
@@ -1795,6 +1847,24 @@ impl ParticlePlugin {
         for i in 0..HOOK_TEXTURES as u32 {
             hook_entries.push(hook_tex(4 + i));
         }
+        // The folded hook layout, group 1 of a hooked billboard in the soft and
+        // painter passes: the folded billboard bindings (0 to 4), then the
+        // params (5) and the hook textures (6..).
+        let mut folded_hook_entries: Vec<vwgpu::BindGroupLayoutEntry> =
+            soft_draw_entries.to_vec();
+        folded_hook_entries.push(vwgpu::BindGroupLayoutEntry {
+            binding: 5,
+            ..hook_entries[3]
+        });
+        for i in 0..HOOK_TEXTURES as u32 {
+            folded_hook_entries.push(hook_tex(6 + i));
+        }
+        self.hook_folded_bgl = Some(device.create_bind_group_layout(
+            &vwgpu::BindGroupLayoutDescriptor {
+                label: Some("particle_hook_folded_bgl"),
+                entries: &folded_hook_entries,
+            },
+        ));
         self.hook_drawparams_bgl = Some(device.create_bind_group_layout(
             &vwgpu::BindGroupLayoutDescriptor {
                 label: Some("particle_hook_drawparams_bgl"),

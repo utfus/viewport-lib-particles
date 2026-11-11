@@ -358,16 +358,26 @@ impl ItemTypePlugin for ParticlePlugin {
                 queue.write_buffer(&inst.pick_buf, 0, bytemuck::bytes_of(&pu));
             }
 
-            // Custom fragment hook: refresh the engine-reserved params
-            // lane (lane 0 `.w` = time) each frame. The effect's own params sit in
-            // later lanes, written once when the instance was built.
-            if let Some(cd) = self
-                .instances
-                .get(&ikey)
-                .and_then(|i| i.custom_draw.as_ref())
-            {
-                let lane0 = [0.0f32, 0.0, 0.0, time];
-                queue.write_buffer(&cd.params_buf, 0, bytemuck::bytes_of(&lane0));
+            // Custom fragment hook: rewrite the params each frame, the
+            // engine-reserved lane 0 (`.w` = time) and the effect's own lanes
+            // with this instance's named overrides on top.
+            if let (Some(cd), Some(hook)) = (
+                self.instances
+                    .get(&ikey)
+                    .and_then(|i| i.custom_draw.as_ref()),
+                self.effects[idx].asset.fragment_hook.as_ref(),
+            ) {
+                let mut lanes = [[0.0f32; 4]; HOOK_PARAM_LANES];
+                lanes[0][3] = time;
+                for (i, p) in hook.params.iter().take(HOOK_PARAM_LANES - 1).enumerate() {
+                    lanes[1 + i] = *p;
+                }
+                for (name, value) in item.map(|it| it.hook_params.as_slice()).unwrap_or(&[]) {
+                    if let Some(lane) = hook.param_lane(name).filter(|&l| l < HOOK_PARAM_LANES) {
+                        lanes[lane] = *value;
+                    }
+                }
+                queue.write_buffer(&cd.params_buf, 0, bytemuck::bytes_of(&lanes));
             }
 
             // Sub-emitter links (cloned out so the borrows end before the buffer
@@ -872,13 +882,24 @@ impl ItemTypePlugin for ParticlePlugin {
             let Some(inst) = self.instances.get(&entry.key) else {
                 continue;
             };
-            let Some(soft_bg) = inst.soft_draw_bg.as_ref() else {
-                continue;
+            // A hooked soft billboard draws with its hook's folded pipelines and
+            // bind group.
+            let (over, add, blends, soft_bg) = match inst.custom_draw.as_ref() {
+                Some(cd) => {
+                    let p = &cd.pipelines;
+                    (&p.soft_over, &p.soft_additive, &p.soft_blends, &cd.folded_bind_group)
+                }
+                None => {
+                    let Some(bg) = inst.soft_draw_bg.as_ref() else {
+                        continue;
+                    };
+                    (soft_over, soft_add, soft_blends, bg)
+                }
             };
             let pipeline = if eff.asset.blend.is_order_independent() {
-                soft_blends.pick(eff.asset.blend, soft_add)
+                blends.pick(eff.asset.blend, add)
             } else {
-                soft_over
+                over
             };
             pass.set_pipeline(pipeline);
             pass.set_bind_group(1, soft_bg, &[]);

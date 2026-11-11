@@ -8,7 +8,7 @@ use viewport_lib::plugin_api::{
 use viewport_lib::wgpu as vwgpu;
 
 use crate::effect::{
-    EventCondition, ParticleBlend, ParticleRender, PropertyDecl, SimulationSpace, TimedBurst,
+    EventCondition, ParticleRender, PropertyDecl, SimulationSpace, TimedBurst,
 };
 
 use super::*;
@@ -670,13 +670,26 @@ impl ItemTypePlugin for ParticlePlugin {
         _ctx: &PaintContext<'_>,
         _items: &ItemCollections<'_>,
     ) {
-        let (Some(bb_add), Some(mesh_add), Some(mesh_over), Some(trail_add), Some(trail_over)) = (
+        let (
+            Some(bb_add),
+            Some(mesh_add),
+            Some(mesh_over),
+            Some(trail_add),
+            Some(trail_over),
+            Some(bb_blends),
+            Some(mesh_blends),
+            Some(trail_blends),
+        ) = (
             self.draw_pipeline_additive.as_ref(),
             self.mesh_pipeline_additive.as_ref(),
             self.mesh_pipeline_over.as_ref(),
             self.trail_pipeline_additive.as_ref(),
             self.trail_pipeline_over.as_ref(),
-        ) else {
+            self.draw_blends.as_ref(),
+            self.mesh_blends.as_ref(),
+            self.trail_blends.as_ref(),
+        )
+        else {
             return;
         };
         // Group 0 (camera + scene) is already bound by the lib.
@@ -686,7 +699,8 @@ impl ItemTypePlugin for ParticlePlugin {
                 continue;
             };
             let gpu = &inst.gpu;
-            let additive = matches!(eff.asset.blend, ParticleBlend::Additive);
+            let blend = eff.asset.blend;
+            let main_pass = blend.is_order_independent();
             // Groups 2 (ramp) and 3 (draw params) are shared by every route;
             // group 1 is route-specific (particles, or the trail bindings).
             pass.set_bind_group(2, gpu.ramp_bg(), &[]);
@@ -700,17 +714,18 @@ impl ItemTypePlugin for ParticlePlugin {
                         continue;
                     }
                     // Alpha/Premultiplied billboards route through the OIT pass
-                    // (paint_transparent). Only additive draws here.
-                    if !additive {
+                    // (paint_transparent). The order-independent blends draw here.
+                    if !main_pass {
                         continue;
                     }
                     // Custom fragment hook: swap in the effect's hooked
                     // pipeline and group-3 hook bind group; else the shared built-in.
                     if let Some(cd) = inst.custom_draw.as_ref() {
-                        pass.set_pipeline(&cd.pipelines.additive);
+                        let p = &cd.pipelines;
+                        pass.set_pipeline(p.blends.pick(blend, &p.additive));
                         pass.set_bind_group(3, &cd.bind_group, &[]);
                     } else {
-                        pass.set_pipeline(bb_add);
+                        pass.set_pipeline(bb_blends.pick(blend, bb_add));
                     }
                     pass.set_bind_group(1, gpu.draw_bg(), &[]);
                     pass.draw(0..6, 0..eff.asset.capacity);
@@ -719,7 +734,11 @@ impl ItemTypePlugin for ParticlePlugin {
                     let Some(m) = self.meshes.get(mesh.0 as usize) else {
                         continue;
                     };
-                    pass.set_pipeline(if additive { mesh_add } else { mesh_over });
+                    pass.set_pipeline(if main_pass {
+                        mesh_blends.pick(blend, mesh_add)
+                    } else {
+                        mesh_over
+                    });
                     pass.set_bind_group(1, gpu.draw_bg(), &[]);
                     pass.set_vertex_buffer(0, m.vertex_buf.slice(..));
                     pass.set_index_buffer(m.index_buf.slice(..), vwgpu::IndexFormat::Uint32);
@@ -729,7 +748,11 @@ impl ItemTypePlugin for ParticlePlugin {
                     let Some(trail) = inst.trail.as_ref() else {
                         continue;
                     };
-                    pass.set_pipeline(if additive { trail_add } else { trail_over });
+                    pass.set_pipeline(if main_pass {
+                        trail_blends.pick(blend, trail_add)
+                    } else {
+                        trail_over
+                    });
                     pass.set_bind_group(1, &trail.draw_bg, &[]);
                     // Six vertices per segment; the shader clamps to the live
                     // history and discards stale or dead segments.
@@ -750,7 +773,7 @@ impl ItemTypePlugin for ParticlePlugin {
             return;
         };
         // Group 0 (camera + scene) is bound by the lib inside the OIT pass.
-        // Draw only Alpha/Premultiplied billboards; additive billboards and the
+        // Draw only Alpha/Premultiplied billboards; order-independent billboards and the
         // mesh/trail routes stay in the main HDR draw (paint). The pipeline is set
         // per draw because a custom-hook effect uses its own OIT pipeline.
         for entry in &self.draw_list {
@@ -759,7 +782,7 @@ impl ItemTypePlugin for ParticlePlugin {
                 continue;
             };
             let gpu = &inst.gpu;
-            if matches!(eff.asset.blend, ParticleBlend::Additive) {
+            if eff.asset.blend.is_order_independent() {
                 continue;
             }
             if !matches!(eff.asset.render, ParticleRender::Billboard { .. }) {
@@ -799,16 +822,16 @@ impl ItemTypePlugin for ParticlePlugin {
         ctx: &DepthReadContext<'_>,
         _items: &ItemCollections<'_>,
     ) {
-        let (Some(soft_over), Some(soft_add)) = (
+        let (Some(soft_over), Some(soft_add), Some(soft_blends)) = (
             self.soft_pipeline_over.as_ref(),
             self.soft_pipeline_additive.as_ref(),
+            self.soft_blends.as_ref(),
         ) else {
             return;
         };
         // Group 0 (camera + scene) is bound by the lib on pass entry. Group 3 is
         // the scene depth, from the context's prebuilt bind group. Each soft
-        // effect picks the
-        // over / additive blend by its own blend mode.
+        // effect picks its pipeline by its own blend mode.
         pass.set_bind_group(3, ctx.scene_depth_bind_group, &[]);
         for entry in &self.draw_list {
             let eff = &self.effects[entry.key.effect as usize];
@@ -823,8 +846,8 @@ impl ItemTypePlugin for ParticlePlugin {
             let Some(soft_bg) = inst.soft_draw_bg.as_ref() else {
                 continue;
             };
-            let pipeline = if matches!(eff.asset.blend, ParticleBlend::Additive) {
-                soft_add
+            let pipeline = if eff.asset.blend.is_order_independent() {
+                soft_blends.pick(eff.asset.blend, soft_add)
             } else {
                 soft_over
             };

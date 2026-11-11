@@ -55,12 +55,35 @@ pub(crate) fn hook_snippet(hook: &FragmentHook, route: HookRoute) -> String {
         ));
     }
 
-    let (ret_ty, output) = match route {
+    let (ret_ty, output, entries) = match route {
         HookRoute::Draw => (
-            "@location(0) vec4<f32>",
+            "vec4<f32>",
             "    return vec4<f32>(c.rgb * c.a, c.a);",
+            // The draw route's entry points: as it is for the additive and
+            // screen blends, mixed towards white for multiply.
+            r#"
+@fragment
+fn fs_hook(in: VsOut) -> @location(0) vec4<f32> {
+    return hook_shade(in);
+}
+
+@fragment
+fn fs_hook_multiply(in: VsOut) -> @location(0) vec4<f32> {
+    let c = hook_shade(in);
+    return vec4<f32>(c.rgb + vec3<f32>(1.0 - c.a), c.a);
+}
+"#,
         ),
-        HookRoute::Oit => ("OitOutput", "    return viewport_oit_pack(c.rgb, c.a, in.view_z);"),
+        HookRoute::Oit => (
+            "OitOutput",
+            "    return viewport_oit_pack(c.rgb, c.a, in.view_z);",
+            r#"
+@fragment
+fn fs_hook(in: VsOut) -> OitOutput {
+    return hook_shade(in);
+}
+"#,
+        ),
     };
 
     let lanes = HOOK_PARAM_LANES;
@@ -81,8 +104,7 @@ struct ParticleFragment {{
 
 {body}
 
-@fragment
-fn fs_hook(in: VsOut) -> {ret_ty} {{
+fn hook_shade(in: VsOut) -> {ret_ty} {{
     let huv = flip_uv(in.uv, in.age, in.age_sec);
     var f: ParticleFragment;
     f.uv = huv;
@@ -95,7 +117,7 @@ fn fs_hook(in: VsOut) -> {ret_ty} {{
     let c = {name}__shade_particle(f);
 {output}
 }}
-"#
+{entries}"#
     )
 }
 

@@ -9,7 +9,7 @@ use viewport_lib::wgpu as vwgpu;
 
 use crate::codegen;
 use crate::effect::{
-    EffectAsset, EffectId, EffectProgram, MeshAlign, Orient, ParticleBlend, ParticleMeshId,
+    EffectAsset, EffectId, EffectProgram, MeshAlign, Orient, ParticleMeshId,
     ParticlePlane, ParticleRender, ParticleTextureId, SpawnShape, TextureMode,
 };
 use crate::codegen::PLANE_WGSL;
@@ -653,10 +653,11 @@ impl ParticlePlugin {
             None
         };
 
-        // Non-additive effects need back-to-front draw order for correct alpha,
+        // Over-blended effects need back-to-front draw order for correct alpha,
         // so they get the sort key + bitonic state over the particle and order
-        // buffers. Additive effects are order-independent and keep identity.
-        let sort = if !matches!(blend, ParticleBlend::Additive) {
+        // buffers. Additive, multiply and screen are order-independent and keep
+        // identity.
+        let sort = if !blend.is_order_independent() {
             let sort_init_bgl = self.sort_init_bgl.clone().unwrap();
             let sort_stage_bgl = self.sort_stage_bgl.clone().unwrap();
             Some(build_sort_gpu(
@@ -994,7 +995,22 @@ impl ParticlePlugin {
             ),
         );
 
-        let pipelines = CustomDrawPipelines { additive, oit };
+        let blend = |fs: &str, state: vwgpu::BlendState, label: &str| {
+            builder.build_opaque_pipeline(
+                device,
+                &route_opts(label, &add_shader, fs, &[], &extra, Some(state)),
+            )
+        };
+        let blends = BlendPipelines {
+            multiply: blend("fs_hook_multiply", MULTIPLY, "particle_hook_draw_multiply"),
+            screen: blend("fs_hook", SCREEN, "particle_hook_draw_screen"),
+        };
+
+        let pipelines = CustomDrawPipelines {
+            additive,
+            blends,
+            oit,
+        };
         self.custom_draw_cache.insert(key, pipelines.clone());
         pipelines
     }
@@ -1353,6 +1369,16 @@ impl ParticlePlugin {
                 Some(ADDITIVE),
             ),
         ));
+        let draw_blend = |fs: &str, state: vwgpu::BlendState, label: &str| {
+            resources.build_opaque_pipeline(
+                device,
+                &route_opts(label, &draw_shader, fs, &[], &draw_extra, Some(state)),
+            )
+        };
+        self.draw_blends = Some(BlendPipelines {
+            multiply: draw_blend("fs_multiply", MULTIPLY, "particle_draw_multiply"),
+            screen: draw_blend("fs", SCREEN, "particle_draw_screen"),
+        });
         // OIT billboard variant: same vertex stage, but the fragment writes the
         // two weighted-blended MRT targets (accum + reveal). Drawn inside the
         // lib's OIT pass via paint_transparent, so it composites after the
@@ -1427,14 +1453,18 @@ impl ParticlePlugin {
             source: vwgpu::ShaderSource::Wgsl(soft_src.into()),
         });
         let soft_extra = [&soft_draw_bgl, &ramp_bgl, depth_read_bgl];
-        let make_soft = |blend: vwgpu::BlendState, label: &str| {
+        let make_soft = |fs: &str, blend: vwgpu::BlendState, label: &str| {
             resources.build_depth_read_pipeline(
                 device,
-                &route_opts(label, &soft_shader, "fs", &[], &soft_extra, Some(blend)),
+                &route_opts(label, &soft_shader, fs, &[], &soft_extra, Some(blend)),
             )
         };
-        self.soft_pipeline_over = Some(make_soft(OVER, "particle_soft_over"));
-        self.soft_pipeline_additive = Some(make_soft(ADDITIVE, "particle_soft_additive"));
+        self.soft_pipeline_over = Some(make_soft("fs", OVER, "particle_soft_over"));
+        self.soft_pipeline_additive = Some(make_soft("fs", ADDITIVE, "particle_soft_additive"));
+        self.soft_blends = Some(BlendPipelines {
+            multiply: make_soft("fs_multiply", MULTIPLY, "particle_soft_multiply"),
+            screen: make_soft("fs", SCREEN, "particle_soft_screen"),
+        });
         self.soft_draw_bgl = Some(soft_draw_bgl);
 
         // Mesh render route: instance an uploaded mesh per particle. Same bind
@@ -1456,21 +1486,25 @@ impl ParticlePlugin {
                 shader_location: 0,
             }],
         }];
-        let make_mesh = |blend: vwgpu::BlendState, label: &str| {
+        let make_mesh = |fs: &str, blend: vwgpu::BlendState, label: &str| {
             resources.build_opaque_pipeline(
                 device,
                 &route_opts(
                     label,
                     &mesh_shader,
-                    "fs",
+                    fs,
                     &mesh_vertex_layout,
                     &draw_extra,
                     Some(blend),
                 ),
             )
         };
-        self.mesh_pipeline_additive = Some(make_mesh(ADDITIVE, "particle_mesh_additive"));
-        self.mesh_pipeline_over = Some(make_mesh(OVER, "particle_mesh_over"));
+        self.mesh_pipeline_additive = Some(make_mesh("fs", ADDITIVE, "particle_mesh_additive"));
+        self.mesh_pipeline_over = Some(make_mesh("fs", OVER, "particle_mesh_over"));
+        self.mesh_blends = Some(BlendPipelines {
+            multiply: make_mesh("fs_multiply", MULTIPLY, "particle_mesh_multiply"),
+            screen: make_mesh("fs", SCREEN, "particle_mesh_screen"),
+        });
 
         // Trail render route: a camera-facing ribbon swept through the history
         // ring. Group 1 is the trail bindings (particles + history + params);
@@ -1484,14 +1518,18 @@ impl ParticlePlugin {
             source: vwgpu::ShaderSource::Wgsl(trail_src.into()),
         });
         let trail_extra = [&trail_draw_bgl, &ramp_bgl, &drawparams_bgl];
-        let make_trail = |blend: vwgpu::BlendState, label: &str| {
+        let make_trail = |fs: &str, blend: vwgpu::BlendState, label: &str| {
             resources.build_opaque_pipeline(
                 device,
-                &route_opts(label, &trail_shader, "fs", &[], &trail_extra, Some(blend)),
+                &route_opts(label, &trail_shader, fs, &[], &trail_extra, Some(blend)),
             )
         };
-        self.trail_pipeline_additive = Some(make_trail(ADDITIVE, "particle_trail_additive"));
-        self.trail_pipeline_over = Some(make_trail(OVER, "particle_trail_over"));
+        self.trail_pipeline_additive = Some(make_trail("fs", ADDITIVE, "particle_trail_additive"));
+        self.trail_pipeline_over = Some(make_trail("fs", OVER, "particle_trail_over"));
+        self.trail_blends = Some(BlendPipelines {
+            multiply: make_trail("fs_multiply", MULTIPLY, "particle_trail_multiply"),
+            screen: make_trail("fs", SCREEN, "particle_trail_screen"),
+        });
 
         // Interaction pipelines: pick id, outline mask, and shadow casting. They
         // reuse the draw bind group (particles + order) at group 1.
@@ -1705,6 +1743,32 @@ const OVER: vwgpu::BlendState = vwgpu::BlendState {
         dst_factor: vwgpu::BlendFactor::OneMinusSrcAlpha,
         operation: vwgpu::BlendOperation::Add,
     },
+};
+/// `dst * src` on colour: the multiply entry points have already mixed the
+/// colour towards white by one minus alpha. The same state as viewport-lib's
+/// sprite multiply.
+pub(crate) const MULTIPLY: vwgpu::BlendState = vwgpu::BlendState {
+    color: vwgpu::BlendComponent {
+        src_factor: vwgpu::BlendFactor::Zero,
+        dst_factor: vwgpu::BlendFactor::Src,
+        operation: vwgpu::BlendOperation::Add,
+    },
+    alpha: COVERAGE,
+};
+/// `src + dst * (1 - src)` on premultiplied colour, as viewport-lib's sprite
+/// screen.
+pub(crate) const SCREEN: vwgpu::BlendState = vwgpu::BlendState {
+    color: vwgpu::BlendComponent {
+        src_factor: vwgpu::BlendFactor::One,
+        dst_factor: vwgpu::BlendFactor::OneMinusSrc,
+        operation: vwgpu::BlendOperation::Add,
+    },
+    alpha: COVERAGE,
+};
+const COVERAGE: vwgpu::BlendComponent = vwgpu::BlendComponent {
+    src_factor: vwgpu::BlendFactor::One,
+    dst_factor: vwgpu::BlendFactor::OneMinusSrcAlpha,
+    operation: vwgpu::BlendOperation::Add,
 };
 const ONE: vwgpu::BlendComponent = vwgpu::BlendComponent {
     src_factor: vwgpu::BlendFactor::One,

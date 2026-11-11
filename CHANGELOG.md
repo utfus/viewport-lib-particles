@@ -8,6 +8,7 @@
 - **Sub-emitters keep the plane** - a child with no lock of its own runs under its parent's, and inherited velocity loses its normal component. `ParticlePlugin::try_add_effect` and `try_replace_effect` refuse a child locked to a different plane from its parent with a `PlaneLockMismatch`; `add_effect` panics on it, and `check_sub_emitter_lock` runs the same check without a plugin.
 - **Flat spawn shapes** - `SpawnShape::Ring`, `Segment` and `Rectangle`, in plane coordinates; they and `Circle` lie in the lock plane, or XY without a lock. Sub-emitter children now take every spawn shape but the mesh ones, where they took only boxes and spheres.
 - **`Orient::InPlane`** - billboards lie in the lock plane, so a rotated 2D camera turns them with the world.
+- **`ParticleBlend::Multiply` and `Screen`** - multiply darkens what is behind a particle and screen lightens it without passing white, both weighted by alpha and with the same blend states as viewport-lib's sprites. They draw on the billboard, soft, mesh and trail routes and with fragment hooks. Like additive they are order-independent: they draw in the main pass with no depth sort and no OIT, and `ParticleBlend::is_order_independent` says which blends do. A `match` over `ParticleBlend` needs arms for them.
 
 ## [0.1.0]
 

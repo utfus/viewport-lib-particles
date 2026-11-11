@@ -6,7 +6,7 @@ use viewport_lib::wgpu as vwgpu;
 
 use std::sync::{Arc, Mutex};
 
-use crate::effect::{EffectAsset, EffectId, EventCondition, ParticleTextureId};
+use crate::effect::{EffectAsset, EffectId, EventCondition, ParticleBlend, ParticleTextureId};
 
 use super::*;
 
@@ -593,8 +593,33 @@ pub(crate) struct EffectInstance {
 pub(crate) struct CustomDrawPipelines {
     /// Additive HDR billboard pipeline (drawn in `paint`).
     pub(crate) additive: vwgpu::RenderPipeline,
+    /// Multiply and screen HDR billboard pipelines (drawn in `paint`).
+    pub(crate) blends: BlendPipelines,
     /// Weighted-blended OIT pipeline (drawn in `paint_transparent`).
     pub(crate) oit: vwgpu::RenderPipeline,
+}
+
+/// A route's multiply and screen pipelines.
+#[derive(Clone)]
+pub(crate) struct BlendPipelines {
+    pub(crate) multiply: vwgpu::RenderPipeline,
+    pub(crate) screen: vwgpu::RenderPipeline,
+}
+
+impl BlendPipelines {
+    /// The pipeline for an order-independent `blend`, given the route's
+    /// additive one.
+    pub(crate) fn pick<'a>(
+        &'a self,
+        blend: ParticleBlend,
+        additive: &'a vwgpu::RenderPipeline,
+    ) -> &'a vwgpu::RenderPipeline {
+        match blend {
+            ParticleBlend::Multiply => &self.multiply,
+            ParticleBlend::Screen => &self.screen,
+            _ => additive,
+        }
+    }
 }
 
 /// Per-instance custom-shading draw state.
@@ -685,6 +710,11 @@ pub struct ParticlePlugin {
     // route through the lib's OIT pass (paint_transparent) instead of the main
     // HDR draw so they composite after the skybox and blend order-independently.
     pub(crate) draw_pipeline_oit: Option<vwgpu::RenderPipeline>,
+    /// Multiply and screen members of the billboard, mesh, trail and soft routes.
+    pub(crate) draw_blends: Option<BlendPipelines>,
+    pub(crate) mesh_blends: Option<BlendPipelines>,
+    pub(crate) trail_blends: Option<BlendPipelines>,
+    pub(crate) soft_blends: Option<BlendPipelines>,
     pub(crate) mesh_pipeline_additive: Option<vwgpu::RenderPipeline>,
     pub(crate) mesh_pipeline_over: Option<vwgpu::RenderPipeline>,
     // Soft-particle billboard draw for the read-only-depth pass. Its

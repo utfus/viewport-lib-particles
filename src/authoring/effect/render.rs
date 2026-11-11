@@ -286,6 +286,24 @@ pub enum ParticleBlend {
     /// Premultiplied over-blend. Same blend state as `Alpha` given the shader
     /// already outputs premultiplied colour; kept distinct for intent.
     Premultiplied,
+    /// Multiply: the background is scaled by the particle colour, weighted by
+    /// alpha, so a transparent fragment leaves it unchanged. Darkens: smoke,
+    /// shadows, stains. Order-independent, so it draws with the additive
+    /// effects and needs no sort.
+    Multiply,
+    /// Screen: the inverse of multiplying the inverses, weighted by alpha.
+    /// Lightens without passing white, so a stack of glows does not blow out.
+    /// Order-independent, like multiply.
+    Screen,
+}
+
+impl ParticleBlend {
+    /// Whether the blend gives the same result in any draw order: additive,
+    /// multiply and screen. These draw in the main pass with no depth sort;
+    /// the over blends go through order-independent transparency.
+    pub fn is_order_independent(self) -> bool {
+        matches!(self, Self::Additive | Self::Multiply | Self::Screen)
+    }
 }
 
 impl Default for ParticleBlend {
@@ -297,6 +315,16 @@ impl Default for ParticleBlend {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn order_independent_blends_skip_oit_and_sorting() {
+        for blend in [ParticleBlend::Additive, ParticleBlend::Multiply, ParticleBlend::Screen] {
+            assert!(blend.is_order_independent(), "{blend:?}");
+        }
+        for blend in [ParticleBlend::Alpha, ParticleBlend::Premultiplied] {
+            assert!(!blend.is_order_independent(), "{blend:?}");
+        }
+    }
 
     #[test]
     fn default_alpha_reproduces_lifetime_fade() {

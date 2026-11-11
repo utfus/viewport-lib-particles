@@ -187,8 +187,7 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VsOut
     return out;
 }
 
-@fragment
-fn fs(in: VsOut) -> @location(0) vec4<f32> {
+fn shade(in: VsOut) -> vec4<f32> {
     // Sample unconditionally (a white default is always bound) so the texture op
     // stays in uniform control flow; `tex_mode` then selects how it applies.
     let texel = textureSample(sprite_tex, sprite_samp, flip_uv(in.uv, in.age, in.age_sec));
@@ -207,6 +206,20 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
         a = a * texel.r;
     }
     return vec4<f32>(rgb * a, a); // premultiplied
+}
+
+@fragment
+fn fs(in: VsOut) -> @location(0) vec4<f32> {
+    return shade(in);
+}
+
+// Multiply blend: mix towards white by one minus alpha, so a transparent
+// fragment leaves the destination unchanged. Screen draws `fs` as it is, since
+// its blend takes premultiplied colour.
+@fragment
+fn fs_multiply(in: VsOut) -> @location(0) vec4<f32> {
+    let c = shade(in);
+    return vec4<f32>(c.rgb + vec3<f32>(1.0 - c.a), c.a);
 }
 
 // Custom fragment hook is spliced in here for effects that carry one;

@@ -5,8 +5,8 @@ use viewport_lib::wgpu as vwgpu;
 
 use crate::codegen;
 use crate::effect::{
-    EffectAsset, Emitter, Modifier, PropertyDecl,
-    PropertyValue, SpawnRate, SpawnShape, VelocityDist,
+    EffectAsset, Emitter, Modifier, ParticlePlane, PlaneLock, PropertyDecl, PropertyValue,
+    SpawnRate, SpawnShape, VelocityDist,
 };
 
 use super::*;
@@ -24,6 +24,9 @@ pub(crate) fn structural_sig(asset: &EffectAsset) -> u64 {
     format!("{:?}", asset.blend).hash(&mut h);
     format!("{:?}", asset.render).hash(&mut h);
     format!("{:?}", asset.orient).hash(&mut h);
+    // The lock plane is baked into an in-plane billboard's basis; its depth is
+    // re-read every frame.
+    asset.plane_lock.map(|l| l.plane).hash(&mut h);
     asset.screen_space_size.hash(&mut h);
     asset.soft.map(|d| d.to_bits()).hash(&mut h);
     // Spin rides DrawParams, which is baked at instance build, so a change must
@@ -177,6 +180,14 @@ pub(crate) fn effect_cull_radius(asset: &EffectAsset) -> f32 {
         // Mesh-surface / point-cloud extent is unknown here without the geometry;
         // use a generous default so a mesh spawn is not culled prematurely.
         SpawnShape::MeshSurface { .. } | SpawnShape::PointCloud { .. } => 5.0,
+        SpawnShape::Ring { radius, thickness } => radius + thickness * 0.5,
+        SpawnShape::Segment { a, b } => {
+            let r = |p: [f32; 2]| (p[0] * p[0] + p[1] * p[1]).sqrt();
+            r(a).max(r(b))
+        }
+        SpawnShape::Rectangle { half_size } => {
+            (half_size[0] * half_size[0] + half_size[1] * half_size[1]).sqrt()
+        }
     };
     speed * life + spawn_extent + e.size + 0.5
 }
@@ -1356,6 +1367,7 @@ pub(crate) fn build_emit_params(
     rotation_variance: f32,
     size_variance: f32,
     spawn_offset: [f32; 3],
+    plane_lock: Option<PlaneLock>,
 ) -> EmitParamsGpu {
     let mut p = EmitParamsGpu::zeroed();
     p.origin = [origin[0], origin[1], origin[2], 0.0];
@@ -1370,6 +1382,7 @@ pub(crate) fn build_emit_params(
     p.ctrl = [rng_seed, spawn_count, capacity, sample_count];
     p.rot = [rotation, rotation_variance, size_variance, 0.0];
     p.spawn_offset = [spawn_offset[0], spawn_offset[1], spawn_offset[2], 0.0];
+    p.plane = plane_lane(plane_lock);
 
     let (spawn_kind, spawn_a, spawn_b) = match emitter.spawn {
         SpawnShape::Point => (0u32, [0.0; 4], [0.0; 4]),
@@ -1411,6 +1424,11 @@ pub(crate) fn build_emit_params(
         | SpawnShape::PointCloud {
             normal_velocity, ..
         } => (5u32, [normal_velocity, 0.0, 0.0, 0.0], [0.0; 4]),
+        SpawnShape::Ring { radius, thickness } => (6u32, [radius, thickness, 0.0, 0.0], [0.0; 4]),
+        SpawnShape::Segment { a, b } => (7u32, [a[0], a[1], b[0], b[1]], [0.0; 4]),
+        SpawnShape::Rectangle { half_size } => {
+            (8u32, [half_size[0], half_size[1], 0.0, 0.0], [0.0; 4])
+        }
     };
     p.spawn_a = spawn_a;
     p.spawn_b = spawn_b;
@@ -1437,6 +1455,21 @@ pub(crate) fn build_emit_params(
     p.vel_b = vel_b;
     p.kinds = [spawn_kind, vel_kind, has_events as u32, 0];
     p
+}
+
+/// The `plane` lane of the emit, simulate and generated params: mode (0 none,
+/// 1 XY, 2 XZ) and depth, as `particle_plane.wgsl` reads it.
+pub(crate) fn plane_lane(lock: Option<PlaneLock>) -> [f32; 4] {
+    match lock {
+        None => [0.0; 4],
+        Some(l) => {
+            let mode = match l.plane {
+                ParticlePlane::Xy => 1.0,
+                ParticlePlane::Xz => 2.0,
+            };
+            [mode, l.depth, 0.0, 0.0]
+        }
+    }
 }
 
 /// Pack one [`Modifier`] into its GPU slot. The `kind` discriminant and the
@@ -1531,8 +1564,10 @@ pub(crate) fn build_sim_params(
     time: f32,
     event: [u32; 4],
     space: [f32; 3],
+    plane_lock: Option<PlaneLock>,
 ) -> SimParamsGpu {
     let mut p = SimParamsGpu::zeroed();
+    p.plane = plane_lane(plane_lock);
     p.event = event;
     p.space = [space[0], space[1], space[2], 0.0];
     let n = modifiers.len().min(MAX_MODIFIERS);

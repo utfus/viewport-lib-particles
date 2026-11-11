@@ -21,6 +21,7 @@ struct SimParams {
     modifiers: array<Modifier, 8>,
     event: vec4<u32>,          // sub-emitter control (unused here; parent shader reads it)
     space: vec4<f32>,          // xyz local-space translation delta for this frame
+    plane: vec4<f32>,          // plane lock: mode (0 none, 1 XY, 2 XZ), depth
 };
 
 @group(0) @binding(0) var<storage, read_write> particles: array<Particle>;
@@ -54,10 +55,13 @@ fn sim_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         return;
     }
 
-    p.velocity += accel * dt;
+    p.velocity += lock_vector(accel, params.plane) * dt;
     p.velocity *= max(0.0, 1.0 - drag * dt);
+    p.velocity = lock_vector(p.velocity, params.plane);
     p.position += p.velocity * dt;
     p.position += params.space.xyz; // local-space: follow the emitter's translation
+    // Reset the depth every step so drift cannot accumulate off the plane.
+    p.position = lock_position(p.position, params.plane);
     p.lifetime -= dt;
     particles[i] = p;
 }

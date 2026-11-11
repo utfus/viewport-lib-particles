@@ -64,8 +64,14 @@ struct GenParams {
     pad0: u32,
     pad1: u32,
     pad2: u32,
+    plane: vec4<f32>,
 };
 "#;
+
+/// Plane-lock helpers (`lock_position`, `lock_vector`, `plane_offset`), shared
+/// with the fixed-function kernels. The lock rides `GenParams::plane`, so the
+/// generated source does not depend on it and programs keep sharing pipelines.
+pub(crate) const PLANE_WGSL: &str = include_str!("../runtime/shaders/particle_plane.wgsl");
 
 /// 3D gradient (Perlin-style) value noise and divergence-free curl noise. Shared
 /// by the fixed-function `CurlNoise` force (prepended to `particle_sim.wgsl`) and
@@ -396,6 +402,7 @@ struct Budget {{ count: atomic<u32> }};
 @group(0) @binding(3) var<uniform> props: Properties;
 {RNG_HELPERS}
 {NOISE_WGSL}
+{PLANE_WGSL}
 @compute @workgroup_size(64)
 fn emit_main(@builtin(global_invocation_id) gid: vec3<u32>) {{
     let i = gid.x;
@@ -406,8 +413,8 @@ fn emit_main(@builtin(global_invocation_id) gid: vec3<u32>) {{
     var rng = hash_u32(params.rng_seed ^ (i * 747796405u) ^ (claimed * 2891336453u));
 {lets}
     var p: Particle;
-    p.position = {pos};
-    p.velocity = {vel};
+    p.position = lock_position({pos}, params.plane);
+    p.velocity = lock_vector({vel}, params.plane);
     let life0 = {life};
     p.lifetime = life0;
     p.max_lifetime = life0;
@@ -465,6 +472,7 @@ fn generate_sim(program: &EffectProgram) -> String {
 @group(0) @binding(1) var<uniform> params: GenParams;
 @group(0) @binding(2) var<uniform> props: Properties;
 {NOISE_WGSL}
+{PLANE_WGSL}
 {rng_helpers}
 @compute @workgroup_size(64)
 fn sim_main(@builtin(global_invocation_id) gid: vec3<u32>) {{
@@ -476,9 +484,9 @@ fn sim_main(@builtin(global_invocation_id) gid: vec3<u32>) {{
 {rng_seed}{lets}
     var accel = vec3<f32>(0.0, 0.0, 0.0);
 {accel}
-    p.velocity = p.velocity + accel * dt;
+    p.velocity = lock_vector(p.velocity + accel * dt, params.plane);
     p.position = p.position + p.velocity * dt;
-    p.position = p.position + params.space.xyz;
+    p.position = lock_position(p.position + params.space.xyz, params.plane);
     p.lifetime = p.lifetime - dt;
     particles[i] = p;
 }}

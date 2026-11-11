@@ -381,6 +381,7 @@ impl ItemTypePlugin for ParticlePlugin {
                 )
             });
 
+            let plane_lock = self.effective_plane_lock(idx);
             match &self.instances.get(&ikey).unwrap().gpu {
                 EffectGpu::Fixed(g) => {
                     let asset = &self.effects[idx].asset;
@@ -408,6 +409,7 @@ impl ItemTypePlugin for ParticlePlugin {
                         asset.rotation_variance,
                         asset.size_variance,
                         asset.spawn_offset,
+                        plane_lock,
                     );
                     // Event control for a parent: condition, count, child cap, active.
                     let event = match &parent_link {
@@ -422,7 +424,7 @@ impl ItemTypePlugin for ParticlePlugin {
                         ],
                         None => [0; 4],
                     };
-                    let sim = build_sim_params(modifiers, inst_dt, time, event, space_delta);
+                    let sim = build_sim_params(modifiers, inst_dt, time, event, space_delta, plane_lock);
                     queue.write_buffer(&g.emit_buf, 0, bytemuck::bytes_of(&emit));
                     queue.write_buffer(&g.sim_buf, 0, bytemuck::bytes_of(&sim));
                     queue.write_buffer(&g.budget_buf, 0, bytemuck::bytes_of(&0u32));
@@ -450,6 +452,7 @@ impl ItemTypePlugin for ParticlePlugin {
                         capacity,
                         rng_seed,
                         _pad: [0; 3],
+                        plane: plane_lane(plane_lock),
                     };
                     queue.write_buffer(&g.params_buf, 0, bytemuck::bytes_of(&gp));
                     // Property uniform: declared defaults overlaid with this
@@ -1196,6 +1199,7 @@ impl ParticlePlugin {
         // per-step borrow of `self.instances` has no live borrow of `self.effects`.
         let asset = self.effects[idx].asset.clone();
         let sample_count = self.effects[idx].spawn_sample_count;
+        let plane_lock = self.effective_plane_lock(idx);
         let rate = match &asset.program {
             Some(p) => p.rate,
             None => asset.emitter.rate,
@@ -1245,8 +1249,16 @@ impl ParticlePlugin {
                         asset.rotation_variance,
                         asset.size_variance,
                         asset.spawn_offset,
+                        plane_lock,
                     );
-                    let sim = build_sim_params(&asset.modifiers, sub_dt, time, [0; 4], [0.0; 3]);
+                    let sim = build_sim_params(
+                        &asset.modifiers,
+                        sub_dt,
+                        time,
+                        [0; 4],
+                        [0.0; 3],
+                        plane_lock,
+                    );
                     queue.write_buffer(&g.emit_buf, 0, bytemuck::bytes_of(&emit));
                     queue.write_buffer(&g.sim_buf, 0, bytemuck::bytes_of(&sim));
                     queue.write_buffer(&g.budget_buf, 0, bytemuck::bytes_of(&0u32));
@@ -1269,6 +1281,7 @@ impl ParticlePlugin {
                         capacity,
                         rng_seed,
                         _pad: [0; 3],
+                        plane: plane_lane(plane_lock),
                     };
                     queue.write_buffer(&g.params_buf, 0, bytemuck::bytes_of(&gp));
                     let decls: &[PropertyDecl] = asset

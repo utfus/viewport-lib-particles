@@ -84,6 +84,12 @@ pub enum Orient {
         /// Roll angle in radians.
         radians: f32,
     },
+    /// Lie in the effect's [`PlaneLock`](crate::PlaneLock) plane (XY without a
+    /// lock): the quad's axes are the plane's x and y, so a rotated `Camera2d`
+    /// turns the particles with the world instead of keeping them upright on
+    /// screen. Velocity stretch and [`AlongVelocity`](Self::AlongVelocity)-style
+    /// turning stay within the plane.
+    InPlane,
 }
 
 /// How an effect's live particles are drawn.

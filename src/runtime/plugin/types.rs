@@ -41,6 +41,8 @@ pub(crate) struct EmitParamsGpu {
     pub(crate) rot: [f32; 4],
     /// World-space spawn offset (xyz; w unused).
     pub(crate) spawn_offset: [f32; 4],
+    /// Plane lock (see [`plane_lane`]).
+    pub(crate) plane: [f32; 4],
 }
 
 /// One packed modifier. Matches `Modifier` in the shared `MODIFIERS_WGSL` block.
@@ -76,6 +78,8 @@ pub(crate) struct SimParamsGpu {
     /// non-parent sim shader (whose struct now also declares these last two
     /// lanes) reads the same buffer.
     pub(crate) space: [f32; 4],
+    /// Plane lock (see [`plane_lane`]).
+    pub(crate) plane: [f32; 4],
 }
 
 /// One GPU spawn event appended by a parent and consumed by its child. Matches
@@ -241,9 +245,11 @@ pub(crate) struct DrawParams {
     /// Flipbook playback: 0 stretches the sheet across life; > 0 loops at fps.
     pub(crate) flip_fps: f32,
     /// Billboard orientation: 0 = parallel camera plane, 1 = face
-    /// camera position, 2 = along velocity, 3 = fixed screen roll.
+    /// camera position, 2 = along velocity, 3 = fixed screen roll, 4 = in
+    /// the lock plane.
     pub(crate) orient: u32,
-    /// Orientation parameter: the fixed roll angle (radians) for orient == 3.
+    /// Orientation parameter: the fixed roll angle (radians) for orient == 3,
+    /// the plane (0 = XY, 1 = XZ) for orient == 4.
     pub(crate) orient_param: f32,
     /// Screen-space size flag: 1 keeps constant apparent size.
     pub(crate) screen_size: u32,
@@ -273,7 +279,7 @@ pub(crate) struct HistoryParams {
 }
 
 /// Generic per-effect params for a generated (codegen) effect. Matches
-/// `GenParams` in the generated WGSL. 48 bytes.
+/// `GenParams` in the generated WGSL. 80 bytes.
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
 pub(crate) struct GenParams {
@@ -286,6 +292,8 @@ pub(crate) struct GenParams {
     pub(crate) capacity: u32,
     pub(crate) rng_seed: u32,
     pub(crate) _pad: [u32; 3],
+    /// Plane lock (see [`plane_lane`]).
+    pub(crate) plane: [f32; 4],
 }
 
 /// Per-effect GPU state, built lazily the first time an effect is simulated.

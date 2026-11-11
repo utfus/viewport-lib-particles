@@ -321,6 +321,11 @@ pub struct EffectAsset {
     /// particle lifetime; [`ParticleItem::warmup`] overrides it per instance.
     #[cfg_attr(feature = "serde", serde(default))]
     pub prewarm: bool,
+    /// Keep the particles on a world plane, for a 2D game. `None` simulates in
+    /// 3D. A sub-emitter child with no lock of its own runs under its parent's.
+    /// See [`PlaneLock`].
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub plane_lock: Option<PlaneLock>,
 }
 
 /// Serde default for [`EffectAsset::simulation_speed`] (`1.0`).
@@ -358,6 +363,7 @@ impl Default for EffectAsset {
             size_variance: 0.0,
             simulation_speed: 1.0,
             prewarm: false,
+            plane_lock: None,
         }
     }
 }
@@ -562,6 +568,12 @@ impl EffectAsset {
     /// first appears. See [`prewarm`](Self::prewarm).
     pub fn with_prewarm(mut self, prewarm: bool) -> Self {
         self.prewarm = prewarm;
+        self
+    }
+
+    /// Keep the particles on `lock`'s plane at its depth. See [`PlaneLock`].
+    pub fn with_plane_lock(mut self, lock: PlaneLock) -> Self {
+        self.plane_lock = Some(lock);
         self
     }
 }

@@ -3,7 +3,9 @@
 // One invocation per capacity slot. A slot whose lifetime has run out competes
 // for this frame's spawn budget via an atomic counter; the first `spawn_count`
 // claimants initialise a new particle. Fixed-function: the spawn shape and
-// velocity distribution are selected by `kinds`, not generated per effect.
+// velocity distribution are selected by `kinds`, not generated per effect. The
+// plane and spawn helpers (particle_plane.wgsl, particle_spawn.wgsl) are
+// prepended at pipeline build.
 
 struct Particle {
     position: vec3<f32>,
@@ -18,7 +20,7 @@ struct Particle {
 
 struct EmitParams {
     origin:  vec4<f32>,  // xyz world origin (instance position)
-    spawn_a: vec4<f32>,  // box min xyz | sphere/circle (radius, volume_flag, _, _) | cone (base_r, top_r, height, volume_flag)
+    spawn_a: vec4<f32>,  // box min xyz | sphere/circle (radius, volume_flag, _, _) | cone (base_r, top_r, height, volume_flag) | ring (radius, thickness) | segment (a.xy, b.xy) | rectangle (half_size.xy)
     spawn_b: vec4<f32>,  // box max xyz
     vel_a:   vec4<f32>,  // fixed vel xyz | box vel min xyz | cone axis xyz
     vel_b:   vec4<f32>,  // box vel max xyz | cone (half_angle, min_speed, max_speed, _)
@@ -28,6 +30,7 @@ struct EmitParams {
     kinds:   vec4<u32>,  // spawn_kind, vel_kind, _, _
     rot:          vec4<f32>,  // spawn roll base, roll variance, size variance, _
     spawn_offset: vec4<f32>,  // world-space spawn offset xyz
+    plane:        vec4<f32>,  // plane lock: mode (0 none, 1 XY, 2 XZ), depth
 };
 
 // One baked mesh-surface / point-cloud spawn sample.
@@ -43,28 +46,6 @@ struct Budget { count: atomic<u32> };
 @group(0) @binding(2) var<storage, read_write> budget: Budget;
 // Mesh spawn-sample pool (a 1-entry default when the effect has no mesh shape).
 @group(0) @binding(3) var<storage, read> spawn_samples: array<SpawnSample>;
-
-fn hash_u32(x: u32) -> u32 {
-    var v = x;
-    v ^= v >> 16u;
-    v = v * 0x7feb352du;
-    v ^= v >> 15u;
-    v = v * 0x846ca68bu;
-    v ^= v >> 16u;
-    return v;
-}
-
-fn rand01(state: ptr<function, u32>) -> f32 {
-    *state = hash_u32(*state);
-    return f32(*state) / 4294967295.0;
-}
-
-fn rand_dir(state: ptr<function, u32>) -> vec3<f32> {
-    let z = rand01(state) * 2.0 - 1.0;
-    let a = rand01(state) * 6.2831853;
-    let r = sqrt(max(0.0, 1.0 - z * z));
-    return vec3<f32>(r * cos(a), r * sin(a), z);
-}
 
 @compute @workgroup_size(64)
 fn emit_main(@builtin(global_invocation_id) gid: vec3<u32>) {
@@ -86,41 +67,7 @@ fn emit_main(@builtin(global_invocation_id) gid: vec3<u32>) {
     var pos = params.origin.xyz;
     var sample_normal = vec3<f32>(0.0, 0.0, 0.0);
     let spawn_kind = params.kinds.x;
-    if (spawn_kind == 1u) {
-        pos += vec3<f32>(
-            mix(params.spawn_a.x, params.spawn_b.x, rand01(&rng)),
-            mix(params.spawn_a.y, params.spawn_b.y, rand01(&rng)),
-            mix(params.spawn_a.z, params.spawn_b.z, rand01(&rng)),
-        );
-    } else if (spawn_kind == 2u) {
-        let dir = rand_dir(&rng);
-        var r = params.spawn_a.x;
-        if (params.spawn_a.y > 0.5) {
-            r = r * pow(rand01(&rng), 0.3333333);
-        }
-        pos += dir * r;
-    } else if (spawn_kind == 3u) {
-        // Circle (disc) in the XY plane.
-        let ang = rand01(&rng) * 6.2831853;
-        var r = params.spawn_a.x;
-        if (params.spawn_a.y > 0.5) {
-            r = r * sqrt(rand01(&rng)); // uniform over the disc area
-        }
-        pos += vec3<f32>(r * cos(ang), r * sin(ang), 0.0);
-    } else if (spawn_kind == 4u) {
-        // Cone around +Z: base at z=0, apex at z=height.
-        let base_r = params.spawn_a.x;
-        let top_r = params.spawn_a.y;
-        let height = params.spawn_a.z;
-        let t = rand01(&rng);
-        let ring_r = mix(base_r, top_r, t);
-        let ang = rand01(&rng) * 6.2831853;
-        var r = ring_r;
-        if (params.spawn_a.w > 0.5) {
-            r = ring_r * sqrt(rand01(&rng)); // fill the cross-section
-        }
-        pos += vec3<f32>(r * cos(ang), r * sin(ang), t * height);
-    } else if (spawn_kind == 5u) {
+    if (spawn_kind == 5u) {
         // Mesh-surface / point-cloud: index the baked sample pool.
         let n = params.ctrl.w;
         if (n > 0u) {
@@ -129,33 +76,12 @@ fn emit_main(@builtin(global_invocation_id) gid: vec3<u32>) {
             pos += s.position.xyz;
             sample_normal = s.normal.xyz;
         }
+    } else {
+        pos += spawn_shape_offset(spawn_kind, params.spawn_a, params.spawn_b, params.plane, &rng);
     }
 
     // Velocity.
-    var vel = params.vel_a.xyz;
-    let vel_kind = params.kinds.y;
-    if (vel_kind == 1u) {
-        vel = vec3<f32>(
-            mix(params.vel_a.x, params.vel_b.x, rand01(&rng)),
-            mix(params.vel_a.y, params.vel_b.y, rand01(&rng)),
-            mix(params.vel_a.z, params.vel_b.z, rand01(&rng)),
-        );
-    } else if (vel_kind == 2u) {
-        let axis = normalize(params.vel_a.xyz);
-        let half_angle = params.vel_b.x;
-        let cos_a = mix(cos(half_angle), 1.0, rand01(&rng));
-        let sin_a = sqrt(max(0.0, 1.0 - cos_a * cos_a));
-        let phi = rand01(&rng) * 6.2831853;
-        var up = vec3<f32>(0.0, 0.0, 1.0);
-        if (abs(axis.z) > 0.9) {
-            up = vec3<f32>(1.0, 0.0, 0.0);
-        }
-        let t = normalize(cross(up, axis));
-        let b = cross(axis, t);
-        let dir = axis * cos_a + (t * cos(phi) + b * sin(phi)) * sin_a;
-        let speed = mix(params.vel_b.y, params.vel_b.z, rand01(&rng));
-        vel = dir * speed;
-    }
+    var vel = sample_velocity(params.kinds.y, params.vel_a, params.vel_b, &rng);
 
     // Mesh spawn normal lift-off: push the particle off the surface
     // along its sample normal, on top of the emitter's own velocity.
@@ -168,6 +94,8 @@ fn emit_main(@builtin(global_invocation_id) gid: vec3<u32>) {
 
     // Shared spawn offset, on top of the shape and the instance origin.
     pos += params.spawn_offset.xyz;
+    pos = lock_position(pos, params.plane);
+    vel = lock_vector(vel, params.plane);
 
     // Per-particle size with a symmetric random spread, clamped at zero.
     let size_var = (rand01(&rng) * 2.0 - 1.0) * params.rot.z;

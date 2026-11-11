@@ -88,9 +88,10 @@ pub(crate) use runtime::{plugin, refraction};
 pub use effect::{
     Attribute, EffectAsset, EffectId, EffectProgram, Emitter, EventCondition, Flipbook,
     ForceModifier, FragmentHook, Gradient, InlineTexture, MeshAlign, Modifier, Orient,
-    ParticleBlend, ParticleMeshId, ParticleRender,
-    ParticleTextureId, PropertyDecl, PropertyValue, SetAttribute, SimulationSpace, SpawnRate,
+    ParticleBlend, ParticleMeshId, ParticlePlane, ParticleRender, ParticleTextureId, PlaneLock,
+    PlaneLockMismatch, PropertyDecl, PropertyValue, SetAttribute, SimulationSpace, SpawnRate,
     SpawnShape, SubEmitter, TextureMode, TimedBurst, UpdateOp, VelocityDist,
+    check_sub_emitter_lock, child_plane_lock,
 };
 pub use expr::{
     BinaryOp, Component, Expr, ExprHandle, Module, TernaryOp, TypeEnv, TypeError, UnaryOp,

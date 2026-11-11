@@ -10,8 +10,10 @@ use viewport_lib::wgpu as vwgpu;
 use crate::codegen;
 use crate::effect::{
     EffectAsset, EffectId, EffectProgram, MeshAlign, Orient, ParticleBlend, ParticleMeshId,
-    ParticleRender, ParticleTextureId, SpawnShape, TextureMode,
+    ParticlePlane, ParticleRender, ParticleTextureId, SpawnShape, TextureMode,
 };
+use crate::codegen::PLANE_WGSL;
+use crate::effect::{PlaneLockMismatch, check_sub_emitter_lock};
 
 use super::*;
 
@@ -23,6 +25,19 @@ impl ParticlePlugin {
     /// A plugin with no effects yet.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// The plane lock effect `idx` simulates under: its own, or for a
+    /// sub-emitter child without one, its parent's.
+    pub(crate) fn effective_plane_lock(&self, idx: usize) -> Option<crate::effect::PlaneLock> {
+        let own = self.effects.get(idx)?.asset.plane_lock;
+        let parent = self
+            .effects
+            .iter()
+            .filter(|e| !e.removed)
+            .find(|e| e.asset.sub_emitter.is_some_and(|s| s.child.0 as usize == idx))
+            .and_then(|e| e.asset.plane_lock);
+        crate::effect::child_plane_lock(parent, own)
     }
 
     /// Register an effect, returning a handle to submit instances of it later.
@@ -44,7 +59,29 @@ impl ParticlePlugin {
     ///
     /// GPU buffers are allocated lazily the first frame the effect is
     /// simulated.
+    ///
+    /// # Panics
+    ///
+    /// When [`try_add_effect`](Self::try_add_effect) would return an error: a
+    /// sub-emitter whose child is locked to a different plane from this effect.
     pub fn add_effect(&mut self, device: &vwgpu::Device, asset: EffectAsset) -> EffectId {
+        match self.try_add_effect(device, asset) {
+            Ok(id) => id,
+            Err(e) => panic!("{e}"),
+        }
+    }
+
+    /// Register an effect as [`add_effect`](Self::add_effect) does, returning an
+    /// error instead of registering it when its sub-emitter child is locked to
+    /// a different plane from it (see [`check_sub_emitter_lock`]).
+    ///
+    /// [`check_sub_emitter_lock`]: crate::check_sub_emitter_lock
+    pub fn try_add_effect(
+        &mut self,
+        device: &vwgpu::Device,
+        asset: EffectAsset,
+    ) -> Result<EffectId, PlaneLockMismatch> {
+        self.check_plane_locks(None, &asset)?;
         // Bake a spawn-sample pool if the (fixed-function) emitter draws
         // its positions from an uploaded mesh's surface or vertices. Meshes must
         // be uploaded before the effect is registered.
@@ -83,7 +120,30 @@ impl ParticlePlugin {
         if needs_texture_upload {
             self.pending_textures.push(idx);
         }
-        id
+        Ok(id)
+    }
+
+    /// Check `asset`'s plane lock against the effects it is linked to by a
+    /// sub-emitter: its own child, and, when it replaces the effect at
+    /// `replacing`, every parent naming that slot.
+    fn check_plane_locks(
+        &self,
+        replacing: Option<usize>,
+        asset: &EffectAsset,
+    ) -> Result<(), PlaneLockMismatch> {
+        if let Some(sub) = asset.sub_emitter {
+            if let Some(child) = self.effects.get(sub.child.0 as usize).filter(|e| !e.removed) {
+                check_sub_emitter_lock(asset.plane_lock, child.asset.plane_lock)?;
+            }
+        }
+        if let Some(idx) = replacing {
+            for parent in self.effects.iter().filter(|e| !e.removed) {
+                if parent.asset.sub_emitter.is_some_and(|s| s.child.0 as usize == idx) {
+                    check_sub_emitter_lock(parent.asset.plane_lock, asset.plane_lock)?;
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Number of registered effects (including tombstoned / removed slots).
@@ -134,14 +194,33 @@ impl ParticlePlugin {
     ///
     /// Callable at runtime via [`ParticleItems::replace_effect`] (which routes
     /// here in `prepare`), or directly when a handle to the plugin is held.
-    pub fn replace_effect(&mut self, id: EffectId, mut asset: EffectAsset) {
+    ///
+    /// An asset [`try_replace_effect`](Self::try_replace_effect) would refuse is
+    /// dropped and the effect keeps its current asset.
+    pub fn replace_effect(&mut self, id: EffectId, asset: EffectAsset) {
+        let _ = self.try_replace_effect(id, asset);
+    }
+
+    /// Replace an effect as [`replace_effect`](Self::replace_effect) does,
+    /// returning an error and keeping the current asset when the new one breaks
+    /// a sub-emitter link's plane lock (see [`check_sub_emitter_lock`]), as
+    /// this effect's parent or its child.
+    ///
+    /// [`check_sub_emitter_lock`]: crate::check_sub_emitter_lock
+    pub fn try_replace_effect(
+        &mut self,
+        id: EffectId,
+        mut asset: EffectAsset,
+    ) -> Result<(), PlaneLockMismatch> {
         let idx = id.0 as usize;
         let Some(eff) = self.effects.get(idx) else {
-            return;
+            return Ok(());
         };
         if eff.removed {
-            return;
+            return Ok(());
         }
+        self.check_plane_locks(Some(idx), &asset)?;
+        let eff = &self.effects[idx];
         let prev_upload = eff.texture_upload;
         let old_sig = structural_sig(&eff.asset);
         // Inline texture: if the incoming asset carries the same pixels
@@ -175,6 +254,7 @@ impl ParticlePlugin {
         {
             self.pending_textures.push(idx);
         }
+        Ok(())
     }
 
     /// Remove a registered effect: tombstone its slot (the
@@ -458,6 +538,14 @@ impl ParticlePlugin {
                 Orient::FaceCamera => (1u32, 0.0),
                 Orient::AlongVelocity => (2u32, 0.0),
                 Orient::Fixed { radians } => (3u32, radians),
+                // orient_param picks the plane's y axis: 0 for XY, 1 for XZ.
+                Orient::InPlane => (
+                    4u32,
+                    match self.effective_plane_lock(idx).map(|l| l.plane) {
+                        Some(ParticlePlane::Xz) => 1.0,
+                        _ => 0.0,
+                    },
+                ),
             }
         } else {
             (0u32, 0.0)
@@ -1117,17 +1205,24 @@ impl ParticlePlugin {
                 cache: None,
             })
         };
+        // The emit kernels share the plane-lock helpers and the spawn shapes; the
+        // simulate kernels share the lock helpers, the curl-noise helpers (so
+        // CurlNoise can call them) and the modifier definitions.
+        let emit_src = format!(
+            "{}\n{}\n{}",
+            PLANE_WGSL,
+            include_str!("../shaders/particle_spawn.wgsl"),
+            include_str!("../shaders/particle_emit.wgsl")
+        );
         let emit_pipeline = compute(
-            include_str!("../shaders/particle_emit.wgsl"),
+            &emit_src,
             "emit_main",
             "particle_emit",
             &emit_bgl,
         );
-        // Prepend the shared curl-noise helpers (so CurlNoise can call them) and
-        // the shared modifier definitions (the `Modifier` struct + `eval_modifier`)
-        // that both simulate shaders use.
         let sim_src = format!(
-            "{}\n{}\n{}",
+            "{}\n{}\n{}\n{}",
+            PLANE_WGSL,
             codegen::NOISE_WGSL,
             include_str!("../shaders/particle_modifiers.wgsl"),
             include_str!("../shaders/particle_sim.wgsl")
@@ -1149,14 +1244,21 @@ impl ParticlePlugin {
             label: Some("particle_sim_parent_bgl"),
             entries: &[storage_rw(0), uniform(1), storage_rw(2)],
         });
+        let subemit_src = format!(
+            "{}\n{}\n{}",
+            PLANE_WGSL,
+            include_str!("../shaders/particle_spawn.wgsl"),
+            include_str!("../shaders/particle_subemit.wgsl")
+        );
         let subemit_pipeline = compute(
-            include_str!("../shaders/particle_subemit.wgsl"),
+            &subemit_src,
             "emit_main",
             "particle_subemit",
             &subemit_bgl,
         );
         let sim_parent_src = format!(
-            "{}\n{}\n{}",
+            "{}\n{}\n{}\n{}",
+            PLANE_WGSL,
             codegen::NOISE_WGSL,
             include_str!("../shaders/particle_modifiers.wgsl"),
             include_str!("../shaders/particle_sim_parent.wgsl")

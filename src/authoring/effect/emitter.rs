@@ -56,13 +56,38 @@ pub enum SpawnShape {
         /// `true` scatters through the volume; `false` places on the surface.
         volume: bool,
     },
-    /// Spawn on or inside a circle (disc) in the XY plane, centred on the
-    /// instance position. Z-up, so the disc lies flat on the ground plane.
+    /// Spawn on or inside a circle (disc) centred on the instance position, in
+    /// the effect's [`PlaneLock`](crate::PlaneLock) plane, or in the XY plane
+    /// (flat on the Z-up ground) when the effect has no lock.
     Circle {
         /// Circle radius.
         radius: f32,
         /// `true` fills the disc; `false` places on the perimeter ring.
         volume: bool,
+    },
+    /// Spawn inside a ring centred on the instance position: between
+    /// `radius - thickness / 2` and `radius + thickness / 2`, uniform over its
+    /// area. In the lock plane, or XY without a lock.
+    Ring {
+        /// Radius of the ring's centre line.
+        radius: f32,
+        /// Radial width of the ring. `0` places particles on the circle.
+        thickness: f32,
+    },
+    /// Spawn along the line segment from `a` to `b`, in plane coordinates
+    /// relative to the instance position. In the lock plane, or XY without a
+    /// lock.
+    Segment {
+        /// One end, as plane x and y.
+        a: [f32; 2],
+        /// The other end, as plane x and y.
+        b: [f32; 2],
+    },
+    /// Spawn inside a rectangle centred on the instance position, in plane
+    /// coordinates. In the lock plane, or XY without a lock.
+    Rectangle {
+        /// Half the rectangle's width and height, along plane x and y.
+        half_size: [f32; 2],
     },
     /// Spawn on or inside a cone around the +Z axis: the base sits at the
     /// instance position and the apex is offset by `height` along +Z. The radius

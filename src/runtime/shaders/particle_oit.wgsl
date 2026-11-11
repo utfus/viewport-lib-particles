@@ -110,6 +110,10 @@ fn billboard_world(p: Particle, c_in: vec2<f32>, size_scale: f32, roll: f32) -> 
         let ny = by * ca - bx * sa;
         bx = nx;
         by = ny;
+    } else if (orient == 4u) {
+        // In the plane: world X across, plane y (Y, or Z for XZ) up.
+        bx = vec3<f32>(1.0, 0.0, 0.0);
+        by = select(vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(0.0, 0.0, 1.0), draw_params.orient_param > 0.5);
     }
 
     var hsize = half;

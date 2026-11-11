@@ -19,6 +19,17 @@ impl ItemTypePlugin for ParticlePlugin {
         Self::TYPE_NAME
     }
 
+    /// Compute and storage throughout: the simulate kernels bind up to five
+    /// storage buffers (particles, sub-emitter events and the three collider
+    /// buffers) and the draw pipelines four bind groups. A compatibility-tier
+    /// renderer declines the plugin with these as the reason.
+    fn requires(&self) -> viewport_lib::capabilities::Requirements {
+        let mut r = viewport_lib::capabilities::Requirements::full_tier();
+        r.bind_groups = 4;
+        r.storage_buffers_per_stage = 5;
+        r
+    }
+
     fn init_gpu(&mut self, device: &vwgpu::Device, resources: &dyn PluginResources) {
         self.build_gpu(device, resources);
     }

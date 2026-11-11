@@ -1,6 +1,8 @@
 // Soft-particle draw pass: camera-facing billboards that fade their
 // alpha as they approach the opaque scene surface, removing the hard clip line
-// where a particle intersects geometry.
+// where a particle intersects geometry. The painter pass draws billboards with
+// this shader too, through the entry points in particle_painter.wgsl; with a
+// soft distance of zero the fade is one.
 //
 // Runs in the renderer's read-only-depth plugin pass (`paint_depth_read`), after
 // opaque + sprites and before OIT, with the scene depth bound read-only. Group 1
@@ -37,9 +39,9 @@ struct DrawParams {
     screen_size: u32,
     soft_dist: f32,
     roll_rate: f32,
+    painter_layer: u32,   // painter entry points only (particle_painter.wgsl)
+    painter_unlit: u32,
     pad0: f32,
-    pad1: f32,
-    pad2: f32,
 };
 @group(1) @binding(2) var<uniform> draw_params: DrawParams;
 @group(1) @binding(3) var sprite_tex: texture_2d<f32>;

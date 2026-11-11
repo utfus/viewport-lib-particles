@@ -7,6 +7,7 @@ use viewport_lib::wgpu as vwgpu;
 use std::sync::{Arc, Mutex};
 
 use crate::effect::{EffectAsset, EffectId, EventCondition, ParticleBlend, ParticleTextureId};
+use viewport_lib_types::render_item::PainterPlacement;
 
 use super::*;
 
@@ -259,10 +260,16 @@ pub(crate) struct DrawParams {
     /// Billboard spin in radians per second, advanced by particle age. Billboard
     /// shaders only; 0 = no spin. The particle's spawn roll rides its `pad.x`.
     pub(crate) roll_rate: f32,
+    /// The painter layer whose 2D light a painter billboard samples. Read only
+    /// by the painter entry points of the folded billboard shader, and
+    /// rewritten each frame from the instance's placement.
+    pub(crate) painter_layer: u32,
+    /// 1 when the painter placement is unlit.
+    pub(crate) painter_unlit: u32,
     /// Padding to a 16-byte multiple (uniform size requirement). The mesh and
     /// trail shaders read only the 16-byte prefix, so growth here is invisible to
     /// them.
-    pub(crate) _pad: [f32; 3],
+    pub(crate) _pad: f32,
 }
 
 /// Trail history parameters (group 1, binding 2 of the append and trail draw
@@ -538,6 +545,9 @@ pub(crate) struct EffectInstance {
     /// sprite (folded into one group so group 3 is free for the scene depth).
     /// Present only for soft billboard effects.
     pub(crate) soft_draw_bg: Option<vwgpu::BindGroup>,
+    /// The folded billboard bind group's `DrawParams` buffer and the values it
+    /// was built with, so a painter instance can rewrite its layer each frame.
+    pub(crate) folded_params: Option<(vwgpu::Buffer, DrawParams)>,
     /// Depth-sort state, present only for non-additive effects.
     pub(crate) sort: Option<SortGpu>,
     /// Live-count readback state, built lazily the first frame the host requests
@@ -591,12 +601,42 @@ pub(crate) struct EffectInstance {
 /// clones are cheap.
 #[derive(Clone)]
 pub(crate) struct CustomDrawPipelines {
+    /// The `custom_draw_cache` key, which names the hook's painter pipelines.
+    pub(crate) key: u64,
+    /// The composed draw-route shader, for the hook's painter pipelines.
+    pub(crate) draw_shader: vwgpu::ShaderModule,
     /// Additive HDR billboard pipeline (drawn in `paint`).
     pub(crate) additive: vwgpu::RenderPipeline,
     /// Multiply and screen HDR billboard pipelines (drawn in `paint`).
     pub(crate) blends: BlendPipelines,
     /// Weighted-blended OIT pipeline (drawn in `paint_transparent`).
     pub(crate) oit: vwgpu::RenderPipeline,
+}
+
+/// The shaders and layouts painter pipelines build from.
+pub(crate) struct PainterShaders {
+    /// The folded billboard shader with its painter (light-sampling) entries.
+    pub(crate) billboard: vwgpu::ShaderModule,
+    pub(crate) mesh: vwgpu::ShaderModule,
+    pub(crate) trail: vwgpu::ShaderModule,
+}
+
+/// Which shader and layouts a painter pipeline uses.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum PainterRoute {
+    /// The folded billboard route, lit by its painter range.
+    Billboard,
+    Mesh,
+    Trail,
+    /// A hooked billboard, by its `custom_draw_cache` key. Unlit.
+    Hook(u64),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) struct PainterPipelineKey {
+    pub(crate) route: PainterRoute,
+    pub(crate) blend: ParticleBlend,
+    pub(crate) depth_test: bool,
 }
 
 /// A route's multiply and screen pipelines.
@@ -770,6 +810,14 @@ pub struct ParticlePlugin {
 
     // Interaction: pick-id, outline-mask, and shadow-cast pipelines.
     pub(crate) pick_pipeline: Option<vwgpu::RenderPipeline>,
+    /// Shader modules the painter pipelines build from, kept from `build_gpu`.
+    pub(crate) painter_shaders: Option<PainterShaders>,
+    /// The renderer's depth-read layout, group 3 of the folded billboard
+    /// pipelines.
+    pub(crate) depth_read_bgl: Option<vwgpu::BindGroupLayout>,
+    /// Painter-pass pipelines, built in `prepare` the first frame a placement
+    /// needs one.
+    pub(crate) painter_pipelines: HashMap<PainterPipelineKey, vwgpu::RenderPipeline>,
     pub(crate) mask_pipeline: Option<vwgpu::RenderPipeline>,
     pub(crate) shadow_pipeline: Option<vwgpu::RenderPipeline>,
     pub(crate) pick_bgl: Option<vwgpu::BindGroupLayout>,
@@ -849,6 +897,9 @@ pub struct ParticlePlugin {
 #[derive(Copy, Clone)]
 pub(crate) struct DrawEntry {
     pub(crate) key: InstanceKey,
+    /// Where the instance sits in the painter sequence; `None` draws it in the
+    /// 3D passes.
+    pub(crate) painter: Option<PainterPlacement>,
     /// Pick id of the driving item (0 = `PickId::NONE`, not pickable).
     pub(crate) pick_id: u32,
     pub(crate) selected: bool,
@@ -861,6 +912,8 @@ pub(crate) struct DrawEntry {
 #[derive(Copy, Clone)]
 pub(crate) struct DrivenInstance {
     pub(crate) ikey: InstanceKey,
+    /// The item's painter override, else the effect's placement.
+    pub(crate) painter: Option<PainterPlacement>,
     pub(crate) origin: [f32; 3],
     pub(crate) pick_id: u32,
     pub(crate) selected: bool,

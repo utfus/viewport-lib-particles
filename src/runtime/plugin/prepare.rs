@@ -3,7 +3,8 @@ use std::collections::HashMap;
 use viewport_lib::Frustum;
 use viewport_lib::plugin_api::{
     DepthReadContext, ItemCollections, ItemFrameContext, ItemTypePlugin, OutlineMaskContext,
-    PaintContext, PickPassContext, PluginResources, ShadowCastContext,
+    PaintContext, PainterBatch, PainterContext, PainterRun, PickPassContext, PluginResources,
+    ShadowCastContext,
 };
 use viewport_lib::wgpu as vwgpu;
 
@@ -505,10 +506,11 @@ impl ItemTypePlugin for ParticlePlugin {
                 }
             }
 
-            // Non-additive effects sort their draw order back-to-front, after
+            // Over-blended effects sort their draw order back-to-front, after
             // the simulate pass has set final positions. Skipped when the frame
-            // disables sorting, leaving the identity order (to show the artefact).
-            if items.sort_transparent {
+            // disables sorting, leaving the identity order (to show the artefact),
+            // and for painter instances, which a 2D game orders by layer.
+            if items.sort_transparent && di.painter.is_none() {
                 if let (Some(init_pipeline), Some(stage_pipeline), Some(sort)) = (
                     sort_init_pipeline.as_ref(),
                     sort_stage_pipeline.as_ref(),
@@ -615,12 +617,15 @@ impl ItemTypePlugin for ParticlePlugin {
 
             self.draw_list.push(DrawEntry {
                 key: ikey,
+                painter: di.painter,
                 pick_id,
                 selected,
                 cast_shadows,
             });
             any = true;
         }
+
+        self.prepare_painter(device, queue);
 
         // Idle GC: reclaim steady instances the host has stopped
         // submitting for `IDLE_RETIRE_FRAMES` frames, bounding `self.instances` to
@@ -692,8 +697,9 @@ impl ItemTypePlugin for ParticlePlugin {
         else {
             return;
         };
-        // Group 0 (camera + scene) is already bound by the lib.
-        for entry in &self.draw_list {
+        // Group 0 (camera + scene) is already bound by the lib. Painter
+        // instances draw in `paint_painter` instead.
+        for entry in self.draw_list.iter().filter(|e| e.painter.is_none()) {
             let eff = &self.effects[entry.key.effect as usize];
             let Some(inst) = self.instances.get(&entry.key) else {
                 continue;
@@ -763,6 +769,19 @@ impl ItemTypePlugin for ParticlePlugin {
         }
     }
 
+    fn draws_transparent(&self, _viewport_index: usize) -> bool {
+        // The entries `paint_transparent` draws: over-blended billboards outside
+        // the painter sequence and the soft pass. A frame with none skips the
+        // OIT pass and its composite.
+        self.draw_list.iter().any(|e| {
+            let asset = &self.effects[e.key.effect as usize].asset;
+            e.painter.is_none()
+                && !asset.blend.is_order_independent()
+                && asset.soft.is_none()
+                && matches!(asset.render, ParticleRender::Billboard { .. })
+        })
+    }
+
     fn paint_transparent(
         &self,
         pass: &mut vwgpu::RenderPass<'_>,
@@ -776,7 +795,7 @@ impl ItemTypePlugin for ParticlePlugin {
         // Draw only Alpha/Premultiplied billboards; order-independent billboards and the
         // mesh/trail routes stay in the main HDR draw (paint). The pipeline is set
         // per draw because a custom-hook effect uses its own OIT pipeline.
-        for entry in &self.draw_list {
+        for entry in self.draw_list.iter().filter(|e| e.painter.is_none()) {
             let eff = &self.effects[entry.key.effect as usize];
             let Some(inst) = self.instances.get(&entry.key) else {
                 continue;
@@ -812,7 +831,9 @@ impl ItemTypePlugin for ParticlePlugin {
         // actually being drawn this frame.
         self.draw_list.iter().any(|e| {
             let eff = &self.effects[e.key.effect as usize];
-            eff.asset.soft.is_some() && matches!(eff.asset.render, ParticleRender::Billboard { .. })
+            e.painter.is_none()
+                && eff.asset.soft.is_some()
+                && matches!(eff.asset.render, ParticleRender::Billboard { .. })
         })
     }
 
@@ -833,7 +854,7 @@ impl ItemTypePlugin for ParticlePlugin {
         // the scene depth, from the context's prebuilt bind group. Each soft
         // effect picks its pipeline by its own blend mode.
         pass.set_bind_group(3, ctx.scene_depth_bind_group, &[]);
-        for entry in &self.draw_list {
+        for entry in self.draw_list.iter().filter(|e| e.painter.is_none()) {
             let eff = &self.effects[entry.key.effect as usize];
             if eff.asset.soft.is_none()
                 || !matches!(eff.asset.render, ParticleRender::Billboard { .. })
@@ -869,7 +890,8 @@ impl ItemTypePlugin for ParticlePlugin {
         };
         // Group 0 (camera) is bound by the lib. Draw each pickable effect's live
         // particles as billboards writing the driving item's pick id.
-        for entry in &self.draw_list {
+        // Painter instances pick in `render_pick_painter`, in painter order.
+        for entry in self.draw_list.iter().filter(|e| e.painter.is_none()) {
             if entry.pick_id == 0 {
                 continue;
             }
@@ -909,6 +931,33 @@ impl ItemTypePlugin for ParticlePlugin {
         }
     }
 
+    fn draws_painter(&self, _viewport_index: usize) -> bool {
+        self.draw_list.iter().any(|e| e.painter.is_some())
+    }
+
+    fn painter_batches(&self, _viewport_index: usize, out: &mut Vec<PainterBatch>) {
+        self.report_painter_batches(out);
+    }
+
+    fn paint_painter(
+        &self,
+        pass: &mut vwgpu::RenderPass<'_>,
+        ctx: &PainterContext<'_>,
+        _items: &ItemCollections<'_>,
+    ) {
+        self.paint_painter_batches(pass, ctx);
+    }
+
+    fn render_pick_painter(
+        &self,
+        pass: &mut vwgpu::RenderPass<'_>,
+        ctx: &PickPassContext<'_>,
+        run: &PainterRun<'_>,
+        _items: &ItemCollections<'_>,
+    ) {
+        self.pick_painter_batches(pass, ctx, run);
+    }
+
     fn cast_shadow_pass(
         &self,
         pass: &mut vwgpu::RenderPass<'_>,
@@ -925,7 +974,8 @@ impl ItemTypePlugin for ParticlePlugin {
         // the lib. Draw each shadow-casting effect's particles as depth-only
         // world-axis quads into the cascade tile.
         for entry in &self.draw_list {
-            if !entry.cast_shadows {
+            // Painter content leaves the shadow pass, as viewport-lib's own does.
+            if !entry.cast_shadows || entry.painter.is_some() {
                 continue;
             }
             let eff = &self.effects[entry.key.effect as usize];
@@ -1013,6 +1063,7 @@ impl ParticlePlugin {
                 });
                 driven.push(DrivenInstance {
                     ikey,
+                    painter: it.painter.or(asset.painter),
                     origin: it.position,
                     pick_id: it.settings.pick_id.0 as u32,
                     selected: it.settings.selected,
@@ -1095,6 +1146,7 @@ impl ParticlePlugin {
                 .max(0.0);
             driven.push(DrivenInstance {
                 ikey: t.ikey,
+                painter: self.effects[t.ikey.effect as usize].asset.painter,
                 origin: t.origin,
                 pick_id: 0,
                 selected: false,

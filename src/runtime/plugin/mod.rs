@@ -3,11 +3,13 @@
 //! Split across submodules: [`items`] (the public `ParticleItem` / `ParticleItems`
 //! API), [`types`] (`ParticlePlugin` and the internal GPU / state structs),
 //! [`lifecycle`] (registration, hot-reload, and GPU-state construction),
-//! [`prepare`] (the per-frame simulate orchestration and the draw passes), and
+//! [`prepare`] (the per-frame simulate orchestration and the draw passes),
+//! [`painter`] (painter's-order batches, pipelines and draws), and
 //! [`build`] (GPU-resource and uniform builders).
 
 mod build;
 mod lifecycle;
+mod painter;
 mod prepare;
 mod shade;
 mod types;
@@ -18,6 +20,7 @@ pub use types::{ParticlePlugin, ParticleStats, ParticleStatsHandle};
 // Crate-internal re-exports so the submodules reach each other's items through
 // `use super::*`.
 pub(crate) use build::*;
+pub(crate) use lifecycle::{blend_state, mesh_vertex_layout, route_opts};
 pub(crate) use crate::items::EffectCommand;
 pub(crate) use shade::*;
 pub(crate) use types::*;

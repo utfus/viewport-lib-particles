@@ -2,7 +2,7 @@ use std::hash::{Hash, Hasher};
 
 use viewport_lib::plugin_api::shared_wgsl::{
     SHARED_BINDINGS_WGSL, SHARED_DEPTH_READ_WGSL, SHARED_MASK_WGSL, SHARED_OIT_WGSL,
-    SHARED_PICK_WGSL,
+    SHARED_PAINTER_MASK_WGSL, SHARED_PICK_WGSL,
 };
 use viewport_lib::plugin_api::{PluginPipelineOpts, PluginResources};
 use viewport_lib::wgpu as vwgpu;
@@ -10,7 +10,7 @@ use viewport_lib::wgpu as vwgpu;
 use crate::codegen;
 use crate::effect::{
     EffectAsset, EffectId, EffectProgram, MeshAlign, Orient, ParticleMeshId,
-    ParticlePlane, ParticleRender, ParticleTextureId, SpawnShape, TextureMode,
+    ParticleBlend, ParticlePlane, ParticleRender, ParticleTextureId, SpawnShape, TextureMode,
 };
 use crate::codegen::PLANE_WGSL;
 use crate::effect::{PlaneLockMismatch, check_sub_emitter_lock};
@@ -575,7 +575,9 @@ impl ParticlePlugin {
             screen_size,
             soft_dist,
             roll_rate,
-            _pad: [0.0; 3],
+            painter_layer: 0,
+            painter_unlit: 0,
+            _pad: 0.0,
         };
         // Bind the effect's texture, or the shared 1x1 white default. The sprite
         // sampler is the shared linear-clamp ramp sampler.
@@ -672,17 +674,18 @@ impl ParticlePlugin {
             None
         };
 
-        // Soft-particle group-1 bind group: built when the effect is a
-        // soft billboard, folding particles + order + draw params + sprite so the
-        // depth-read pipeline's group 3 carries the scene depth.
-        let soft_draw_bg = if soft.is_some() && is_billboard {
+        // Folded group-1 bind group for every billboard: particles + order + draw
+        // params + sprite in one group, so group 3 can carry the depth-read group
+        // in the soft pass and the painter pass. Painter instances rewrite its
+        // draw params each frame.
+        let (soft_draw_bg, folded_params) = if is_billboard {
             let soft_draw_bgl = self.soft_draw_bgl.clone().unwrap();
             let sprite_view = match texture.and_then(|t| self.textures.get(t.0 as usize)) {
                 Some(t) => &t.view,
                 None => self.default_tex_view.as_ref().unwrap(),
             };
             let sprite_sampler = self.ramp_sampler.as_ref().unwrap();
-            Some(build_soft_draw_bg(
+            let (bg, buf) = build_soft_draw_bg(
                 device,
                 &soft_draw_bgl,
                 gpu.particle_buf(),
@@ -690,9 +693,10 @@ impl ParticlePlugin {
                 dp,
                 sprite_view,
                 sprite_sampler,
-            ))
+            );
+            (Some(bg), Some((buf, dp)))
         } else {
-            None
+            (None, None)
         };
 
         // Per-instance pick-id uniform (group 2 of the pick pipeline). Written
@@ -770,6 +774,7 @@ impl ParticlePlugin {
                 gpu,
                 trail,
                 soft_draw_bg,
+                folded_params,
                 sort,
                 stats: None,
                 pick_buf,
@@ -1007,6 +1012,8 @@ impl ParticlePlugin {
         };
 
         let pipelines = CustomDrawPipelines {
+            key,
+            draw_shader: add_shader.clone(),
             additive,
             blends,
             oit,
@@ -1459,6 +1466,19 @@ impl ParticlePlugin {
                 &route_opts(label, &soft_shader, fs, &[], &soft_extra, Some(blend)),
             )
         };
+        // The painter pass has the depth-read pass's targets, so the painter
+        // pipelines (built in `prepare` as placements need them) use the same
+        // folded shader, with light-sampling entry points appended.
+        let painter_src = format!(
+            "{SHARED_BINDINGS_WGSL}\n{SHARED_DEPTH_READ_WGSL}\n{SHARED_PAINTER_MASK_WGSL}\n{}\n{}",
+            include_str!("../shaders/particle_soft.wgsl"),
+            include_str!("../shaders/particle_painter.wgsl")
+        );
+        let painter_billboard = device.create_shader_module(vwgpu::ShaderModuleDescriptor {
+            label: Some("particle_painter_shader"),
+            source: vwgpu::ShaderSource::Wgsl(painter_src.into()),
+        });
+        self.depth_read_bgl = Some(depth_read_bgl.clone());
         self.soft_pipeline_over = Some(make_soft("fs", OVER, "particle_soft_over"));
         self.soft_pipeline_additive = Some(make_soft("fs", ADDITIVE, "particle_soft_additive"));
         self.soft_blends = Some(BlendPipelines {
@@ -1477,15 +1497,7 @@ impl ParticlePlugin {
             label: Some("particle_mesh_shader"),
             source: vwgpu::ShaderSource::Wgsl(mesh_src.into()),
         });
-        let mesh_vertex_layout = [vwgpu::VertexBufferLayout {
-            array_stride: 12,
-            step_mode: vwgpu::VertexStepMode::Vertex,
-            attributes: &[vwgpu::VertexAttribute {
-                format: vwgpu::VertexFormat::Float32x3,
-                offset: 0,
-                shader_location: 0,
-            }],
-        }];
+        let mesh_vertex_layout = [mesh_vertex_layout()];
         let make_mesh = |fs: &str, blend: vwgpu::BlendState, label: &str| {
             resources.build_opaque_pipeline(
                 device,
@@ -1529,6 +1541,11 @@ impl ParticlePlugin {
         self.trail_blends = Some(BlendPipelines {
             multiply: make_trail("fs_multiply", MULTIPLY, "particle_trail_multiply"),
             screen: make_trail("fs", SCREEN, "particle_trail_screen"),
+        });
+        self.painter_shaders = Some(PainterShaders {
+            billboard: painter_billboard,
+            mesh: mesh_shader.clone(),
+            trail: trail_shader.clone(),
         });
 
         // Interaction pipelines: pick id, outline mask, and shadow casting. They
@@ -1744,6 +1761,30 @@ const OVER: vwgpu::BlendState = vwgpu::BlendState {
         operation: vwgpu::BlendOperation::Add,
     },
 };
+/// The blend state each blend mode draws with.
+pub(crate) fn blend_state(blend: ParticleBlend) -> vwgpu::BlendState {
+    match blend {
+        ParticleBlend::Additive => ADDITIVE,
+        ParticleBlend::Alpha | ParticleBlend::Premultiplied => OVER,
+        ParticleBlend::Multiply => MULTIPLY,
+        ParticleBlend::Screen => SCREEN,
+    }
+}
+
+/// The mesh route's vertex stream: one `vec3` position per vertex.
+pub(crate) fn mesh_vertex_layout() -> vwgpu::VertexBufferLayout<'static> {
+    const ATTRIBUTES: [vwgpu::VertexAttribute; 1] = [vwgpu::VertexAttribute {
+        format: vwgpu::VertexFormat::Float32x3,
+        offset: 0,
+        shader_location: 0,
+    }];
+    vwgpu::VertexBufferLayout {
+        array_stride: 12,
+        step_mode: vwgpu::VertexStepMode::Vertex,
+        attributes: &ATTRIBUTES,
+    }
+}
+
 /// `dst * src` on colour: the multiply entry points have already mixed the
 /// colour towards white by one minus alpha. The same state as viewport-lib's
 /// sprite multiply.
@@ -1780,7 +1821,7 @@ const ONE: vwgpu::BlendComponent = vwgpu::BlendComponent {
 /// billboard faces either way), and no depth write, so overlapping particles
 /// blend instead of occluding. The pick, mask, OIT and shadow builders set
 /// their own depth write.
-fn route_opts<'a>(
+pub(crate) fn route_opts<'a>(
     label: &'a str,
     shader: &'a vwgpu::ShaderModule,
     fs_entry: &'a str,

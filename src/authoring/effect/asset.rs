@@ -1,4 +1,5 @@
 use super::*;
+use viewport_lib_types::render_item::PainterPlacement;
 
 /// Fixed number of texture slots a custom fragment hook can bind. The group-3
 /// hook layout always declares this many (unused slots bind the shared 1x1
@@ -326,6 +327,19 @@ pub struct EffectAsset {
     /// See [`PlaneLock`].
     #[cfg_attr(feature = "serde", serde(default))]
     pub plane_lock: Option<PlaneLock>,
+    /// Draw the effect in viewport-lib's painter sequence at this placement,
+    /// sorted with sprites, tile layers and other painter content by layer and
+    /// key instead of by depth. `None` draws it in the 3D passes. A
+    /// [`ParticleItem::painter`](crate::ParticleItem::painter) overrides it per
+    /// instance. Compose the placement with
+    /// [`painter_key`](crate::painter_key). See [`with_painter`](Self::with_painter).
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub painter: Option<PainterPlacement>,
+    /// Test painter draws against the scene depth, so opaque 3D geometry in
+    /// front hides them. `false`, the default and what a 2D game wants, draws
+    /// them over whatever is there in painter order.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub painter_depth_test: bool,
 }
 
 /// Serde default for [`EffectAsset::simulation_speed`] (`1.0`).
@@ -364,6 +378,8 @@ impl Default for EffectAsset {
             simulation_speed: 1.0,
             prewarm: false,
             plane_lock: None,
+            painter: None,
+            painter_depth_test: false,
         }
     }
 }
@@ -568,6 +584,29 @@ impl EffectAsset {
     /// first appears. See [`prewarm`](Self::prewarm).
     pub fn with_prewarm(mut self, prewarm: bool) -> Self {
         self.prewarm = prewarm;
+        self
+    }
+
+    /// Draw the effect in the painter sequence at `placement`.
+    ///
+    /// Painter effects draw after the opaque scene and its order-independent
+    /// transparency, with depth writes off, in the order the renderer sorts
+    /// every plugin's painter content: by layer, then key. Within an effect
+    /// particles draw in slot order, with no depth sort. A lit placement takes
+    /// the 2D light of its layer's range on the billboard route; an
+    /// [`unlit`](PainterPlacement::unlit) one keeps its colour and draws after
+    /// the range's lit content. The mesh and trail routes, and billboards with
+    /// a [`FragmentHook`], draw in painter order unlit. Painter effects draw on
+    /// the HDR path only.
+    pub fn with_painter(mut self, placement: PainterPlacement) -> Self {
+        self.painter = Some(placement);
+        self
+    }
+
+    /// Test painter draws against the scene depth. See
+    /// [`painter_depth_test`](Self::painter_depth_test).
+    pub fn with_painter_depth_test(mut self, depth_test: bool) -> Self {
+        self.painter_depth_test = depth_test;
         self
     }
 

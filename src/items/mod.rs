@@ -1,4 +1,5 @@
 use viewport_lib_types::material::ItemSettings;
+use viewport_lib_types::render_item::PainterPlacement;
 
 use crate::effect::{
     EffectAsset, EffectId, Emitter, Gradient, Modifier,
@@ -76,6 +77,10 @@ pub struct ParticleItem {
     /// [`EffectAsset::prewarm`] (one particle lifetime when set, no warmup
     /// otherwise). See [`with_warmup`](Self::with_warmup).
     pub warmup: Option<f32>,
+    /// This instance's place in the painter sequence, overriding the effect's
+    /// [`EffectAsset::painter`]. A y-sorted effect sets it every frame from the
+    /// instance's own sort value. `None` keeps the effect's.
+    pub painter: Option<PainterPlacement>,
 }
 
 impl ParticleItem {
@@ -94,6 +99,7 @@ impl ParticleItem {
             seed: None,
             time_scale: 1.0,
             warmup: None,
+            painter: None,
         }
     }
 
@@ -119,6 +125,13 @@ impl ParticleItem {
     /// sub-emitter parent/child effects, which stay single-instance.
     pub fn with_key(mut self, key: u64) -> Self {
         self.key = key;
+        self
+    }
+
+    /// Place this instance in the painter sequence, overriding the effect's
+    /// placement. See [`EffectAsset::with_painter`].
+    pub fn with_painter(mut self, placement: PainterPlacement) -> Self {
+        self.painter = Some(placement);
         self
     }
 

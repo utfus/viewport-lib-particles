@@ -590,10 +590,11 @@ pub(crate) fn build_hook_draw_bg(
     })
 }
 
-/// Soft-particle draw bind group: group 1 of the depth-read pipeline, folding
-/// particles (0), draw order (1), the `DrawParams` uniform (2), the billboard
-/// texture (3), and its sampler (4) into one group so group 3 stays free for
-/// the scene depth. Owns a private `DrawParams` buffer.
+/// Folded billboard bind group: group 1 of the soft and painter pipelines,
+/// folding particles (0), draw order (1), the `DrawParams` uniform (2), the
+/// billboard texture (3), and its sampler (4) into one group so group 3 stays
+/// free for the depth-read group. Returns the group and its private
+/// `DrawParams` buffer.
 pub(crate) fn build_soft_draw_bg(
     device: &vwgpu::Device,
     soft_draw_bgl: &vwgpu::BindGroupLayout,
@@ -602,14 +603,14 @@ pub(crate) fn build_soft_draw_bg(
     params: DrawParams,
     texture_view: &vwgpu::TextureView,
     sampler: &vwgpu::Sampler,
-) -> vwgpu::BindGroup {
+) -> (vwgpu::BindGroup, vwgpu::Buffer) {
     let buf = buffer_with_data(
         device,
-        "particle_soft_drawparams",
+        "particle_folded_drawparams",
         bytemuck::bytes_of(&params),
-        vwgpu::BufferUsages::UNIFORM,
+        vwgpu::BufferUsages::UNIFORM | vwgpu::BufferUsages::COPY_DST,
     );
-    device.create_bind_group(&vwgpu::BindGroupDescriptor {
+    let bg = device.create_bind_group(&vwgpu::BindGroupDescriptor {
         label: Some("particle_soft_draw_bg"),
         layout: soft_draw_bgl,
         entries: &[
@@ -634,7 +635,8 @@ pub(crate) fn build_soft_draw_bg(
                 resource: vwgpu::BindingResource::Sampler(sampler),
             },
         ],
-    })
+    });
+    (bg, buf)
 }
 
 /// Draw bind group binding the particle buffer (group 1, binding 0) and the draw

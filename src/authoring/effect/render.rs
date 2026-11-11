@@ -275,7 +275,7 @@ pub enum SimulationSpace {
 }
 
 /// GPU blend mode for the particle draw.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum ParticleBlend {
     /// Standard over-blend (premultiplied): particles occlude the background by

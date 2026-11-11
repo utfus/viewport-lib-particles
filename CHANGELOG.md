@@ -9,6 +9,8 @@
 - **Flat spawn shapes** - `SpawnShape::Ring`, `Segment` and `Rectangle`, in plane coordinates; they and `Circle` lie in the lock plane, or XY without a lock. Sub-emitter children now take every spawn shape but the mesh ones, where they took only boxes and spheres.
 - **`Orient::InPlane`** - billboards lie in the lock plane, so a rotated 2D camera turns them with the world.
 - **`ParticleBlend::Multiply` and `Screen`** - multiply darkens what is behind a particle and screen lightens it without passing white, both weighted by alpha and with the same blend states as viewport-lib's sprites. They draw on the billboard, soft, mesh and trail routes and with fragment hooks. Like additive they are order-independent: they draw in the main pass with no depth sort and no OIT, and `ParticleBlend::is_order_independent` says which blends do. A `match` over `ParticleBlend` needs arms for them.
+- **Painter's-order particles** - `EffectAsset::with_painter(PainterPlacement)` and `ParticleItem::with_painter` draw an effect in viewport-lib's painter sequence, sorted with sprites, tile layers and painter meshes by layer and key, after the opaque scene and its OIT, with depth writes off and no depth sort. `with_painter_depth_test(true)` tests against scene depth. `PainterPlacement` and `painter_key` are re-exported from viewport-lib-types. Lit billboards take their range's 2D light and an `unlit` placement keeps its colour; mesh and trail routes and hooked billboards draw in order unlit. Picks follow the painter order. Painter effects draw on the HDR path only, and leave the shadow pass.
+- **`draws_transparent`** - the plugin now opens the OIT pass only on frames with an over-blended billboard outside the painter sequence and the soft pass.
 
 ## [0.1.0]
 

@@ -33,6 +33,8 @@ serde = ["dep:serde", "dep:ron"]
 
 [dev-dependencies]
 pollster = "0.4"
+# Sprites and 2D lighting, for the painter-order tests.
+viewport-lib-plugins = { path = "../../viewport-lib/crates/viewport-lib-plugins" }
 # eframe 0.33 pairs with wgpu 27, matching viewport-lib's primary leg.
 eframe = { version = "=0.33.3", default-features = false, features = ["wgpu", "default_fonts", "x11", "wayland"] }
 

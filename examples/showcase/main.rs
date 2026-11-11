@@ -34,6 +34,7 @@ mod showcase_21_timedbursts;
 mod showcase_22_forces;
 mod showcase_23_exprops;
 mod showcase_24_iridescent;
+mod showcase_25_2d;
 
 use eframe::{egui, egui_wgpu, wgpu};
 use viewport_lib::renderer::{EnvironmentLighting, PickBackend, PickMask};
@@ -77,6 +78,7 @@ enum ShowcaseMode {
     Forces,
     ExprOps,
     Iridescence,
+    TwoD,
 }
 
 impl ShowcaseMode {
@@ -105,6 +107,7 @@ impl ShowcaseMode {
         ShowcaseMode::Forces,
         ShowcaseMode::ExprOps,
         ShowcaseMode::Iridescence,
+        ShowcaseMode::TwoD,
     ];
 
     fn label(self) -> &'static str {
@@ -133,6 +136,7 @@ impl ShowcaseMode {
             ShowcaseMode::Forces => "22: Forces",
             ShowcaseMode::ExprOps => "23: Expr ops",
             ShowcaseMode::Iridescence => "24: Iridescence",
+            ShowcaseMode::TwoD => "25: 2D",
         }
     }
 
@@ -259,9 +263,13 @@ fn main() -> eframe::Result {
                 .map(|(_, asset)| plugin.add_effect(device, asset))
                 .next()
                 .expect("one interaction effect");
+            let two_d_ids = showcase_25_2d::register(&mut plugin, device, queue);
             renderer
                 .with_item_type_plugin(device, Box::new(plugin))
                 .expect("register item type plugin");
+            // Sprites (and the rest of viewport-lib's item types) for the 2D
+            // page's backdrop and characters.
+            viewport_lib_plugins::item_types::install(&mut renderer, device);
 
             // Ground plane for the interaction showcase (shadow receiver).
             let ground_mesh = renderer
@@ -359,6 +367,8 @@ fn main() -> eframe::Result {
                 exprops: showcase_23_exprops::State::default(),
                 iridescent_ids,
                 iridescent: showcase_24_iridescent::State::default(),
+                two_d_ids,
+                two_d: showcase_25_2d::State::default(),
             }))
         }),
     )
@@ -430,6 +440,8 @@ struct App {
     exprops: showcase_23_exprops::State,
     iridescent_ids: Vec<EffectId>,
     iridescent: showcase_24_iridescent::State,
+    two_d_ids: showcase_25_2d::Ids,
+    two_d: showcase_25_2d::State,
     target: Option<Target>,
 }
 
@@ -527,6 +539,7 @@ impl eframe::App for App {
                 ShowcaseMode::Iridescence => {
                     showcase_24_iridescent::controls(&mut self.iridescent, ui)
                 }
+                ShowcaseMode::TwoD => showcase_25_2d::controls(&mut self.two_d, ui),
             });
 
         // ---- Central panel: viewport ----
@@ -595,6 +608,23 @@ impl eframe::App for App {
                 }
 
                 let ppp = ui.ctx().pixels_per_point();
+
+                // The 2D page draws through its own orthographic camera, among
+                // painter sprites.
+                if self.mode == ShowcaseMode::TwoD {
+                    let (items, sprites) = showcase_25_2d::scene(&self.two_d_ids, &mut self.two_d, dt);
+                    let mut scene = SceneFrame::from_surface_items(Vec::new());
+                    *scene.items_mut::<viewport_lib_plugins::item_types::sprite::SpriteItem>() =
+                        sprites;
+                    scene.submit_plugin_items(ParticlePlugin::TYPE_NAME, items);
+                    let frame_data = FrameData::new(
+                        CameraFrame::from_camera(&showcase_25_2d::camera(w, h), [w, h])
+                            .with_pixels_per_point(ppp),
+                        scene,
+                    );
+                    self.paint_viewport(ui, rect, &rs, frame_data);
+                    return;
+                }
 
                 // Interaction submits a ground plane + directional light alongside
                 // the particles, and a click requests a GPU pick.
@@ -709,7 +739,7 @@ impl eframe::App for App {
                     ShowcaseMode::Iridescence => {
                         showcase_24_iridescent::items(&self.iridescent_ids, &self.iridescent, dt)
                     }
-                    ShowcaseMode::Refraction | ShowcaseMode::Interaction => {
+                    ShowcaseMode::Refraction | ShowcaseMode::Interaction | ShowcaseMode::TwoD => {
                         unreachable!("handled above")
                     }
                 };

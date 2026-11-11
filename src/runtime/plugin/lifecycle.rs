@@ -13,6 +13,7 @@ use crate::effect::{
     ParticleBlend, ParticlePlane, ParticleRender, ParticleTextureId, SpawnShape, TextureMode,
 };
 use crate::codegen::PLANE_WGSL;
+use viewport_lib_types::material::TextureFilter;
 use crate::effect::{PlaneLockMismatch, check_sub_emitter_lock};
 
 use super::*;
@@ -383,7 +384,11 @@ impl ParticlePlugin {
         );
         let view = texture.create_view(&vwgpu::TextureViewDescriptor::default());
         let id = ParticleTextureId(self.textures.len() as u32);
-        self.textures.push(ParticleTexture { texture, view });
+        self.textures.push(ParticleTexture {
+            texture,
+            view,
+            size: [width, height],
+        });
         id
     }
 
@@ -471,6 +476,9 @@ impl ParticlePlugin {
         let screen_space_size = self.effects[idx].asset.screen_space_size;
         let soft = self.effects[idx].asset.soft;
         let rotation_rate = self.effects[idx].asset.rotation_rate;
+        let texture_filter = self.effects[idx].asset.texture_filter;
+        let pixel_snap = self.effects[idx].asset.pixel_snap;
+        let texels_per_unit = self.effects[idx].asset.texels_per_unit;
         // Custom fragment hook: cloned out so the `self.effects` borrow
         // ends before the pipeline cache / bind-group construction below.
         let fragment_hook = self.effects[idx].asset.fragment_hook.clone();
@@ -561,6 +569,27 @@ impl ParticlePlugin {
             0.0
         };
         let roll_rate = if is_billboard { rotation_rate } else { 0.0 };
+        // An integer-scale billboard is its texture (or flipbook cell) size in
+        // texels over `texels_per_unit`.
+        let (quad_w, quad_h) = match texels_per_unit.filter(|t| is_billboard && *t > 0.0) {
+            Some(tpu) => {
+                let size = texture
+                    .and_then(|t| self.textures.get(t.0 as usize))
+                    .map_or([1, 1], |t| t.size);
+                let (cols, rows) = flipbook.map_or((1, 1), |f| (f.columns.max(1), f.rows.max(1)));
+                (
+                    size[0] as f32 / cols as f32 / tpu,
+                    size[1] as f32 / rows as f32 / tpu,
+                )
+            }
+            None => (0.0, 0.0),
+        };
+        // Nearest filtering swaps the sprite sampler; the ramp keeps its own.
+        let sprite_sampler = match texture_filter {
+            TextureFilter::Nearest => self.nearest_sampler.as_ref().unwrap(),
+            _ => self.ramp_sampler.as_ref().unwrap(),
+        }
+        .clone();
         let dp = DrawParams {
             stretch,
             align,
@@ -577,7 +606,10 @@ impl ParticlePlugin {
             roll_rate,
             painter_layer: 0,
             painter_unlit: 0,
-            _pad: 0.0,
+            pixel_snap: (is_billboard && pixel_snap) as u32,
+            quad_w,
+            quad_h,
+            _pad: [0.0; 2],
         };
         // Bind the effect's texture, or the shared 1x1 white default. The sprite
         // sampler is the shared linear-clamp ramp sampler.
@@ -585,13 +617,12 @@ impl ParticlePlugin {
             Some(t) => &t.view,
             None => self.default_tex_view.as_ref().unwrap(),
         };
-        let sprite_sampler = self.ramp_sampler.as_ref().unwrap();
         let drawparams_bg = build_drawparams_bg(
             device,
             self.drawparams_bgl.as_ref().unwrap(),
             dp,
             sprite_view,
-            sprite_sampler,
+            &sprite_sampler,
         );
 
         let gpu = match program {
@@ -684,7 +715,6 @@ impl ParticlePlugin {
                 Some(t) => &t.view,
                 None => self.default_tex_view.as_ref().unwrap(),
             };
-            let sprite_sampler = self.ramp_sampler.as_ref().unwrap();
             let (bg, buf) = build_soft_draw_bg(
                 device,
                 &soft_draw_bgl,
@@ -692,7 +722,7 @@ impl ParticlePlugin {
                 &order_buf,
                 dp,
                 sprite_view,
-                sprite_sampler,
+                &sprite_sampler,
             );
             (Some(bg), Some((buf, dp)))
         } else {
@@ -740,7 +770,7 @@ impl ParticlePlugin {
                     Some(t) => &t.view,
                     None => default_view,
                 };
-                let sampler = self.ramp_sampler.as_ref().unwrap();
+                let sampler = &sprite_sampler;
                 let hook_views: Vec<&vwgpu::TextureView> = (0..HOOK_TEXTURES)
                     .map(|i| {
                         hook_texture_ids
@@ -1115,6 +1145,16 @@ impl ParticlePlugin {
                 },
             ],
         });
+        self.nearest_sampler = Some(device.create_sampler(&vwgpu::SamplerDescriptor {
+            label: Some("particle_nearest_sampler"),
+            address_mode_u: vwgpu::AddressMode::ClampToEdge,
+            address_mode_v: vwgpu::AddressMode::ClampToEdge,
+            address_mode_w: vwgpu::AddressMode::ClampToEdge,
+            mag_filter: vwgpu::FilterMode::Nearest,
+            min_filter: vwgpu::FilterMode::Nearest,
+            mipmap_filter: vwgpu::FilterMode::Nearest,
+            ..Default::default()
+        }));
         let ramp_sampler = device.create_sampler(&vwgpu::SamplerDescriptor {
             label: Some("particle_ramp_sampler"),
             address_mode_u: vwgpu::AddressMode::ClampToEdge,

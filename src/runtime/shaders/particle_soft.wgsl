@@ -41,7 +41,11 @@ struct DrawParams {
     roll_rate: f32,
     painter_layer: u32,   // painter entry points only (particle_painter.wgsl)
     painter_unlit: u32,
+    pixel_snap: u32,      // 1 snaps the billboard centre to a device pixel
+    quad_w: f32,          // integer-scale quad extent in world units; 0 = off
+    quad_h: f32,
     pad0: f32,
+    pad1: f32,
 };
 @group(1) @binding(2) var<uniform> draw_params: DrawParams;
 @group(1) @binding(3) var sprite_tex: texture_2d<f32>;
@@ -71,6 +75,18 @@ fn flip_uv(uv: vec2<f32>, age: f32, age_sec: f32) -> vec2<f32> {
     let row = frame / draw_params.flip_cols;
     let cell = vec2<f32>(1.0 / f32(draw_params.flip_cols), 1.0 / f32(draw_params.flip_rows));
     return (vec2<f32>(f32(col), f32(row)) + uv) * cell;
+}
+
+// Shift `clip` so that `anchor`, the particle centre in clip space, lands on a
+// whole device pixel, as viewport-lib's sprites snap.
+fn snap_to_pixel(clip: vec4<f32>, anchor: vec4<f32>) -> vec4<f32> {
+    if (anchor.w <= 0.0) {
+        return clip;
+    }
+    let viewport = camera.viewport.xy;
+    let px = (anchor.xy / anchor.w * 0.5 + 0.5) * viewport;
+    let shift = (round(px) - px) / viewport * 2.0;
+    return vec4<f32>(clip.xy + shift * clip.w, clip.zw);
 }
 
 // Same billboard placement as particle_draw.wgsl (orientation / screen-size /
@@ -106,10 +122,15 @@ fn billboard_world(p: Particle, c_in: vec2<f32>, size_scale: f32, roll: f32) -> 
         by = select(vec3<f32>(0.0, 1.0, 0.0), vec3<f32>(0.0, 0.0, 1.0), draw_params.orient_param > 0.5);
     }
 
-    var hsize = half;
+    // An integer-scale quad takes its texel size in world units, ignoring the
+    // particle size and the size ramp, so its texel grid stays whole.
+    var h = vec2<f32>(half, half);
+    if (draw_params.quad_w > 0.0 && p.lifetime > 0.0) {
+        h = vec2<f32>(draw_params.quad_w, draw_params.quad_h) * 0.5;
+    }
     if (draw_params.screen_size == 1u) {
         let wclip = (camera.view_proj * vec4<f32>(p.position, 1.0)).w;
-        hsize = half * max(wclip, 1e-3);
+        h = h * max(wclip, 1e-3);
     }
 
     let vplane = vec2<f32>(dot(p.velocity, bx), dot(p.velocity, by));
@@ -118,18 +139,18 @@ fn billboard_world(p: Particle, c_in: vec2<f32>, size_scale: f32, roll: f32) -> 
         let dirx = vplane / speed2d;
         let diry = vec2<f32>(-dirx.y, dirx.x);
         let speed = length(p.velocity);
-        let len = hsize * (1.0 + draw_params.stretch * speed);
+        let len = h.x * (1.0 + draw_params.stretch * speed);
         let ax = bx * dirx.x + by * dirx.y;
         let ay = bx * diry.x + by * diry.y;
-        return p.position + ax * (c.x * len) + ay * (c.y * hsize);
+        return p.position + ax * (c.x * len) + ay * (c.y * h.y);
     } else if (orient == 2u && speed2d > 1e-4) {
         let dirx = vplane / speed2d;
         let diry = vec2<f32>(-dirx.y, dirx.x);
         let ax = bx * dirx.x + by * dirx.y;
         let ay = bx * diry.x + by * diry.y;
-        return p.position + ax * (c.x * hsize) + ay * (c.y * hsize);
+        return p.position + ax * (c.x * h.x) + ay * (c.y * h.y);
     }
-    return p.position + bx * (c.x * hsize) + by * (c.y * hsize);
+    return p.position + bx * (c.x * h.x) + by * (c.y * h.y);
 }
 
 struct VsOut {
@@ -167,8 +188,13 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VsOut
 
     var out: VsOut;
     out.pos = camera.view_proj * vec4<f32>(world, 1.0);
+    if (draw_params.pixel_snap == 1u) {
+        out.pos = snap_to_pixel(out.pos, camera.view_proj * vec4<f32>(p.position, 1.0));
+    }
     out.color = vec4<f32>(p.colour.rgb * ramp0.rgb, p.colour.a * ramp1.r);
-    out.uv = c * 0.5 + vec2<f32>(0.5, 0.5);
+    // Texture row 0 at the quad's top edge, as images load and as sprites read
+    // them.
+    out.uv = vec2<f32>(c.x * 0.5 + 0.5, 0.5 - c.y * 0.5);
     out.age = age;
     out.age_sec = max(p.max_lifetime - p.lifetime, 0.0);
     out.world_pos = world;

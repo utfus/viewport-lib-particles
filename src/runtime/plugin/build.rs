@@ -34,6 +34,11 @@ pub(crate) fn structural_sig(asset: &EffectAsset) -> u64 {
     // schedule are re-read per frame, so they need no structural rebuild.
     asset.rotation_rate.to_bits().hash(&mut h);
     asset.texture.map(|t| t.0).hash(&mut h);
+    // The sampler, snap and integer-scale size are baked into the draw bind
+    // groups and draw params.
+    asset.texture_filter.hash(&mut h);
+    asset.pixel_snap.hash(&mut h);
+    asset.texels_per_unit.map(f32::to_bits).hash(&mut h);
     // Custom fragment hook: the composed source (name + body + texture
     // count) determines the pipeline, so it is structural; param *values* ride the
     // per-frame `hook_params` uniform, so they are not.

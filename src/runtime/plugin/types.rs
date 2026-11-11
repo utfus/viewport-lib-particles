@@ -218,6 +218,8 @@ pub(crate) struct ParticleTexture {
     #[allow(dead_code)]
     pub(crate) texture: vwgpu::Texture,
     pub(crate) view: vwgpu::TextureView,
+    /// Width and height in texels, for integer-scale billboards.
+    pub(crate) size: [u32; 2],
 }
 
 /// Per-effect draw parameters (group 3). Matches `DrawParams` in the draw and
@@ -266,10 +268,16 @@ pub(crate) struct DrawParams {
     pub(crate) painter_layer: u32,
     /// 1 when the painter placement is unlit.
     pub(crate) painter_unlit: u32,
+    /// 1 snaps each billboard's centre to a device pixel.
+    pub(crate) pixel_snap: u32,
+    /// An integer-scale billboard's world width and height; 0 sizes by the
+    /// particle size.
+    pub(crate) quad_w: f32,
+    pub(crate) quad_h: f32,
     /// Padding to a 16-byte multiple (uniform size requirement). The mesh and
     /// trail shaders read only the 16-byte prefix, so growth here is invisible to
     /// them.
-    pub(crate) _pad: f32,
+    pub(crate) _pad: [f32; 2],
 }
 
 /// Trail history parameters (group 1, binding 2 of the append and trail draw
@@ -815,6 +823,10 @@ pub struct ParticlePlugin {
     /// The renderer's depth-read layout, group 3 of the folded billboard
     /// pipelines.
     pub(crate) depth_read_bgl: Option<vwgpu::BindGroupLayout>,
+    /// Nearest clamp sampler for billboards with `TextureFilter::Nearest`.
+    /// Built here because `sampler_for` is on `DeviceResources`, which a
+    /// plugin does not get.
+    pub(crate) nearest_sampler: Option<vwgpu::Sampler>,
     /// Painter-pass pipelines, built in `prepare` the first frame a placement
     /// needs one.
     pub(crate) painter_pipelines: HashMap<PainterPipelineKey, vwgpu::RenderPipeline>,

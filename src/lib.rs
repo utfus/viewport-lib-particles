@@ -98,6 +98,7 @@ pub use expr::{
     ValueType,
 };
 pub use items::{ParticleItem, ParticleItems};
+pub use viewport_lib_types::material::TextureFilter;
 pub use viewport_lib_types::render_item::{PainterPlacement, painter_key};
 #[cfg(feature = "gpu")]
 pub use plugin::{ParticlePlugin, ParticleStats, ParticleStatsHandle};

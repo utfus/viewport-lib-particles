@@ -1,4 +1,5 @@
 use super::*;
+use viewport_lib_types::material::TextureFilter;
 use viewport_lib_types::render_item::PainterPlacement;
 
 /// Fixed number of texture slots a custom fragment hook can bind. The group-3
@@ -340,6 +341,24 @@ pub struct EffectAsset {
     /// them over whatever is there in painter order.
     #[cfg_attr(feature = "serde", serde(default))]
     pub painter_depth_test: bool,
+    /// How the billboard texture is sampled. [`TextureFilter::Nearest`] keeps
+    /// pixel art crisp. Billboard routes only.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub texture_filter: TextureFilter,
+    /// Snap each billboard's centre to a whole device pixel, as viewport-lib's
+    /// sprites do, so pixel art does not shimmer as it moves. Billboard routes
+    /// only.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub pixel_snap: bool,
+    /// Size each billboard from its texture instead of the particle size:
+    /// `texels_per_unit` texels to a world unit, so the quad is the texture (or
+    /// flipbook cell) width and height divided by it. The particle size, size
+    /// variance and size ramp are then ignored, so the texel grid stays whole.
+    /// With a camera at a whole number of pixels per texel (`Camera2d`'s
+    /// integer-scale snap) each texel covers a whole number of pixels.
+    /// Billboard routes only; `None` sizes by the particle size.
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub texels_per_unit: Option<f32>,
 }
 
 /// Serde default for [`EffectAsset::simulation_speed`] (`1.0`).
@@ -380,6 +399,9 @@ impl Default for EffectAsset {
             plane_lock: None,
             painter: None,
             painter_depth_test: false,
+            texture_filter: TextureFilter::Linear,
+            pixel_snap: false,
+            texels_per_unit: None,
         }
     }
 }
@@ -607,6 +629,27 @@ impl EffectAsset {
     /// [`painter_depth_test`](Self::painter_depth_test).
     pub fn with_painter_depth_test(mut self, depth_test: bool) -> Self {
         self.painter_depth_test = depth_test;
+        self
+    }
+
+    /// Sample the billboard texture with `filter`. See
+    /// [`texture_filter`](Self::texture_filter).
+    pub fn with_texture_filter(mut self, filter: TextureFilter) -> Self {
+        self.texture_filter = filter;
+        self
+    }
+
+    /// Snap billboard centres to device pixels. See
+    /// [`pixel_snap`](Self::pixel_snap).
+    pub fn with_pixel_snap(mut self, snap: bool) -> Self {
+        self.pixel_snap = snap;
+        self
+    }
+
+    /// Size billboards from their texture at `texels_per_unit` texels to a
+    /// world unit. See [`texels_per_unit`](Self::texels_per_unit).
+    pub fn with_integer_scale(mut self, texels_per_unit: f32) -> Self {
+        self.texels_per_unit = Some(texels_per_unit);
         self
     }
 

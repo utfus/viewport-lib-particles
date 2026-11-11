@@ -949,6 +949,7 @@ pub(crate) fn build_fixed_gpu(
     ramp_lut: Option<vwgpu::Texture>,
     drawparams_bg: vwgpu::BindGroup,
     spawn_samples: &vwgpu::Buffer,
+    colliders: [&vwgpu::Buffer; 3],
 ) -> FixedGpu {
     let particle_buf = build_particle_buffer(device, capacity);
     let budget_buf = build_budget_buffer(device);
@@ -988,20 +989,7 @@ pub(crate) fn build_fixed_gpu(
             },
         ],
     });
-    let sim_bg = device.create_bind_group(&vwgpu::BindGroupDescriptor {
-        label: Some("particle_sim_bg"),
-        layout: sim_bgl,
-        entries: &[
-            vwgpu::BindGroupEntry {
-                binding: 0,
-                resource: particle_buf.as_entire_binding(),
-            },
-            vwgpu::BindGroupEntry {
-                binding: 1,
-                resource: sim_buf.as_entire_binding(),
-            },
-        ],
-    });
+    let sim_bg = build_sim_bg(device, sim_bgl, &particle_buf, &sim_buf, None, colliders);
     let draw_bg = build_draw_bg(device, draw_bgl, &particle_buf, order_buf);
 
     FixedGpu {
@@ -1113,34 +1101,6 @@ pub(crate) fn build_event_buffer(device: &vwgpu::Device, child_capacity: u32) ->
     buf
 }
 
-/// Parent-sim bind group: parent particles (binding 0), sim params (1), and the
-/// event buffer the parent appends to (2).
-pub(crate) fn build_sim_parent_bg(
-    device: &vwgpu::Device,
-    bgl: &vwgpu::BindGroupLayout,
-    particle_buf: &vwgpu::Buffer,
-    sim_buf: &vwgpu::Buffer,
-    event_buf: &vwgpu::Buffer,
-) -> vwgpu::BindGroup {
-    device.create_bind_group(&vwgpu::BindGroupDescriptor {
-        label: Some("particle_sim_parent_bg"),
-        layout: bgl,
-        entries: &[
-            vwgpu::BindGroupEntry {
-                binding: 0,
-                resource: particle_buf.as_entire_binding(),
-            },
-            vwgpu::BindGroupEntry {
-                binding: 1,
-                resource: sim_buf.as_entire_binding(),
-            },
-            vwgpu::BindGroupEntry {
-                binding: 2,
-                resource: event_buf.as_entire_binding(),
-            },
-        ],
-    })
-}
 
 /// Child sub-emit bind group: child particles (binding 0), emit params (1), the
 /// spawn budget atomic (2), and the event buffer the child consumes (3).

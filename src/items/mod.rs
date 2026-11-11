@@ -2,7 +2,7 @@ use viewport_lib_types::material::ItemSettings;
 use viewport_lib_types::render_item::PainterPlacement;
 
 use crate::effect::{
-    EffectAsset, EffectId, Emitter, Gradient, Modifier,
+    Collider2dSet, Collider2dSetId, EffectAsset, EffectId, Emitter, Gradient, Modifier,
     PropertyValue,
 };
 
@@ -202,6 +202,7 @@ impl ParticleItem {
 pub(crate) enum EffectCommand {
     Replace(EffectId, Box<EffectAsset>),
     Remove(EffectId),
+    ReplaceColliders(Collider2dSetId, Box<Collider2dSet>),
 }
 
 /// The per-frame collection of live effect instances.
@@ -338,6 +339,14 @@ impl ParticleItems {
     pub fn replace_effect(&mut self, id: EffectId, asset: EffectAsset) {
         self.commands
             .push(EffectCommand::Replace(id, Box::new(asset)));
+    }
+
+    /// Queue a collider set replacement, applied when the plugin next runs
+    /// `prepare`, so effects collide with the new shapes from that frame. See
+    /// `ParticlePlugin::replace_collider_set`.
+    pub fn replace_collider_set(&mut self, id: Collider2dSetId, set: Collider2dSet) {
+        self.commands
+            .push(EffectCommand::ReplaceColliders(id, Box::new(set)));
     }
 
     /// Queue a removal: tombstone `id` and reclaim its GPU state when the plugin

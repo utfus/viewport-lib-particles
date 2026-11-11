@@ -91,7 +91,8 @@ pub use effect::{
     ParticleBlend, ParticleMeshId, ParticlePlane, ParticleRender, ParticleTextureId, PlaneLock,
     PlaneLockMismatch, PropertyDecl, PropertyValue, SetAttribute, SimulationSpace, SpawnRate,
     SpawnShape, SubEmitter, TextureMode, TimedBurst, UpdateOp, VelocityDist,
-    check_sub_emitter_lock, child_plane_lock,
+    check_sub_emitter_lock, child_plane_lock, Collide2d, Collider2d, Collider2dSet,
+    Collider2dSetId, ColliderEdge, CollisionResponse,
 };
 pub use expr::{
     BinaryOp, Component, Expr, ExprHandle, Module, TernaryOp, TypeEnv, TypeError, UnaryOp,
@@ -101,7 +102,7 @@ pub use items::{ParticleItem, ParticleItems};
 pub use viewport_lib_types::material::TextureFilter;
 pub use viewport_lib_types::render_item::{PainterPlacement, painter_key};
 #[cfg(feature = "gpu")]
-pub use plugin::{ParticlePlugin, ParticleStats, ParticleStatsHandle};
+pub use plugin::{ColliderStats, ParticlePlugin, ParticleStats, ParticleStatsHandle};
 #[cfg(feature = "gpu")]
 pub use refraction::RefractionPlugin;
 pub use registry::ModifierRegistry;

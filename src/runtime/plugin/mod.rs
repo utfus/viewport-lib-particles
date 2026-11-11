@@ -8,6 +8,7 @@
 //! [`build`] (GPU-resource and uniform builders).
 
 mod build;
+mod collide;
 mod lifecycle;
 mod painter;
 mod prepare;
@@ -15,11 +16,13 @@ mod shade;
 mod types;
 
 pub(crate) use crate::items::{ParticleItem, ParticleItems};
+pub use collide::ColliderStats;
 pub use types::{ParticlePlugin, ParticleStats, ParticleStatsHandle};
 
 // Crate-internal re-exports so the submodules reach each other's items through
 // `use super::*`.
 pub(crate) use build::*;
+pub(crate) use collide::*;
 pub(crate) use lifecycle::{blend_state, mesh_vertex_layout, route_opts};
 pub(crate) use crate::items::EffectCommand;
 pub(crate) use shade::*;

@@ -5,7 +5,7 @@
 ### Breaking
 
 - **Billboard textures put row 0 at the top** - a billboard's texture, and each flipbook cell, now maps texture row 0 (the first row of `upload_texture` / `with_texture_rgba` bytes, and the top row as images load) to the quad's top edge, as viewport-lib's sprites and tilemaps read them; it was mapped to the bottom. A flipbook's first row of cells is the top row of the sheet. Remove any vertical flip added to compensate.
-- **`EffectAsset` and `ParticleItem` gain fields** - `EffectAsset::{plane_lock, painter, painter_depth_test, texture_filter, pixel_snap, texels_per_unit}` and `ParticleItem::painter`. `EffectAsset` is `#[non_exhaustive]`; a `ParticleItem` struct literal needs the new field, or build it with `ParticleItem::new`.
+- **`EffectAsset` and `ParticleItem` gain fields** - `EffectAsset::{plane_lock, painter, painter_depth_test, texture_filter, pixel_snap, texels_per_unit, collide}` and `ParticleItem::painter`. `EffectAsset` is `#[non_exhaustive]`; a `ParticleItem` struct literal needs the new field, or build it with `ParticleItem::new`.
 
 ### Features
 
@@ -17,6 +17,8 @@
 - **Painter's-order particles** - `EffectAsset::with_painter(PainterPlacement)` and `ParticleItem::with_painter` draw an effect in viewport-lib's painter sequence, sorted with sprites, tile layers and painter meshes by layer and key, after the opaque scene and its OIT, with depth writes off and no depth sort. `with_painter_depth_test(true)` tests against scene depth. `PainterPlacement` and `painter_key` are re-exported from viewport-lib-types. Lit billboards take their range's 2D light and an `unlit` placement keeps its colour; mesh and trail routes and hooked billboards draw in order unlit. Picks follow the painter order. Painter effects draw on the HDR path only, and leave the shadow pass.
 - **`draws_transparent`** - the plugin now opens the OIT pass only on frames with an over-blended billboard outside the painter sequence and the soft pass.
 - **Pixel-art billboards** - `EffectAsset::with_texture_filter(TextureFilter::Nearest)` samples the billboard texture without blending, `with_pixel_snap(true)` puts each billboard's centre on a whole device pixel as sprites snap, and `with_integer_scale(texels_per_unit)` sizes billboards from their texture or flipbook cell, ignoring the particle size and size ramp, so a camera at a whole number of pixels per texel draws each texel as a block of whole pixels. Integer-scale billboards can be non-square. `TextureFilter` is re-exported from viewport-lib-types.
+- **2D colliders** - `ParticlePlugin::add_collider_set` registers a `Collider2dSet` of `Collider2d` shapes (segments, rectangles, polygons and loose edges, the same shapes as viewport-lib's `Occluder2d`) in plane coordinates, and `EffectAsset::with_collide(Collide2d { set, response })` makes a plane-locked effect bounce off them (`CollisionResponse::Bounce { restitution, friction }`), die on them (`Kill`) or stick to them (`Stick`). Each step tests the particle's path, so fast particles do not pass thin walls. Replace a set with `replace_collider_set` or the queued `ParticleItems::replace_collider_set`; `collider_stats` reports a set's edge and cell counts. Fixed-function only.
+- **`EventCondition::OnContact`** - a sub-emitter fires when a parent particle hits a collider, for splashes. A `match` over `EventCondition` needs an arm for it.
 
 ## [0.1.0]
 

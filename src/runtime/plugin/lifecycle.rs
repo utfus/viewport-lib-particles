@@ -646,6 +646,7 @@ impl ParticlePlugin {
                     ramp_lut,
                     drawparams_bg,
                     spawn_samples,
+                    self.collider_buffers(idx),
                 ))
             }
             Some(program) => {
@@ -805,6 +806,7 @@ impl ParticlePlugin {
                 trail,
                 soft_draw_bg,
                 folded_params,
+                collider: self.collider_binding(idx),
                 sort,
                 stats: None,
                 pick_buf,
@@ -874,12 +876,13 @@ impl ParticlePlugin {
             let Some(EffectGpu::Fixed(g)) = self.instances.get(&parent_ikey).map(|i| &i.gpu) else {
                 return;
             };
-            build_sim_parent_bg(
+            build_sim_bg(
                 device,
                 self.sim_parent_bgl.as_ref().unwrap(),
                 &g.particle_buf,
                 &g.sim_buf,
-                &event_buf,
+                Some(&event_buf),
+                self.collider_buffers(parent_idx),
             )
         };
         let child_emit_bg = {
@@ -1092,10 +1095,24 @@ impl ParticlePlugin {
             label: Some("particle_emit_bgl"),
             entries: &[storage_rw(0), uniform(1), storage_rw(2), storage_ro(3)],
         });
+        // Both simulate kernels read the collider edges, cells and index at
+        // bindings 3 to 5 (empty buffers for an effect that collides with
+        // nothing).
+        let collider = |binding| vwgpu::BindGroupLayoutEntry {
+            binding,
+            visibility: vwgpu::ShaderStages::COMPUTE,
+            ty: vwgpu::BindingType::Buffer {
+                ty: vwgpu::BufferBindingType::Storage { read_only: true },
+                has_dynamic_offset: false,
+                min_binding_size: None,
+            },
+            count: None,
+        };
         let sim_bgl = device.create_bind_group_layout(&vwgpu::BindGroupLayoutDescriptor {
             label: Some("particle_sim_bgl"),
-            entries: &[storage_rw(0), uniform(1)],
+            entries: &[storage_rw(0), uniform(1), collider(3), collider(4), collider(5)],
         });
+        self.default_collider = Some(ColliderSetGpu::new(device, &ColliderGrid::default()));
         // Codegen kernels add the property uniform: emit binding 3, sim binding 2.
         let gen_emit_bgl = device.create_bind_group_layout(&vwgpu::BindGroupLayoutDescriptor {
             label: Some("particle_gen_emit_bgl"),
@@ -1269,8 +1286,9 @@ impl ParticlePlugin {
             })
         };
         // The emit kernels share the plane-lock helpers and the spawn shapes; the
-        // simulate kernels share the lock helpers, the curl-noise helpers (so
-        // CurlNoise can call them) and the modifier definitions.
+        // simulate kernels share the lock helpers, the collider bindings and
+        // step, the curl-noise helpers (so CurlNoise can call them) and the
+        // modifier definitions.
         let emit_src = format!(
             "{}\n{}\n{}",
             PLANE_WGSL,
@@ -1284,8 +1302,9 @@ impl ParticlePlugin {
             &emit_bgl,
         );
         let sim_src = format!(
-            "{}\n{}\n{}\n{}",
+            "{}\n{}\n{}\n{}\n{}",
             PLANE_WGSL,
+            include_str!("../shaders/particle_collide.wgsl"),
             codegen::NOISE_WGSL,
             include_str!("../shaders/particle_modifiers.wgsl"),
             include_str!("../shaders/particle_sim.wgsl")
@@ -1305,7 +1324,14 @@ impl ParticlePlugin {
         });
         let sim_parent_bgl = device.create_bind_group_layout(&vwgpu::BindGroupLayoutDescriptor {
             label: Some("particle_sim_parent_bgl"),
-            entries: &[storage_rw(0), uniform(1), storage_rw(2)],
+            entries: &[
+                storage_rw(0),
+                uniform(1),
+                storage_rw(2),
+                collider(3),
+                collider(4),
+                collider(5),
+            ],
         });
         let subemit_src = format!(
             "{}\n{}\n{}",
@@ -1320,8 +1346,9 @@ impl ParticlePlugin {
             &subemit_bgl,
         );
         let sim_parent_src = format!(
-            "{}\n{}\n{}\n{}",
+            "{}\n{}\n{}\n{}\n{}",
             PLANE_WGSL,
+            include_str!("../shaders/particle_collide.wgsl"),
             codegen::NOISE_WGSL,
             include_str!("../shaders/particle_modifiers.wgsl"),
             include_str!("../shaders/particle_sim_parent.wgsl")

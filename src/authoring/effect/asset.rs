@@ -145,7 +145,11 @@ pub enum EventCondition {
     EveryStep,
     /// One trigger when a parent particle dies (its lifetime crosses zero).
     /// Suited to bursts: a firework shell breaking into sparks at its apex.
+    /// A particle killed by [`CollisionResponse::Kill`] triggers it too.
     OnDeath,
+    /// One trigger the step a parent particle hits a collider (see
+    /// [`Collide2d`]), whatever the response: a splash where rain lands.
+    OnContact,
 }
 
 /// Links a parent effect to a child effect so parent particles spawn child
@@ -359,6 +363,10 @@ pub struct EffectAsset {
     /// Billboard routes only; `None` sizes by the particle size.
     #[cfg_attr(feature = "serde", serde(default))]
     pub texels_per_unit: Option<f32>,
+    /// Collide the particles with a 2D collider set in the lock plane. Needs
+    /// [`plane_lock`](Self::plane_lock). Fixed-function only. See [`Collide2d`].
+    #[cfg_attr(feature = "serde", serde(default))]
+    pub collide: Option<Collide2d>,
 }
 
 /// Serde default for [`EffectAsset::simulation_speed`] (`1.0`).
@@ -402,6 +410,7 @@ impl Default for EffectAsset {
             texture_filter: TextureFilter::Linear,
             pixel_snap: false,
             texels_per_unit: None,
+            collide: None,
         }
     }
 }
@@ -650,6 +659,12 @@ impl EffectAsset {
     /// world unit. See [`texels_per_unit`](Self::texels_per_unit).
     pub fn with_integer_scale(mut self, texels_per_unit: f32) -> Self {
         self.texels_per_unit = Some(texels_per_unit);
+        self
+    }
+
+    /// Collide the particles with a 2D collider set. See [`Collide2d`].
+    pub fn with_collide(mut self, collide: Collide2d) -> Self {
+        self.collide = Some(collide);
         self
     }
 

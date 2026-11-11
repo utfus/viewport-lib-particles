@@ -176,8 +176,13 @@ impl ItemTypePlugin for ParticlePlugin {
             match cmd {
                 EffectCommand::Replace(id, asset) => self.replace_effect(*id, (**asset).clone()),
                 EffectCommand::Remove(id) => self.remove_effect(*id),
+                EffectCommand::ReplaceColliders(id, set) => {
+                    self.replace_collider_set(device, queue, *id, set)
+                }
             }
         }
+        // A collider set that grew has new buffers; rebind the instances over it.
+        self.refresh_collider_bindings(device);
 
         // Upload any inline textures queued by add / replace, now that
         // a queue is available and before instances build their draw bind groups.
@@ -383,6 +388,7 @@ impl ItemTypePlugin for ParticlePlugin {
             });
 
             let plane_lock = self.effective_plane_lock(idx);
+            let collide = collide_lanes(self, idx);
             match &self.instances.get(&ikey).unwrap().gpu {
                 EffectGpu::Fixed(g) => {
                     let asset = &self.effects[idx].asset;
@@ -418,6 +424,7 @@ impl ItemTypePlugin for ParticlePlugin {
                             match condition {
                                 EventCondition::EveryStep => 0,
                                 EventCondition::OnDeath => 1,
+                                EventCondition::OnContact => 2,
                             },
                             *count,
                             *child_cap,
@@ -425,7 +432,8 @@ impl ItemTypePlugin for ParticlePlugin {
                         ],
                         None => [0; 4],
                     };
-                    let sim = build_sim_params(modifiers, inst_dt, time, event, space_delta, plane_lock);
+                    let mut sim = build_sim_params(modifiers, inst_dt, time, event, space_delta, plane_lock);
+                    (sim.collide, (sim.grid, sim.grid_dims)) = collide;
                     queue.write_buffer(&g.emit_buf, 0, bytemuck::bytes_of(&emit));
                     queue.write_buffer(&g.sim_buf, 0, bytemuck::bytes_of(&sim));
                     queue.write_buffer(&g.budget_buf, 0, bytemuck::bytes_of(&0u32));
@@ -1275,6 +1283,7 @@ impl ParticlePlugin {
         let asset = self.effects[idx].asset.clone();
         let sample_count = self.effects[idx].spawn_sample_count;
         let plane_lock = self.effective_plane_lock(idx);
+        let collide = collide_lanes(self, idx);
         let rate = match &asset.program {
             Some(p) => p.rate,
             None => asset.emitter.rate,
@@ -1326,7 +1335,7 @@ impl ParticlePlugin {
                         asset.spawn_offset,
                         plane_lock,
                     );
-                    let sim = build_sim_params(
+                    let mut sim = build_sim_params(
                         &asset.modifiers,
                         sub_dt,
                         time,
@@ -1334,6 +1343,7 @@ impl ParticlePlugin {
                         [0.0; 3],
                         plane_lock,
                     );
+                    (sim.collide, (sim.grid, sim.grid_dims)) = collide;
                     queue.write_buffer(&g.emit_buf, 0, bytemuck::bytes_of(&emit));
                     queue.write_buffer(&g.sim_buf, 0, bytemuck::bytes_of(&sim));
                     queue.write_buffer(&g.budget_buf, 0, bytemuck::bytes_of(&0u32));
@@ -1400,4 +1410,23 @@ fn texture_bytes(t: &vwgpu::Texture) -> u64 {
         h /= 2;
     }
     total
+}
+
+/// The collision lanes of effect `idx`'s simulate params: the response, then
+/// its set's grid header. All zero when it collides with nothing.
+fn collide_lanes(plugin: &ParticlePlugin, idx: usize) -> ([f32; 4], ([f32; 4], [u32; 4])) {
+    use crate::effect::CollisionResponse;
+    let Some((_, set)) = plugin.effect_collider(idx) else {
+        return ([0.0; 4], ([0.0; 4], [0; 4]));
+    };
+    let response = match plugin.effects[idx].asset.collide.map(|c| c.response) {
+        Some(CollisionResponse::Bounce {
+            restitution,
+            friction,
+        }) => [1.0, restitution, friction, 0.0],
+        Some(CollisionResponse::Kill) => [2.0, 0.0, 0.0, 0.0],
+        Some(CollisionResponse::Stick) => [3.0, 0.0, 0.0, 0.0],
+        None => [0.0; 4],
+    };
+    (response, set.header)
 }

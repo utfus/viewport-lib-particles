@@ -81,6 +81,13 @@ pub(crate) struct SimParamsGpu {
     pub(crate) space: [f32; 4],
     /// Plane lock (see [`plane_lane`]).
     pub(crate) plane: [f32; 4],
+    /// Collision response: mode (0 none, 1 bounce, 2 kill, 3 stick),
+    /// restitution, friction, unused.
+    pub(crate) collide: [f32; 4],
+    /// Collider grid origin and cell size, in plane coordinates.
+    pub(crate) grid: [f32; 4],
+    /// Collider grid cells across and down, and the edge count.
+    pub(crate) grid_dims: [u32; 4],
 }
 
 /// One GPU spawn event appended by a parent and consumed by its child. Matches
@@ -556,6 +563,9 @@ pub(crate) struct EffectInstance {
     /// The folded billboard bind group's `DrawParams` buffer and the values it
     /// was built with, so a painter instance can rewrite its layer each frame.
     pub(crate) folded_params: Option<(vwgpu::Buffer, DrawParams)>,
+    /// The collider set and generation the simulate bind groups were built
+    /// against; `None` for the shared empty one.
+    pub(crate) collider: Option<(usize, u32)>,
     /// Depth-sort state, present only for non-additive effects.
     pub(crate) sort: Option<SortGpu>,
     /// Live-count readback state, built lazily the first frame the host requests
@@ -645,6 +655,21 @@ pub(crate) struct PainterPipelineKey {
     pub(crate) route: PainterRoute,
     pub(crate) blend: ParticleBlend,
     pub(crate) depth_test: bool,
+}
+
+/// A registered collider set's GPU buffers (see `collide.rs`).
+pub(crate) struct ColliderSetGpu {
+    pub(crate) edges: vwgpu::Buffer,
+    pub(crate) cells: vwgpu::Buffer,
+    pub(crate) index: vwgpu::Buffer,
+    /// Byte capacity of each buffer; a set that outgrows one reallocates.
+    pub(crate) capacity: [u64; 3],
+    /// Bumped when the buffers are reallocated, so bind groups over them
+    /// rebuild.
+    pub(crate) generation: u32,
+    /// The `SimParamsGpu::grid` and `grid_dims` lanes.
+    pub(crate) header: ([f32; 4], [u32; 4]),
+    pub(crate) stats: ColliderStats,
 }
 
 /// A route's multiply and screen pipelines.
@@ -827,6 +852,10 @@ pub struct ParticlePlugin {
     /// Built here because `sampler_for` is on `DeviceResources`, which a
     /// plugin does not get.
     pub(crate) nearest_sampler: Option<vwgpu::Sampler>,
+    /// Registered collider sets, by `Collider2dSetId`.
+    pub(crate) collider_sets: Vec<ColliderSetGpu>,
+    /// Empty collider buffers for effects that collide with nothing.
+    pub(crate) default_collider: Option<ColliderSetGpu>,
     /// Painter-pass pipelines, built in `prepare` the first frame a placement
     /// needs one.
     pub(crate) painter_pipelines: HashMap<PainterPipelineKey, vwgpu::RenderPipeline>,

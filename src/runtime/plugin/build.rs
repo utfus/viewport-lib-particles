@@ -12,7 +12,7 @@ use crate::effect::{
 use super::*;
 
 /// A hash of the parts of an [`EffectAsset`] that are baked into GPU state at
-/// [`ensure_instance_gpu`](ParticlePlugin::ensure_instance_gpu) time — capacity,
+/// [`ensure_instance_gpu`](ParticlePlugin::ensure_instance_gpu) time: capacity,
 /// blend, render route, texture, flipbook, gradient, sub-emitter presence, and
 /// the generated program (its WGSL). Two assets with the same signature differ
 /// only in per-frame-consumed fields (emitter / forces / lifetime / sim-space),
@@ -31,7 +31,7 @@ pub(crate) fn structural_sig(asset: &EffectAsset) -> u64 {
     // schedule are re-read per frame, so they need no structural rebuild.
     asset.rotation_rate.to_bits().hash(&mut h);
     asset.texture.map(|t| t.0).hash(&mut h);
-    // Custom fragment hook (Phase 33): the composed source (name + body + texture
+    // Custom fragment hook: the composed source (name + body + texture
     // count) determines the pipeline, so it is structural; param *values* ride the
     // per-frame `hook_params` uniform, so they are not.
     match &asset.fragment_hook {
@@ -59,8 +59,8 @@ pub(crate) fn structural_sig(asset: &EffectAsset) -> u64 {
     h.finish()
 }
 
-/// Content signature of an inline texture (issue 017): dimensions plus a hash of
-/// the pixel bytes, so `replace_effect` can tell whether an incoming inline
+/// Content signature of an inline texture: dimensions plus a hash of the pixel
+/// bytes, so `replace_effect` can tell whether an incoming inline
 /// texture matches the one already resident for a slot and skip a re-upload.
 pub(crate) fn inline_tex_sig(t: &crate::effect::InlineTexture) -> u64 {
     use std::collections::hash_map::DefaultHasher;
@@ -72,7 +72,7 @@ pub(crate) fn inline_tex_sig(t: &crate::effect::InlineTexture) -> u64 {
     h.finish()
 }
 
-/// SplitMix64 finalizer, for deriving a well-mixed 64-bit value from a seed.
+/// SplitMix64 finaliser, for deriving a well-mixed 64-bit value from a seed.
 pub(crate) fn splitmix64(x: u64) -> u64 {
     let mut z = x.wrapping_add(0x9E3779B97F4A7C15);
     z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
@@ -80,12 +80,12 @@ pub(crate) fn splitmix64(x: u64) -> u64 {
     z ^ (z >> 31)
 }
 
-/// The per-frame emit RNG seed for one instance. With a host `seed` (Phase 28) it
-/// is a fixed function of the seed, the `(effect, key)`, and the instance's
-/// sim-frame counter — reproducible run to run for a fixed seed + `dt` sequence
-/// (GPU atomic spawn order still limits exact per-particle reproducibility).
-/// Without one it derives from the global frame counter (the pre-Phase-28
-/// behaviour, not reproducible across runs).
+/// The per-frame emit RNG seed for one instance. With a host `seed` it is a
+/// fixed function of the seed, the `(effect, key)`, and the instance's
+/// sim-frame counter, so it reproduces run to run for a fixed seed + `dt`
+/// sequence (GPU atomic spawn order still limits exact per-particle
+/// reproducibility). Without one it derives from the global frame counter and
+/// is not reproducible across runs.
 pub(crate) fn instance_rng_seed(
     seed: Option<u64>,
     frame_index: u64,
@@ -117,8 +117,8 @@ pub(crate) fn zero_particle_buffer(queue: &vwgpu::Queue, buf: &vwgpu::Buffer, ca
 /// effect's maximum particle lifetime plus a small margin, so all burst
 /// particles have died.
 /// One particle's maximum lifetime for `asset` (the upper bound of the emitter's
-/// or program's lifetime range). Used as the default prewarm duration (issue
-/// 015): warming an instance by this long reaches steady state.
+/// or program's lifetime range). Used as the default prewarm duration:
+/// warming an instance by this long reaches steady state.
 pub(crate) fn max_particle_lifetime(asset: &EffectAsset) -> f32 {
     match &asset.program {
         Some(p) => p.lifetime.1,
@@ -143,7 +143,7 @@ pub(crate) fn transient_lifetime(asset: &EffectAsset) -> f32 {
 
 /// A conservative bounding radius for an effect's live particles about its
 /// emitter origin, for frustum culling. Estimated from how far a particle can
-/// travel (max speed x lifetime) plus the spawn extent and particle size — the
+/// travel (max speed x lifetime) plus the spawn extent and particle size. The
 /// codegen path is unknown, so it gets a generous default.
 pub(crate) fn effect_cull_radius(asset: &EffectAsset) -> f32 {
     if asset.program.is_some() {
@@ -306,7 +306,7 @@ fn vnorm(a: [f32; 3]) -> [f32; 3] {
 }
 
 /// Bake a `MESH_SAMPLE_POOL`-entry spawn-sample buffer for the `MeshSurface` /
-/// `PointCloud` spawn shapes (Phase 22). For a triangle mesh, samples are
+/// `PointCloud` spawn shapes. For a triangle mesh, samples are
 /// area-weighted (larger triangles get proportionally more) with a face normal
 /// per sample. For a point cloud (`point_cloud` set, or no triangles), the
 /// vertices are cycled through and the normal points radially outward from the
@@ -475,7 +475,7 @@ pub(crate) fn build_compute_pipeline(
     })
 }
 
-/// Create a buffer initialized with `data` via `mapped_at_creation` (no queue).
+/// Create a buffer initialised with `data` via `mapped_at_creation` (no queue).
 pub(crate) fn buffer_with_data(
     device: &vwgpu::Device,
     label: &str,
@@ -529,7 +529,7 @@ pub(crate) fn build_drawparams_bg(
     })
 }
 
-/// Group-3 bind group for a custom fragment hook (Phase 33): the draw-params
+/// Group-3 bind group for a custom fragment hook: the draw-params
 /// uniform (0), the sprite texture (1) + sampler (2), the per-frame `hook_params`
 /// uniform (3), and the hook's textures (4..), padded with the shared white
 /// default so all [`HOOK_TEXTURES`] slots are bound. Matches `hook_drawparams_bgl`.
@@ -579,10 +579,10 @@ pub(crate) fn build_hook_draw_bg(
     })
 }
 
-/// Soft-particle draw bind group (Phase 9): group 1 of the depth-read pipeline,
-/// folding particles (0), draw order (1), the `DrawParams` uniform (2), the
-/// billboard texture (3), and its sampler (4) into one group — so group 3 stays
-/// free for the scene depth. Owns a private `DrawParams` buffer.
+/// Soft-particle draw bind group: group 1 of the depth-read pipeline, folding
+/// particles (0), draw order (1), the `DrawParams` uniform (2), the billboard
+/// texture (3), and its sampler (4) into one group so group 3 stays free for
+/// the scene depth. Owns a private `DrawParams` buffer.
 pub(crate) fn build_soft_draw_bg(
     device: &vwgpu::Device,
     soft_draw_bgl: &vwgpu::BindGroupLayout,
@@ -692,8 +692,8 @@ pub(crate) fn f32_to_f16(value: f32) -> u16 {
 }
 
 /// Bake a gradient into a `RAMP_WIDTH` x 2 `Rgba16Float` LUT sampled by
-/// normalized age. Row 0 (v = 0.25) holds rgb = colour, a = size scale; row 1
-/// (v = 0.75) holds r = alpha (Phase 15). The billboard shaders sample both
+/// normalised age. Row 0 (v = 0.25) holds rgb = colour, a = size scale; row 1
+/// (v = 0.75) holds r = alpha. The billboard shaders sample both
 /// rows; the mesh and trail shaders sample row 0 only. Two rows so the alpha
 /// ramp gets its own channel without disturbing the colour/size packing.
 pub(crate) fn build_ramp_lut(
@@ -1403,7 +1403,7 @@ pub(crate) fn build_emit_params(
             ],
             [0.0; 4],
         ),
-        // Mesh-surface / point-cloud (Phase 22): the emit kernel indexes the
+        // Mesh-surface / point-cloud: the emit kernel indexes the
         // spawn-sample pool; spawn_a.x is the normal lift-off speed.
         SpawnShape::MeshSurface {
             normal_velocity, ..
@@ -1549,7 +1549,7 @@ mod tests {
 
     #[test]
     fn seeded_rng_is_deterministic_and_frame_independent() {
-        // Phase 28: with a host seed the emit seed is a fixed function of
+        // With a host seed the emit seed is a fixed function of
         // (seed, effect, key, sim_frame) and ignores the global frame counter, so
         // it reproduces run to run.
         assert_eq!(
@@ -1572,7 +1572,7 @@ mod tests {
             instance_rng_seed(Some(1), 0, 3, 7, 5),
             instance_rng_seed(Some(2), 0, 3, 7, 5),
         );
-        // Unseeded path varies with the frame counter (the pre-Phase-28 behaviour).
+        // The unseeded path varies with the frame counter.
         assert_ne!(
             instance_rng_seed(None, 1, 3, 7, 5),
             instance_rng_seed(None, 2, 3, 7, 5),
@@ -1581,7 +1581,7 @@ mod tests {
 
     #[test]
     fn point_cloud_samples_cycle_vertices_with_radial_normals() {
-        // Phase 22: a point cloud reuses its vertices, normals point outward.
+        // A point cloud reuses its vertices, normals point outward.
         let pts = vec![[1.0, 0.0, 0.0], [0.0, 2.0, 0.0], [0.0, 0.0, -3.0]];
         let s = compute_spawn_samples(&pts, &[], true).unwrap();
         assert_eq!(s.len() as u32, MESH_SAMPLE_POOL);

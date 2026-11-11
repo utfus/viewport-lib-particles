@@ -8,7 +8,7 @@
 //! colour.
 //!
 //! [`RefractionPlugin`] samples the scene colour handed to `post_paint` and
-//! re-samples it with a radial displacement centered on an expanding ring, then
+//! re-samples it with a radial displacement centred on an expanding ring, then
 //! writes the distorted result into a texture it owns. `viewport-lib` does not
 //! composite a plugin's output back into the scene colour for you, so the host
 //! reads [`RefractionPlugin::output_view`] and blits or composites it (the

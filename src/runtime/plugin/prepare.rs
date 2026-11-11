@@ -164,12 +164,12 @@ impl ItemTypePlugin for ParticlePlugin {
 
         let dt = items.dt.max(0.0);
         // Advance the shared simulation clock once per frame. Kept for reference;
-        // each instance now drives time-varying fields (e.g. the CurlNoise force)
+        // each instance drives time-varying fields (e.g. the CurlNoise force)
         // from its own `local_time`, which advances by the instance's time-scaled
-        // dt (issue 014) and is seeded by any prewarm (issue 015).
+        // dt and is seeded by any prewarm.
         self.time += dt;
 
-        // Apply queued lifecycle commands (Phase 27) before simulating, so a
+        // Apply queued lifecycle commands before simulating, so a
         // hot-reloaded or removed effect takes effect this frame.
         for cmd in &items.commands {
             match cmd {
@@ -178,7 +178,7 @@ impl ItemTypePlugin for ParticlePlugin {
             }
         }
 
-        // Upload any inline textures (issue 017) queued by add / replace, now that
+        // Upload any inline textures queued by add / replace, now that
         // a queue is available and before instances build their draw bind groups.
         self.drain_pending_textures(device, queue);
 
@@ -209,10 +209,10 @@ impl ItemTypePlugin for ParticlePlugin {
             let pick_id = di.pick_id;
             let selected = di.selected;
             let cast_shadows = di.cast_shadows;
-            // Per-instance simulation dt (issue 014): the frame dt scaled by this
-            // instance's effective time scale (item `time_scale` × effect
+            // Per-instance simulation dt: the frame dt scaled by this
+            // instance's effective time scale (item `time_scale` * effect
             // `simulation_speed`). Everything downstream that integrates over time
-            // — spawn accumulation, burst-schedule times, forces, ageing — uses
+            // (spawn accumulation, burst-schedule times, forces, ageing) uses
             // this in place of the raw frame dt.
             let inst_dt = dt * di.time_scale;
 
@@ -280,11 +280,11 @@ impl ItemTypePlugin for ParticlePlugin {
                 Vec::new()
             };
 
-            // Prewarm on first activation (issue 015): fast-forward a fresh
+            // Prewarm on first activation: fast-forward a fresh
             // instance to steady state before its first draw so ambient set
             // dressing appears full, not filling in. Sub-emitter parents/children
-            // are exempt — their shared event buffer makes a mid-stream warmup
-            // unsafe — and simply mark themselves warmed.
+            // are exempt (their shared event buffer makes a mid-stream warmup
+            // unsafe) and simply mark themselves warmed.
             if !self.instances.get(&ikey).unwrap().warmed {
                 let is_sub =
                     self.effects[idx].asset.sub_emitter.is_some() || parent_of.contains_key(&idx);
@@ -312,8 +312,8 @@ impl ItemTypePlugin for ParticlePlugin {
             // the next frame's local-space delta). Simulating clears the culled
             // "dropped" flag so a future cull drops its particles again, bumps the
             // per-instance sim-frame counter used by the deterministic seed, marks
-            // the instance seen this frame (issue 013 idle GC), and advances its
-            // time-scaled local clock (issue 014).
+            // the instance seen this frame for the idle GC, and advances its
+            // time-scaled local clock.
             let (spawn_count, sim_frame, time) = {
                 let inst = self.instances.get_mut(&ikey).unwrap();
                 inst.last_origin = Some(origin);
@@ -338,7 +338,7 @@ impl ItemTypePlugin for ParticlePlugin {
                 inst.local_time += inst_dt;
                 (count, f, inst.local_time)
             };
-            // Emit RNG seed: deterministic from the host seed (Phase 28) when set,
+            // Emit RNG seed: deterministic from the host seed when set,
             // else derived from the global frame counter.
             let rng_seed = instance_rng_seed(di.seed, ctx.frame_index, idx, ikey.key, sim_frame);
 
@@ -352,7 +352,7 @@ impl ItemTypePlugin for ParticlePlugin {
                 queue.write_buffer(&inst.pick_buf, 0, bytemuck::bytes_of(&pu));
             }
 
-            // Custom fragment hook (Phase 33): refresh the engine-reserved params
+            // Custom fragment hook: refresh the engine-reserved params
             // lane (lane 0 `.w` = time) each frame. The effect's own params sit in
             // later lanes, written once when the instance was built.
             if let Some(cd) = self
@@ -392,7 +392,7 @@ impl ItemTypePlugin for ParticlePlugin {
                         .and_then(|it| it.modifiers.as_deref())
                         .unwrap_or(&asset.modifiers);
                     let inherit = child_link.as_ref().map(|(_, s)| *s).unwrap_or(0.0);
-                    // Phase 22: size of this effect's baked spawn-sample pool
+                    // Size of this effect's baked spawn-sample pool
                     // (0 for non-mesh shapes; the emit kernel skips the mesh path).
                     let sample_count = self.effects[idx].spawn_sample_count;
                     let emit = build_emit_params(
@@ -619,7 +619,7 @@ impl ItemTypePlugin for ParticlePlugin {
             any = true;
         }
 
-        // Idle GC (issue 013): reclaim steady instances the host has stopped
+        // Idle GC: reclaim steady instances the host has stopped
         // submitting for `IDLE_RETIRE_FRAMES` frames, bounding `self.instances` to
         // the live working set across many scene reloads. Reaped instances are, by
         // definition, not in `driven`/`draw_list` this frame, so their GPU buffers
@@ -701,7 +701,7 @@ impl ItemTypePlugin for ParticlePlugin {
                     if !additive {
                         continue;
                     }
-                    // Custom fragment hook (Phase 33): swap in the effect's hooked
+                    // Custom fragment hook: swap in the effect's hooked
                     // pipeline and group-3 hook bind group; else the shared built-in.
                     if let Some(cd) = inst.custom_draw.as_ref() {
                         pass.set_pipeline(&cd.pipelines.additive);
@@ -768,7 +768,7 @@ impl ItemTypePlugin for ParticlePlugin {
             }
             pass.set_bind_group(1, gpu.draw_bg(), &[]);
             pass.set_bind_group(2, gpu.ramp_bg(), &[]);
-            // Custom fragment hook (Phase 33): hooked effects draw with their own
+            // Custom fragment hook: hooked effects draw with their own
             // OIT pipeline + group-3 hook bind group.
             if let Some(cd) = inst.custom_draw.as_ref() {
                 pass.set_pipeline(&cd.pipelines.oit);
@@ -946,7 +946,7 @@ impl ParticlePlugin {
 
         let num_effects = self.effects.len();
         // Effects involved in a sub-emitter (parent or child) stay single-instance
-        // (key 0) and are exempt from culling / budget / transients — their event
+        // (key 0) and are exempt from culling / budget / transients: their event
         // buffers bind one particle set. Precomputed into a set (not a closure
         // over `self`) so the per-instance loops below can mutate `self` freely.
         let mut single_effects: std::collections::HashSet<usize> =
@@ -999,7 +999,7 @@ impl ParticlePlugin {
             }
         }
 
-        // Transient (burst) instances (Phase 25): age the live ones and retire
+        // Transient (burst) instances: age the live ones and retire
         // those past their lifetime (freeing pooled slots), then spawn a fresh
         // transient for each one-shot item submitted this frame.
         let mut ti = 0;
@@ -1080,7 +1080,7 @@ impl ParticlePlugin {
             });
         }
 
-        // Culling + simulation budget (Phase 26). Distance/frustum-cull instances
+        // Culling + simulation budget. Distance/frustum-cull instances
         // (sub-emitter effects exempt), dropping culled instances' particles; then
         // keep the nearest `max_sim_instances`.
         let eye = ctx.camera.eye_position().as_vec3();
@@ -1154,8 +1154,8 @@ impl ParticlePlugin {
         };
         driven.sort_by_key(|di| ancestor_depth(di.ikey.effect as usize));
 
-        // Idle-GC bookkeeping (issue 013): mark every submitted steady instance
-        // seen this frame — whether or not it survived culling or the sim budget —
+        // Idle-GC bookkeeping: mark every submitted steady instance
+        // seen this frame, whether or not it survived culling or the sim budget,
         // so the sweep only reaps instances the host has stopped submitting.
         // Instances created for the first time this frame don't exist yet; they
         // stamp themselves in the simulate loop.
@@ -1167,7 +1167,7 @@ impl ParticlePlugin {
         (driven, parent_of)
     }
 
-    /// Fast-forward a fresh instance to steady state (issue 015): step its
+    /// Fast-forward a fresh instance to steady state: step its
     /// emit+simulate kernels over `warmup` seconds before its first draw, so a
     /// looping ambient effect presents full instead of visibly filling in.
     ///
@@ -1175,7 +1175,7 @@ impl ParticlePlugin {
     /// buffer submitted immediately (a single uniform buffer per instance can't
     /// carry distinct per-step params within one command buffer, since queued
     /// writes all land before it executes). Seeds from the *registered* asset, so
-    /// it ignores this frame's per-frame overrides — a one-time activation seed.
+    /// it ignores this frame's per-frame overrides: a one-time activation seed.
     #[allow(clippy::too_many_arguments)]
     fn prewarm_instance(
         &mut self,

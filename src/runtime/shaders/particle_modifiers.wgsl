@@ -49,7 +49,7 @@ fn eval_modifier(
             let domain = pos * m.data1.x + vec3<f32>(time * m.data1.z);
             *accel += curl_noise(domain) * m.data1.y;
         }
-        // Radial: push out from (or, negative, pull toward) center data0.xyz.
+        // Radial: push out from (or, negative, pull toward) centre data0.xyz.
         case 4u: {
             let to = pos - m.data0.xyz;
             let dist = length(to);
@@ -60,7 +60,7 @@ fn eval_modifier(
             }
             *accel += dir * mag;
         }
-        // Vortex: tangential swirl around axis data1.xyz through center data0.xyz.
+        // Vortex: tangential swirl around axis data1.xyz through centre data0.xyz.
         case 5u: {
             let rel = pos - m.data0.xyz;
             let axis = normalize(m.data1.xyz);
@@ -73,10 +73,10 @@ fn eval_modifier(
             }
             *accel += tangent * mag;
         }
-        // Conform: pull onto a sphere shell (center data0.xyz, radius data0.w)
+        // Conform: pull onto a sphere shell (centre data0.xyz, radius data0.w)
         // within an influence band; sticky adds drag there.
         case 6u: {
-            let delta = m.data0.xyz - pos; // center - pos
+            let delta = m.data0.xyz - pos; // centre - pos
             let dist = length(delta);
             let dir = delta / max(dist, 1e-4);
             let shell = dist - m.data0.w; // + outside shell, - inside

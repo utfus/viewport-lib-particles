@@ -59,7 +59,7 @@ pub enum MeshAlign {
     Random,
 }
 
-/// How a camera-facing billboard is oriented each frame (Phase 15). Applies to
+/// How a camera-facing billboard is oriented each frame. Applies to
 /// the [`ParticleRender::Billboard`] route, set on the effect via
 /// [`EffectAsset::with_orient`](crate::EffectAsset::with_orient). Mirrors
 /// Hanabi's `OrientMode`.
@@ -122,7 +122,7 @@ impl Default for ParticleRender {
 
 /// Colour and size ramps applied over a particle's lifetime.
 ///
-/// Baked into a small 1D lookup texture the draw shader samples by normalized
+/// Baked into a small 1D lookup texture the draw shader samples by normalised
 /// age (0 at spawn, 1 at death). The sampled RGB multiplies the particle colour
 /// and the sampled scale multiplies its size, so an identity gradient (the
 /// default) leaves both unchanged. Keys are `(t in 0..1, value)` pairs in
@@ -134,30 +134,26 @@ impl Default for ParticleRender {
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct Gradient {
     /// Colour keys `(t, rgb)`. Multiplies the particle colour. Values may exceed
-    /// `1.0` for HDR emissive output that blooms on a bloom-enabled renderer
-    /// (Phase 15).
+    /// `1.0` for HDR emissive output that blooms on a bloom-enabled renderer.
     pub colour: Vec<(f32, [f32; 3])>,
     /// Size-scale keys `(t, scale)`. Multiplies the particle size.
     pub size: Vec<(f32, f32)>,
-    /// Alpha keys `(t, a)` over lifetime (Phase 15). Multiplies the particle
-    /// alpha, replacing the old lifetime-fade-only path so an effect can fade
-    /// *in* as well as out. The default `[(0, 1), (1, 0)]` reproduces the
-    /// previous linear fade-to-zero. Billboard route only; the mesh and trail
+    /// Alpha keys `(t, a)` over lifetime. Multiplies the particle alpha, so an
+    /// effect can fade *in* as well as out. The default `[(0, 1), (1, 0)]` is a
+    /// linear fade to zero. Billboard route only; the mesh and trail
     /// routes keep the plain lifetime fade.
     #[cfg_attr(feature = "serde", serde(default = "default_alpha_keys"))]
     pub alpha: Vec<(f32, f32)>,
 }
 
-/// The default alpha ramp: a linear fade from full at spawn to zero at death,
-/// matching the pre-Phase-15 lifetime fade.
+/// The default alpha ramp: a linear fade from full at spawn to zero at death.
 fn default_alpha_keys() -> Vec<(f32, f32)> {
     vec![(0.0, 1.0), (1.0, 0.0)]
 }
 
 impl Default for Gradient {
     fn default() -> Self {
-        // Identity colour/size (no change over life); alpha fades out linearly
-        // to match the historical lifetime fade.
+        // Identity colour/size (no change over life); alpha fades out linearly.
         Self {
             colour: vec![(0.0, [1.0, 1.0, 1.0]), (1.0, [1.0, 1.0, 1.0])],
             size: vec![(0.0, 1.0), (1.0, 1.0)],
@@ -188,7 +184,7 @@ impl Gradient {
         self
     }
 
-    /// Set the alpha ramp keys (ascending `t`) (Phase 15). Lets the effect fade
+    /// Set the alpha ramp keys (ascending `t`). Lets the effect fade
     /// in and out over life instead of only fading out. Billboard route only.
     pub fn with_alpha(mut self, keys: Vec<(f32, f32)>) -> Self {
         if !keys.is_empty() {
@@ -197,17 +193,17 @@ impl Gradient {
         self
     }
 
-    /// Sample the colour ramp at normalized age `t`.
+    /// Sample the colour ramp at normalised age `t`.
     pub(crate) fn sample_colour(&self, t: f32) -> [f32; 3] {
         sample_keys3(&self.colour, t)
     }
 
-    /// Sample the size ramp at normalized age `t`.
+    /// Sample the size ramp at normalised age `t`.
     pub(crate) fn sample_size(&self, t: f32) -> f32 {
         sample_keys1(&self.size, t)
     }
 
-    /// Sample the alpha ramp at normalized age `t` (Phase 15).
+    /// Sample the alpha ramp at normalised age `t`.
     pub(crate) fn sample_alpha(&self, t: f32) -> f32 {
         sample_keys1(&self.alpha, t)
     }
@@ -261,14 +257,13 @@ fn sample_keys1(keys: &[(f32, f32)], t: f32) -> f32 {
 pub enum SimulationSpace {
     /// World space: a particle keeps its world position after spawn, so when the
     /// emitting instance moves the already-spawned particles stay put (they trail
-    /// behind a moving emitter). The default, and the behaviour of every effect
-    /// before this option existed.
+    /// behind a moving emitter). The default.
     #[default]
     Global,
     /// The emitting instance's frame: live particles rigidly follow the
     /// instance's translation each frame, so the whole effect moves with the
-    /// emitter. Only the instance translation is tracked — a
-    /// [`ParticleItem`](crate::ParticleItem) carries no rotation or scale — so
+    /// emitter. Only the instance translation is tracked (a
+    /// [`ParticleItem`](crate::ParticleItem) carries no rotation or scale), so
     /// this is a translation-only local space, applied each simulation step.
     Local,
 }
@@ -299,8 +294,7 @@ mod tests {
 
     #[test]
     fn default_alpha_reproduces_lifetime_fade() {
-        // Phase 15: the default alpha ramp is a linear fade from 1 at spawn to 0
-        // at death, matching the historical lifetime-fade behaviour.
+        // The default alpha ramp is a linear fade from 1 at spawn to 0 at death.
         let g = Gradient::default();
         assert!((g.sample_alpha(0.0) - 1.0).abs() < 1e-6);
         assert!((g.sample_alpha(0.5) - 0.5).abs() < 1e-6);
@@ -318,7 +312,7 @@ mod tests {
 
     #[test]
     fn colour_ramp_carries_hdr_values() {
-        // Phase 15: colour keys above 1.0 pass through unclamped for HDR bloom.
+        // Colour keys above 1.0 pass through unclamped for HDR bloom.
         let g = Gradient::new().with_colour(vec![(0.0, [4.0, 2.0, 0.5]), (1.0, [0.0, 0.0, 0.0])]);
         let c = g.sample_colour(0.0);
         assert!(c[0] > 3.9 && c[1] > 1.9, "HDR colour is not clamped to 1.0");

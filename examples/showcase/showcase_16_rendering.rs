@@ -1,15 +1,15 @@
-//! Showcase 16: Rendering (Phase 15).
+//! Showcase 16: Rendering.
 //!
 //! Billboard **orientation modes**, **screen-space size**, and **per-key alpha /
 //! HDR colour**:
-//! - An arrow sprite fountain drawn with a selectable [`Orient`] mode — parallel
+//! - An arrow sprite fountain drawn with a selectable [`Orient`] mode: parallel
 //!   to the camera plane (the classic axis-aligned billboard), facing the camera
-//!   *position* (spherical), along its velocity, or a fixed screen roll — so the
+//!   *position* (spherical), along its velocity, or a fixed screen roll, so the
 //!   asymmetric arrow makes the orientation visible. A toggle switches the same
 //!   effect between world-space and screen-space size (distant sprites keep their
 //!   pixel size).
 //! - An HDR ember with a per-key **alpha** ramp that fades *in* at birth and out
-//!   at death (impossible with the old lifetime-fade-only alpha), its colour ramp
+//!   at death (a lifetime fade alone is always full at birth), its colour ramp
 //!   HDR-bright so it blooms.
 
 use eframe::egui;

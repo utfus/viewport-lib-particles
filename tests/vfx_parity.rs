@@ -236,7 +236,7 @@ fn spawn_offset_moves_glow() {
 
     assert!(
         center_luma(&centered) > center_luma(&offset) + 100,
-        "spawn offset did not move the glow off centre (centered {}, offset {})",
+        "spawn offset did not move the glow off centre (centred {}, offset {})",
         center_luma(&centered),
         center_luma(&offset)
     );

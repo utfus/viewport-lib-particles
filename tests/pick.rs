@@ -2,7 +2,7 @@
 //!
 //! Registers a dense effect at the origin with a known pick id, renders a few
 //! frames to populate the particle buffer, then runs the renderer's GPU pick at
-//! the screen center and asserts the returned hit carries that id. This exercises
+//! the screen centre and asserts the returned hit carries that id. This exercises
 //! the plugin's `render_pick` hook end to end through the lib's pick pass.
 //!
 //! Skips cleanly when no GPU adapter is available.
@@ -125,6 +125,6 @@ fn particle_system_is_pickable() {
         PickMask::OBJECT,
     );
 
-    let hit = hit.expect("center should hit the particle system");
+    let hit = hit.expect("centre should hit the particle system");
     assert_eq!(hit.id, 42, "picked the wrong id: {}", hit.id);
 }

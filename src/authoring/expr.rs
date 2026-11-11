@@ -14,7 +14,7 @@
 //!
 //! The op set is table-driven ([`UnaryOp`] / [`BinaryOp`] / [`TernaryOp`]): a new
 //! intrinsic is usually one enum variant plus its lowering/type row, with no new
-//! `Expr` variant or reachability arm — the general `Unary`/`Binary`/`Ternary`
+//! `Expr` variant or reachability arm. The general `Unary`/`Binary`/`Ternary`
 //! nodes carry the op.
 
 /// Index into a [`Module`]'s expression arena.
@@ -76,7 +76,7 @@ impl ValueType {
 /// A componentwise unary intrinsic (`fn(x) -> same-shape`). Every variant lowers
 /// to the like-named WGSL builtin and preserves its operand's float type, so
 /// adding one is a single enum variant plus its [`wgsl_fn`](UnaryOp::wgsl_fn)
-/// name — no separate lowering, type rule, or reachability arm.
+/// name, with no separate lowering, type rule, or reachability arm.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum UnaryOp {
@@ -126,8 +126,8 @@ impl UnaryOp {
 
 /// A binary op. Each variant carries both its lowering shape and its type rule
 /// (via [`lower`](BinaryOp::lower) / the `infer` match in [`Module::infer_types`]),
-/// so the families — plain float intrinsics, the vector reducers (`dot` /
-/// `distance`), and the scalar comparisons — extend independently.
+/// so the families (plain float intrinsics, the vector reducers `dot` /
+/// `distance`, and the scalar comparisons) extend independently.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum BinaryOp {
@@ -139,21 +139,21 @@ pub enum BinaryOp {
     Modulo,
     /// `step(edge, x)`, componentwise.
     Step,
-    /// `dot(a, b)` of two like vectors → `f32`.
+    /// `dot(a, b)` of two like vectors -> `f32`.
     Dot,
-    /// `distance(a, b)` → `f32`.
+    /// `distance(a, b)` -> `f32`.
     Distance,
-    /// `a < b` (scalars) → `bool`.
+    /// `a < b` (scalars) -> `bool`.
     Less,
-    /// `a > b` (scalars) → `bool`.
+    /// `a > b` (scalars) -> `bool`.
     Greater,
-    /// `a <= b` (scalars) → `bool`.
+    /// `a <= b` (scalars) -> `bool`.
     LessEqual,
-    /// `a >= b` (scalars) → `bool`.
+    /// `a >= b` (scalars) -> `bool`.
     GreaterEqual,
-    /// `a == b` (scalars) → `bool`.
+    /// `a == b` (scalars) -> `bool`.
     Equal,
-    /// `a != b` (scalars) → `bool`.
+    /// `a != b` (scalars) -> `bool`.
     NotEqual,
 }
 
@@ -194,11 +194,11 @@ impl BinaryOp {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub enum TernaryOp {
-    /// `mix(a, b, t)` — linear blend; `t` scalar or the operands' vector type.
+    /// `mix(a, b, t)`: linear blend; `t` scalar or the operands' vector type.
     Mix,
     /// `smoothstep(edge0, edge1, x)`, componentwise.
     Smoothstep,
-    /// `cond ? a : b` — `cond` is `bool`, `a` / `b` share a type.
+    /// `cond ? a : b`, where `cond` is `bool` and `a` / `b` share a type.
     Select,
 }
 
@@ -235,7 +235,7 @@ impl Component {
 }
 
 /// A type or arity error found by [`Module::infer_types`], carrying the offending
-/// node and a human-readable message. Surfaced by
+/// node and a human-readable message. Returned by
 /// [`crate::EffectProgram::validate`] before WGSL compilation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct TypeError {
@@ -257,9 +257,9 @@ impl std::error::Error for TypeError {}
 /// type inference. Supplied by the caller (e.g. [`crate::EffectProgram::validate`])
 /// since attribute and property types live outside the [`Module`].
 pub struct TypeEnv<'a> {
-    /// Attribute name → type, or `None` if the name is not a known attribute.
+    /// Attribute name -> type, or `None` if the name is not a known attribute.
     pub attribute: &'a dyn Fn(&str) -> Option<ValueType>,
-    /// Property name → type, or `None` if the name is not a declared property.
+    /// Property name -> type, or `None` if the name is not a declared property.
     pub property: &'a dyn Fn(&str) -> Option<ValueType>,
 }
 
@@ -300,7 +300,7 @@ pub enum Expr {
     Cos(ExprHandle),
     /// Broadcast a scalar to a `vec3`.
     Splat3(ExprHandle),
-    /// Normalize a `vec3` (zero-safe is the caller's responsibility).
+    /// Normalise a `vec3` (zero-safe is the caller's responsibility).
     Normalize(ExprHandle),
     /// Length of a `vec3` (scalar).
     Length(ExprHandle),
@@ -319,10 +319,10 @@ pub enum Expr {
     /// turbulent flow; scale the sample point for frequency and the result for
     /// strength.
     CurlNoise(ExprHandle),
-    /// A componentwise unary intrinsic (`abs`, `sqrt`, `exp`, `atan`, …). Result
+    /// A componentwise unary intrinsic (`abs`, `sqrt`, `exp`, `atan`, ...). Result
     /// shares the operand's float type. See [`UnaryOp`].
     Unary(UnaryOp, ExprHandle),
-    /// A binary op (`pow`, `dot`, `step`, comparisons, …). Result type depends on
+    /// A binary op (`pow`, `dot`, `step`, comparisons, ...). Result type depends on
     /// the op. See [`BinaryOp`].
     Binary(BinaryOp, ExprHandle, ExprHandle),
     /// A ternary op (`mix`, `smoothstep`, `select`). See [`TernaryOp`].
@@ -477,19 +477,19 @@ impl Module {
     }
 
     /// A componentwise unary intrinsic. Prefer the named helpers ([`abs`](Self::abs),
-    /// [`sqrt`](Self::sqrt), …); this is the general entry point.
+    /// [`sqrt`](Self::sqrt), ...); this is the general entry point.
     pub fn unary(&mut self, op: UnaryOp, a: ExprHandle) -> ExprHandle {
         self.push(Expr::Unary(op, a))
     }
 
     /// A binary op. Prefer the named helpers ([`pow`](Self::pow),
-    /// [`dot`](Self::dot), …); this is the general entry point.
+    /// [`dot`](Self::dot), ...); this is the general entry point.
     pub fn binary(&mut self, op: BinaryOp, a: ExprHandle, b: ExprHandle) -> ExprHandle {
         self.push(Expr::Binary(op, a, b))
     }
 
     /// A ternary op. Prefer the named helpers ([`mix`](Self::mix),
-    /// [`select`](Self::select), …); this is the general entry point.
+    /// [`select`](Self::select), ...); this is the general entry point.
     pub fn ternary(
         &mut self,
         op: TernaryOp,
@@ -585,40 +585,40 @@ impl Module {
     pub fn step(&mut self, edge: ExprHandle, x: ExprHandle) -> ExprHandle {
         self.binary(BinaryOp::Step, edge, x)
     }
-    /// `dot(a, b)` (→ `f32`).
+    /// `dot(a, b)` (-> `f32`).
     pub fn dot(&mut self, a: ExprHandle, b: ExprHandle) -> ExprHandle {
         self.binary(BinaryOp::Dot, a, b)
     }
-    /// `distance(a, b)` (→ `f32`).
+    /// `distance(a, b)` (-> `f32`).
     pub fn distance(&mut self, a: ExprHandle, b: ExprHandle) -> ExprHandle {
         self.binary(BinaryOp::Distance, a, b)
     }
-    /// `a < b` (→ `bool`).
+    /// `a < b` (-> `bool`).
     pub fn lt(&mut self, a: ExprHandle, b: ExprHandle) -> ExprHandle {
         self.binary(BinaryOp::Less, a, b)
     }
-    /// `a > b` (→ `bool`).
+    /// `a > b` (-> `bool`).
     pub fn gt(&mut self, a: ExprHandle, b: ExprHandle) -> ExprHandle {
         self.binary(BinaryOp::Greater, a, b)
     }
-    /// `a <= b` (→ `bool`).
+    /// `a <= b` (-> `bool`).
     pub fn le(&mut self, a: ExprHandle, b: ExprHandle) -> ExprHandle {
         self.binary(BinaryOp::LessEqual, a, b)
     }
-    /// `a >= b` (→ `bool`).
+    /// `a >= b` (-> `bool`).
     pub fn ge(&mut self, a: ExprHandle, b: ExprHandle) -> ExprHandle {
         self.binary(BinaryOp::GreaterEqual, a, b)
     }
-    /// `a == b` (→ `bool`).
+    /// `a == b` (-> `bool`).
     pub fn eq(&mut self, a: ExprHandle, b: ExprHandle) -> ExprHandle {
         self.binary(BinaryOp::Equal, a, b)
     }
-    /// `a != b` (→ `bool`).
+    /// `a != b` (-> `bool`).
     pub fn ne(&mut self, a: ExprHandle, b: ExprHandle) -> ExprHandle {
         self.binary(BinaryOp::NotEqual, a, b)
     }
 
-    /// `mix(a, b, t)` — linear blend by `t`.
+    /// `mix(a, b, t)`: linear blend by `t`.
     pub fn mix(&mut self, a: ExprHandle, b: ExprHandle, t: ExprHandle) -> ExprHandle {
         self.ternary(TernaryOp::Mix, a, b, t)
     }
@@ -626,7 +626,7 @@ impl Module {
     pub fn smoothstep(&mut self, edge0: ExprHandle, edge1: ExprHandle, x: ExprHandle) -> ExprHandle {
         self.ternary(TernaryOp::Smoothstep, edge0, edge1, x)
     }
-    /// `cond ? a : b` — pick `a` when `cond` (a `bool`) is true, else `b`.
+    /// `cond ? a : b`: pick `a` when `cond` (a `bool`) is true, else `b`.
     pub fn select(&mut self, cond: ExprHandle, a: ExprHandle, b: ExprHandle) -> ExprHandle {
         self.ternary(TernaryOp::Select, cond, a, b)
     }
@@ -650,7 +650,7 @@ impl Module {
         self.push(Expr::Vec4(x, y, z, w))
     }
 
-    /// Extract one component of a vector (→ `f32`).
+    /// Extract one component of a vector (-> `f32`).
     pub fn swizzle(&mut self, v: ExprHandle, component: Component) -> ExprHandle {
         self.push(Expr::Swizzle(v, component))
     }

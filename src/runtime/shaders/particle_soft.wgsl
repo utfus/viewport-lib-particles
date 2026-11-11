@@ -1,4 +1,4 @@
-// Soft-particle draw pass (Phase 9): camera-facing billboards that fade their
+// Soft-particle draw pass: camera-facing billboards that fade their
 // alpha as they approach the opaque scene surface, removing the hard clip line
 // where a particle intersects geometry.
 //

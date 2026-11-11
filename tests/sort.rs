@@ -4,7 +4,7 @@
 //! `prepare`, and the draw reads particles through the sorted order buffer. This
 //! renders an alpha effect with sorting on and again with it off, confirming both
 //! the sorted and identity-order draw paths encode without validation errors and
-//! produce a center glow.
+//! produce a centre glow.
 //!
 //! Correct back-to-front compositing is hard to assert from a single pixel; this
 //! is a smoke test of the sort machinery (setup pass + ~78 bitonic stages) plus

@@ -1,9 +1,9 @@
-//! Showcase 13: Transient bursts (Phase 25).
+//! Showcase 13: Transient bursts.
 //!
 //! Fire-and-forget bursts (muzzle-flash / impact style) are auto-fired at
 //! scattered points on a timer. Each is submitted once via `ParticleItem::burst`
 //! and the plugin plays it in a pooled transient slot, then self-retires it when
-//! its particles die — no per-burst registration, no growing state. The pool cap
+//! its particles die: no per-burst registration, no growing state. The pool cap
 //! (`with_max_transients`) bounds concurrency; over it, the oldest recycles.
 
 use eframe::egui;
@@ -12,7 +12,7 @@ use viewport_lib_particles::{
     SpawnRate, SpawnShape, VelocityDist,
 };
 
-/// A short, bright one-shot spray — a burst count with a brief lifetime.
+/// A short, bright one-shot spray: a burst count with a brief lifetime.
 fn spark_burst() -> EffectAsset {
     EffectAsset::new("spark-burst")
         .with_capacity(1_500)

@@ -1,10 +1,9 @@
-//! Per-key alpha ramp (Phase 15).
+//! Per-key alpha ramp.
 //!
 //! A gradient can carry a per-key **alpha** ramp, so an effect can fade *in* at
-//! birth (impossible with the old lifetime-fade-only alpha, which is always full
-//! at birth). Two otherwise-identical additive effects are rendered with young
+//! birth (a lifetime fade alone is always full at birth). Two otherwise-identical additive effects are rendered with young
 //! particles (age near 0): one with a fade-*in* alpha ramp (0 at birth) reads
-//! much darker at center than one with the default fade-*out* ramp (1 at birth),
+//! much darker at centre than one with the default fade-*out* ramp (1 at birth),
 //! proving the alpha ramp is baked and sampled.
 //!
 //! Skips cleanly when no GPU adapter is available.
@@ -62,7 +61,7 @@ fn base() -> EffectAsset {
         })
 }
 
-/// Render two frames of one effect (particles stay young) and read the center.
+/// Render two frames of one effect (particles stay young) and read the centre.
 fn center_brightness(effect: EffectAsset) -> i32 {
     let (device, queue) = match headless_device() {
         Some(dq) => dq,

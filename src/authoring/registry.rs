@@ -1,13 +1,13 @@
-//! A name → factory registry for reconstructing modifiers and effect templates
+//! A name -> factory registry for reconstructing modifiers and effect templates
 //! by string.
 //!
 //! This is the non-reflection analogue of Hanabi's reflection-based modifier
 //! registry. The built-in modifier set ([`ForceModifier`], the spawn/velocity
 //! shapes, the expression [`Module`](crate::Module)) is a closed enum and
 //! round-trips through serde directly, so it needs no registry. The registry
-//! exists for the open-ended case the plan calls out: host code (and, later, an
-//! authoring tool) reconstructing *named* modifiers or whole effect templates on
-//! load, without hard-coding the concrete Rust constructor at every call site.
+//! exists for the open-ended case: host code or an authoring tool
+//! reconstructing *named* modifiers or whole effect templates on load, without
+//! hard-coding the concrete Rust constructor at every call site.
 //!
 //! Register factories once at startup, then look them up by the name that a
 //! loaded `.effect` file (or UI) refers to.

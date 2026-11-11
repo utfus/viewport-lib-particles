@@ -1,13 +1,14 @@
-//! Showcase 19: Fire (improved) — the layered fire rebuilt on Phases 9, 15, 22.
+//! Showcase 19: Fire (improved): the layered fire with mesh spawn, HDR ramps and
+//! soft particles.
 //!
-//! Same campfire idea as "15: Fire", now using the features that landed since:
-//! - **Phase 22 (mesh-surface spawn):** flames, smoke, and embers spawn over the
+//! Same campfire idea as "15: Fire", with three more features:
+//! - **Mesh-surface spawn:** flames, smoke, and embers spawn over the
 //!   surface of two crossed logs and lift off along their normals, so the fire
 //!   conforms to the wood instead of a generic cone.
-//! - **Phase 15 (HDR colour + per-key alpha):** black-body HDR ramps that bloom,
+//! - **HDR colour + per-key alpha:** black-body HDR ramps that bloom,
 //!   and per-key alpha so each particle fades *in* at birth and out at death
 //!   (smoother than the lifetime-fade-only look).
-//! - **Phase 9 (soft particles):** flames and smoke fade against the logs and the
+//! - **Soft particles:** flames and smoke fade against the logs and the
 //!   ground (soft additive for the flame, so it keeps its glow) instead of
 //!   showing a hard clip line where they meet geometry.
 //!
@@ -109,7 +110,7 @@ fn push_box(
     ];
     for p in corners {
         positions.push(p);
-        // Per-vertex normal from the box center: fine for a dark, matte log.
+        // Per-vertex normal from the box centre: fine for a dark, matte log.
         let d = [p[0] - c[0], p[1] - c[1], p[2] - c[2]];
         let l = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-4);
         normals.push([d[0] / l, d[1] / l, d[2] / l]);

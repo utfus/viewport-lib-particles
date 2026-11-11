@@ -2,7 +2,7 @@
 //
 // One invocation per capacity slot. A slot whose lifetime has run out competes
 // for this frame's spawn budget via an atomic counter; the first `spawn_count`
-// claimants initialize a new particle. Fixed-function: the spawn shape and
+// claimants initialise a new particle. Fixed-function: the spawn shape and
 // velocity distribution are selected by `kinds`, not generated per effect.
 
 struct Particle {
@@ -30,7 +30,7 @@ struct EmitParams {
     spawn_offset: vec4<f32>,  // world-space spawn offset xyz
 };
 
-// One baked mesh-surface / point-cloud spawn sample (Phase 22).
+// One baked mesh-surface / point-cloud spawn sample.
 struct SpawnSample {
     position: vec4<f32>,
     normal:   vec4<f32>,
@@ -121,7 +121,7 @@ fn emit_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         }
         pos += vec3<f32>(r * cos(ang), r * sin(ang), t * height);
     } else if (spawn_kind == 5u) {
-        // Mesh-surface / point-cloud: index the baked sample pool (Phase 22).
+        // Mesh-surface / point-cloud: index the baked sample pool.
         let n = params.ctrl.w;
         if (n > 0u) {
             let si = hash_u32(rng * 2654435761u + 1u) % n;
@@ -157,7 +157,7 @@ fn emit_main(@builtin(global_invocation_id) gid: vec3<u32>) {
         vel = dir * speed;
     }
 
-    // Mesh spawn normal lift-off (Phase 22): push the particle off the surface
+    // Mesh spawn normal lift-off: push the particle off the surface
     // along its sample normal, on top of the emitter's own velocity.
     if (spawn_kind == 5u) {
         let normal_speed = params.spawn_a.x;

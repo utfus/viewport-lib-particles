@@ -1,4 +1,4 @@
-//! Showcase 10: Simulation space (Phase 18).
+//! Showcase 10: Simulation space.
 //!
 //! A single emitter sweeps back and forth. With **global** (world-space)
 //! simulation the already-spawned particles stay where they were emitted, so the
@@ -7,7 +7,7 @@
 //! simulation space is fixed on the `EffectAsset`, so two effects are registered
 //! (one of each space) and the toggle chooses which is submitted.
 //!
-//! The spawn-shape selector also exercises the new [`SpawnShape::Circle`] and
+//! The spawn-shape selector also exercises the [`SpawnShape::Circle`] and
 //! [`SpawnShape::Cone`] shapes live, applied through the per-frame emitter
 //! override.
 
@@ -117,7 +117,7 @@ pub fn controls(state: &mut State, ui: &mut egui::Ui) {
     ui.label(if state.local {
         "Local: the cloud follows the emitter."
     } else {
-        "Global: particles stay put — a trail forms."
+        "Global: particles stay put, so a trail forms."
     });
 }
 

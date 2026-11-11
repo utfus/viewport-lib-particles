@@ -1,4 +1,4 @@
-//! Custom fragment-shading hook composition (Phase 33 / issue 018).
+//! Custom fragment-shading hook composition.
 //!
 //! An effect carrying a [`FragmentHook`](crate::effect::FragmentHook) computes its
 //! colour from custom WGSL instead of the built-in `texture_mode`. This module
@@ -39,7 +39,7 @@ const HOOK_SLOT: &str = "// __PARTICLE_HOOK_SLOT__";
 pub(crate) fn hook_snippet(hook: &FragmentHook, route: HookRoute) -> String {
     let name = &hook.name;
     // Minimal, module-local prefixing: rename the entry function. Helpers the body
-    // declares stay as written — each hooked effect is its own shader module, so
+    // declares stay as written: each hooked effect is its own shader module, so
     // there is no cross-effect symbol collision to guard against, only against the
     // template's reserved names (documented on `FragmentHook`).
     let body = hook

@@ -1,7 +1,7 @@
 //! The trail render route draws.
 //!
 //! Registers a fountain whose particles are drawn as ribbon trails, runs enough
-//! frames for the position history to fill in, and reads back the center pixel to
+//! frames for the position history to fill in, and reads back the centre pixel to
 //! confirm the ribbons accumulate into a glow. A trail needs several frames of
 //! history before any segment is valid, so this drives more frames than the
 //! billboard/mesh tests.
@@ -69,7 +69,7 @@ fn trail_route_draws() {
             lifetime: (1.0, 1.5),
             spawn: SpawnShape::Point,
             // Symmetric spread so the density peak stays over the emitter at
-            // the screen center; trails sweep outward from there.
+            // the screen centre; trails sweep outward from there.
             velocity: VelocityDist::UniformBox {
                 min: [-0.7, -0.7, -0.7],
                 max: [0.7, 0.7, 0.7],
@@ -125,11 +125,11 @@ fn trail_route_draws() {
 
     assert!(
         center > 100,
-        "center too dark; trails did not draw: {center}"
+        "centre too dark; trails did not draw: {center}"
     );
     assert!(
         center > corner + 120,
-        "center {center} not clearly brighter than corner {corner}"
+        "centre {center} not clearly brighter than corner {corner}"
     );
 }
 

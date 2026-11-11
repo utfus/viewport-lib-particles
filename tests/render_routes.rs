@@ -1,7 +1,7 @@
 //! The mesh render route draws.
 //!
 //! Uploads a cube mesh, registers an effect that instances it per particle at
-//! the origin, runs a few frames, and reads back the center pixel to confirm the
+//! the origin, runs a few frames, and reads back the centre pixel to confirm the
 //! tumbling cubes accumulate into a glow.
 //!
 //! Skips cleanly when no GPU adapter is available.
@@ -45,7 +45,7 @@ fn frame_looking_at_origin() -> FrameData {
     frame
 }
 
-/// Unit cube centered at the origin (half-extent 0.5).
+/// Unit cube centred at the origin (half-extent 0.5).
 fn cube() -> (Vec<[f32; 3]>, Vec<u32>) {
     let p = vec![
         [-0.5, -0.5, -0.5],
@@ -132,10 +132,10 @@ fn mesh_route_draws() {
     let center = sum(SIZE / 2, SIZE / 2);
     let corner = sum(1, 1);
 
-    assert!(center > 120, "center too dark; mesh particles did not draw: {center}");
+    assert!(center > 120, "centre too dark; mesh particles did not draw: {center}");
     assert!(
         center > corner + 80,
-        "center {center} not clearly brighter than corner {corner}"
+        "centre {center} not clearly brighter than corner {corner}"
     );
 }
 

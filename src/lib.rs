@@ -7,7 +7,7 @@
 //! shadows, clip planes, and the outline/pick passes through the shared group-0
 //! bindings.
 //!
-//! Today an [`EffectAsset`] is fixed-function: a concrete [`Emitter`] (spawn
+//! By default an [`EffectAsset`] is fixed-function: a concrete [`Emitter`] (spawn
 //! rate, shape, velocity, lifetime, colour, size) plus a list of
 //! [`ForceModifier`]s. The plugin runs it as an emit compute pass (recycle dead
 //! slots into new particles), a simulate compute pass (integrate forces, age
@@ -33,14 +33,9 @@
 //! [`RefractionPlugin`], a companion `GpuPlugin` that distorts the rendered
 //! colour in a `post_paint` pass.
 //!
-//! Status: early. Both authoring paths work -- fixed-function (verified by
-//! `tests/simulates.rs`) and codegen (verified by `tests/expression.rs`) -- with
-//! lifetime gradients (`tests/gradient.rs`) and the billboard, mesh, and trail
-//! render routes (`tests/render_routes.rs`, `tests/trails.rs`). Non-additive
-//! effects depth-sort back-to-front (`tests/sort.rs`), and the systems are
-//! GPU-pickable and cast shadows (`tests/pick.rs`, `tests/shadow.rs`), and fade
-//! into geometry as soft particles (`tests/soft_particles.rs`). See
-//! `docs/plans/particle-system-plan.md` for the phased build-out.
+//! Non-additive effects depth-sort back-to-front. Particle systems are
+//! GPU-pickable, cast shadows, and can fade into geometry as soft particles
+//! ([`EffectAsset::with_soft`]).
 //!
 //! The plugins, their pipelines and their shaders sit behind the `gpu`
 //! feature, which is on by default. With `default-features = false` the crate

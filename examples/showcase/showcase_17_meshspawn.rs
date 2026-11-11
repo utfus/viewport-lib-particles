@@ -1,8 +1,8 @@
-//! Showcase 17: Mesh spawn (Phase 22).
+//! Showcase 17: Mesh spawn.
 //!
 //! Particles spawn from an uploaded mesh, either **area-weighted over its
 //! surface** (`SpawnShape::MeshSurface`) or **from its vertices as a point
-//! cloud** (`SpawnShape::PointCloud`), and lift off along the surface normal — a
+//! cloud** (`SpawnShape::PointCloud`), and lift off along the surface normal, like a
 //! model dissolving / assembling into particles. A live slider drives the
 //! lift-off speed via a per-frame emitter override (the baked sample pool is
 //! reused, only the normal velocity changes).
@@ -143,7 +143,7 @@ pub fn controls(state: &mut State, ui: &mut egui::Ui) {
     ui.add(egui::Slider::new(&mut state.lift, 0.0..=3.0).text("normal lift-off"));
     ui.add(egui::Slider::new(&mut state.rate, 0.1..=3.0).text("emission rate"));
     ui.separator();
-    ui.label("Particles spawn over an uploaded torus — area-weighted across its surface, or from its vertices — and lift off along the surface normal.");
+    ui.label("Particles spawn over an uploaded torus (area-weighted across its surface, or from its vertices) and lift off along the surface normal.");
 }
 
 /// Submit the selected variant with the live lift / rate override.

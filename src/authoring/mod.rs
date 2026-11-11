@@ -1,5 +1,5 @@
-//! The CPU-side authoring surface: the effect asset model, the expression IR,
-//! the expression→WGSL compiler, and the modifier registry. No GPU state.
+//! The CPU-side authoring types: the effect asset model, the expression IR,
+//! the expression-to-WGSL compiler, and the modifier registry. No GPU state.
 
 #[cfg(feature = "gpu")]
 pub(crate) mod codegen;

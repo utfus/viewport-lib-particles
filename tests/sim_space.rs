@@ -1,4 +1,4 @@
-//! Phase 18: simulation space (local vs global) and the new spawn shapes.
+//! Simulation space (local vs global) and the circle and cone spawn shapes.
 //!
 //! `local_vs_global_extent` moves an emitter horizontally across the view over
 //! many frames. Under `Global` (world space) the already-spawned particles stay
@@ -7,7 +7,7 @@
 //! compact blob near the current position. The global trail must therefore cover
 //! a clearly wider horizontal span than the local blob.
 //!
-//! `spawn_shapes_draw` renders the new `Circle` and `Cone` spawn shapes and
+//! `spawn_shapes_draw` renders the `Circle` and `Cone` spawn shapes and
 //! confirms they emit visible particles.
 //!
 //! Skips cleanly when no GPU adapter is available.

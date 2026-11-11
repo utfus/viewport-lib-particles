@@ -95,14 +95,14 @@ pub(crate) struct ParticleMesh {
     pub(crate) index_buf: vwgpu::Buffer,
     pub(crate) index_count: u32,
     /// CPU copy of the local-space vertex positions, kept so `MeshSurface` /
-    /// `PointCloud` spawn shapes (Phase 22) can bake an area-weighted sample pool
+    /// `PointCloud` spawn shapes can bake an area-weighted sample pool
     /// at effect-registration time.
     pub(crate) positions: Vec<[f32; 3]>,
     /// CPU copy of the triangle indices (empty for a pure point cloud).
     pub(crate) indices: Vec<u32>,
 }
 
-/// One baked spawn sample for the `MeshSurface` / `PointCloud` shapes (Phase 22).
+/// One baked spawn sample for the `MeshSurface` / `PointCloud` shapes.
 /// Matches `SpawnSample` in `particle_emit.wgsl`. 32 bytes.
 #[repr(C)]
 #[derive(Copy, Clone, Pod, Zeroable)]
@@ -240,14 +240,14 @@ pub(crate) struct DrawParams {
     pub(crate) flip_rows: u32,
     /// Flipbook playback: 0 stretches the sheet across life; > 0 loops at fps.
     pub(crate) flip_fps: f32,
-    /// Billboard orientation (Phase 15): 0 = parallel camera plane, 1 = face
+    /// Billboard orientation: 0 = parallel camera plane, 1 = face
     /// camera position, 2 = along velocity, 3 = fixed screen roll.
     pub(crate) orient: u32,
     /// Orientation parameter: the fixed roll angle (radians) for orient == 3.
     pub(crate) orient_param: f32,
-    /// Screen-space size flag (Phase 15): 1 keeps constant apparent size.
+    /// Screen-space size flag: 1 keeps constant apparent size.
     pub(crate) screen_size: u32,
-    /// Soft-particle fade distance in world units (Phase 9); 0 = not soft. Read
+    /// Soft-particle fade distance in world units; 0 = not soft. Read
     /// only by the soft (depth-read) billboard shader.
     pub(crate) soft_dist: f32,
     /// Billboard spin in radians per second, advanced by particle age. Billboard
@@ -486,23 +486,23 @@ pub(crate) struct GenGpu {
 /// drive many independent instances.
 pub(crate) struct RegisteredEffect {
     pub(crate) asset: EffectAsset,
-    /// Set by `remove_effect` (Phase 27): the slot is tombstoned (its
+    /// Set by `remove_effect`: the slot is tombstoned (its
     /// `EffectId` index stays stable) and no longer simulated or drawn.
     pub(crate) removed: bool,
-    /// Baked `MeshSurface` / `PointCloud` spawn-sample pool (Phase 22), built at
+    /// Baked `MeshSurface` / `PointCloud` spawn-sample pool, built at
     /// registration when the emitter's spawn shape needs it. Bound at fixed-emit
     /// binding 3; effects without a mesh spawn shape use the shared 1-entry
     /// default and never index it.
     pub(crate) spawn_samples: Option<vwgpu::Buffer>,
     /// Number of samples in `spawn_samples` (0 when it is the shared default).
     pub(crate) spawn_sample_count: u32,
-    /// Texture ids for a custom fragment hook's inputs (Phase 33), uploaded from
+    /// Texture ids for a custom fragment hook's inputs, uploaded from
     /// the hook's inline bytes during `drain_pending_textures`. Empty for effects
     /// without a hook or with no hook textures.
     pub(crate) hook_texture_ids: Vec<ParticleTextureId>,
-    /// The inline texture (issue 017) already uploaded for this slot, as
+    /// The inline texture already uploaded for this slot, as
     /// `(content signature, id)`. Lets `replace_effect` reuse a resident texture
-    /// when the incoming bytes are unchanged — no re-upload, no structural rebuild.
+    /// when the incoming bytes are unchanged: no re-upload, no structural rebuild.
     /// `None` until an inline texture has been uploaded for this effect.
     pub(crate) texture_upload: Option<(u64, ParticleTextureId)>,
 }
@@ -525,7 +525,7 @@ pub(crate) struct EffectInstance {
     pub(crate) gpu: EffectGpu,
     /// Trail history state, present only for `ParticleRender::Trail` effects.
     pub(crate) trail: Option<TrailGpu>,
-    /// Soft-particle draw bind group (Phase 9): group 1 of the depth-read
+    /// Soft-particle draw bind group: group 1 of the depth-read
     /// pipeline, combining this instance's particles + order + draw params +
     /// sprite (folded into one group so group 3 is free for the scene depth).
     /// Present only for soft billboard effects.
@@ -549,36 +549,36 @@ pub(crate) struct EffectInstance {
     /// buffer, so the drop happens once per cull episode (not every frame).
     pub(crate) dropped: bool,
     /// Count of frames this instance has been simulated, mixed into the emit RNG
-    /// seed under deterministic seeding (Phase 28) so each frame decorrelates.
+    /// seed under deterministic seeding so each frame decorrelates.
     pub(crate) sim_frame: u32,
     /// Seconds this instance has simulated, for firing timed bursts.
     pub(crate) elapsed: f32,
     /// Bitmask of timed bursts (by index in the effect's `spawn_schedule`) that
     /// have already fired, so each fires once. Bursts past index 63 share bit 63.
     pub(crate) schedule_fired: u64,
-    /// Frame index this instance was last *submitted* by the host (issue 013).
+    /// Frame index this instance was last *submitted* by the host.
     /// The idle GC reclaims a steady instance whose key has gone
-    /// [`IDLE_RETIRE_FRAMES`] frames without submission. Submission — not
-    /// simulation — resets it, so a paused / culled / budget-frozen instance the
+    /// [`IDLE_RETIRE_FRAMES`] frames without submission. Submission (not
+    /// simulation) resets it, so a paused / culled / budget-frozen instance the
     /// host still submits is kept.
     pub(crate) last_seen: u64,
-    /// Seconds this instance has simulated, scaled by its time scale (issue 014).
+    /// Seconds this instance has simulated, scaled by its time scale.
     /// Drives the time-varying-force `time` uniform per instance (so a time-scaled
     /// or prewarmed instance advances its noise fields at its own rate) and is
-    /// seeded by the prewarm fast-forward (issue 015).
+    /// seeded by the prewarm fast-forward.
     pub(crate) local_time: f32,
-    /// Whether this instance's one-time prewarm fast-forward has run (issue 015).
+    /// Whether this instance's one-time prewarm fast-forward has run.
     /// Set once on first activation (or immediately when no warmup applies) so it
     /// never re-warms.
     pub(crate) warmed: bool,
-    /// Custom fragment-hook draw state (Phase 33), present only for a billboard
+    /// Custom fragment-hook draw state, present only for a billboard
     /// effect carrying a [`FragmentHook`](crate::effect::FragmentHook): the cached
     /// per-hook pipelines plus this instance's group-3 hook bind group and its
     /// per-frame params buffer. `None` uses the shared built-in pipelines.
     pub(crate) custom_draw: Option<CustomDraw>,
 }
 
-/// Cached custom draw pipelines for one fragment hook (Phase 33), shared by every
+/// Cached custom draw pipelines for one fragment hook, shared by every
 /// effect with the same composed source. wgpu pipelines are `Arc`-backed, so
 /// clones are cheap.
 #[derive(Clone)]
@@ -589,7 +589,7 @@ pub(crate) struct CustomDrawPipelines {
     pub(crate) oit: vwgpu::RenderPipeline,
 }
 
-/// Per-instance custom-shading draw state (Phase 33).
+/// Per-instance custom-shading draw state.
 pub(crate) struct CustomDraw {
     /// The hook's cached pipelines (additive + OIT).
     pub(crate) pipelines: CustomDrawPipelines,
@@ -601,7 +601,7 @@ pub(crate) struct CustomDraw {
     pub(crate) params_buf: vwgpu::Buffer,
 }
 
-/// A live transient (burst) instance (Phase 25): a pooled particle set playing a
+/// A live transient (burst) instance: a pooled particle set playing a
 /// one-shot effect at a fixed world point, aged each frame and recycled when its
 /// particles have died. Tracked separately from steady instances because the host
 /// submits it once and the plugin advances it thereafter.
@@ -617,7 +617,7 @@ pub(crate) struct TransientInstance {
     /// Age at which the instance is retired and its slot recycled (the effect's
     /// max particle lifetime plus a margin).
     pub(crate) retire_at: f32,
-    /// Deterministic seed captured from the spawning item (Phase 28).
+    /// Deterministic seed captured from the spawning item.
     pub(crate) seed: Option<u64>,
 }
 
@@ -679,7 +679,7 @@ pub struct ParticlePlugin {
     pub(crate) draw_pipeline_oit: Option<vwgpu::RenderPipeline>,
     pub(crate) mesh_pipeline_additive: Option<vwgpu::RenderPipeline>,
     pub(crate) mesh_pipeline_over: Option<vwgpu::RenderPipeline>,
-    // Soft-particle (Phase 9) billboard draw for the read-only-depth pass. Its
+    // Soft-particle billboard draw for the read-only-depth pass. Its
     // group 1 folds particles+order+draw-params+sprite so group 3 carries the
     // scene depth, in the renderer's depth-read layout so the context's
     // prebuilt `scene_depth_bind_group` binds against it. Two
@@ -746,7 +746,7 @@ pub struct ParticlePlugin {
     /// uniform. Built lazily the first frame an instance is driven.
     pub(crate) instances: HashMap<InstanceKey, EffectInstance>,
 
-    /// Active transient (burst) instances (Phase 25), advanced every frame and
+    /// Active transient (burst) instances, advanced every frame and
     /// recycled when they age out. Their GPU state lives in `instances` under
     /// `TRANSIENT_KEY_BIT` keys.
     pub(crate) transients: Vec<TransientInstance>,
@@ -761,7 +761,7 @@ pub struct ParticlePlugin {
     /// Textures uploaded for the billboard texture / flipbook routes, indexed by
     /// `ParticleTextureId`.
     pub(crate) textures: Vec<ParticleTexture>,
-    /// Effect indices with an inline texture (issue 017) awaiting GPU upload.
+    /// Effect indices with an inline texture awaiting GPU upload.
     /// Queued by `add_effect` / `replace_effect` (which lack a `queue`) and
     /// drained at the top of `prepare`, where the plugin has `device`/`queue`.
     pub(crate) pending_textures: Vec<usize>,
@@ -769,7 +769,7 @@ pub struct ParticlePlugin {
     /// billboard fragment always has a valid sampler). Built lazily in `prepare`.
     pub(crate) default_tex_view: Option<vwgpu::TextureView>,
     /// A 1-entry spawn-sample buffer bound at fixed-emit binding 3 for effects
-    /// that do not use a `MeshSurface` / `PointCloud` spawn shape (Phase 22), so
+    /// that do not use a `MeshSurface` / `PointCloud` spawn shape, so
     /// the emit bind group always has a valid buffer there. Built in `build_gpu`.
     pub(crate) default_spawn_samples: Option<vwgpu::Buffer>,
 
@@ -786,7 +786,7 @@ pub struct ParticlePlugin {
     /// WGSL so effects with identical programs share pipelines.
     pub(crate) gen_cache: HashMap<u64, (vwgpu::ComputePipeline, vwgpu::ComputePipeline)>,
 
-    /// Custom fragment-hook draw pipelines (Phase 33), keyed by the hash of the
+    /// Custom fragment-hook draw pipelines, keyed by the hash of the
     /// composed billboard source so effects with identical hooks share pipelines
     /// (the analogue of `gen_cache` for the fragment stage).
     pub(crate) custom_draw_cache: HashMap<u64, CustomDrawPipelines>,
@@ -829,13 +829,13 @@ pub(crate) struct DrivenInstance {
     pub(crate) cast_shadows: bool,
     /// `Some(index)` for a steady submitted item; `None` for a transient.
     pub(crate) item_idx: Option<usize>,
-    /// Deterministic seed for this instance's emit, if any (Phase 28).
+    /// Deterministic seed for this instance's emit, if any.
     pub(crate) seed: Option<u64>,
-    /// Effective per-instance time scale (issue 014): the item's `time_scale`
+    /// Effective per-instance time scale: the item's `time_scale`
     /// times the effect's `simulation_speed` (asset-only for transients),
     /// clamped at `0`.
     pub(crate) time_scale: f32,
-    /// Effective prewarm duration in seconds (issue 015): the item's `warmup`
+    /// Effective prewarm duration in seconds: the item's `warmup`
     /// override, else one particle lifetime when the effect sets `prewarm`, else
     /// `0`. Transients never prewarm.
     pub(crate) warmup: f32,

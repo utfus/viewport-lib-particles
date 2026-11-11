@@ -1,7 +1,7 @@
 //! The plugin emits, simulates, and draws real particles.
 //!
 //! Registers a point-spawn effect at the origin, runs several frames (each an
-//! emit + simulate + draw), and reads back the center pixel to confirm the
+//! emit + simulate + draw), and reads back the centre pixel to confirm the
 //! emitter glows additively against the background.
 //!
 //! The default frame sets no environment map, so no skybox draws. That matters
@@ -112,11 +112,11 @@ fn emits_and_draws_a_glow_at_origin() {
     let center = sum(SIZE / 2, SIZE / 2);
     let corner = sum(1, 1);
 
-    // The additive glow makes the center much brighter than the background.
-    assert!(center > 150, "center too dark; particles did not draw: {center}");
+    // The additive glow makes the centre much brighter than the background.
+    assert!(center > 150, "centre too dark; particles did not draw: {center}");
     assert!(
         center > corner + 100,
-        "center {center} not clearly brighter than corner {corner}"
+        "centre {center} not clearly brighter than corner {corner}"
     );
 }
 

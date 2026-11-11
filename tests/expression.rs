@@ -3,7 +3,7 @@
 //!
 //! Builds a program whose per-particle colour comes from a random draw (which
 //! the fixed-function emitter cannot express), spawns it at the origin, runs a
-//! few frames, and reads back the center pixel to confirm the additive glow.
+//! few frames, and reads back the centre pixel to confirm the additive glow.
 //!
 //! Skips cleanly when no GPU adapter is available.
 
@@ -122,10 +122,10 @@ fn generated_effect_emits_and_draws() {
     let center = sum(SIZE / 2, SIZE / 2);
     let corner = sum(1, 1);
 
-    assert!(center > 150, "center too dark; generated effect did not draw: {center}");
+    assert!(center > 150, "centre too dark; generated effect did not draw: {center}");
     assert!(
         center > corner + 100,
-        "center {center} not clearly brighter than corner {corner}"
+        "centre {center} not clearly brighter than corner {corner}"
     );
 }
 

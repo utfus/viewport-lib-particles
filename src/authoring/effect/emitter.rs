@@ -49,14 +49,14 @@ pub enum SpawnShape {
         /// Maximum corner.
         max: [f32; 3],
     },
-    /// Spawn on or inside a sphere centered on the instance position.
+    /// Spawn on or inside a sphere centred on the instance position.
     Sphere {
         /// Sphere radius.
         radius: f32,
         /// `true` scatters through the volume; `false` places on the surface.
         volume: bool,
     },
-    /// Spawn on or inside a circle (disc) in the XY plane, centered on the
+    /// Spawn on or inside a circle (disc) in the XY plane, centred on the
     /// instance position. Z-up, so the disc lies flat on the ground plane.
     Circle {
         /// Circle radius.
@@ -77,7 +77,7 @@ pub enum SpawnShape {
         /// `true` fills the solid cone; `false` places on the lateral surface.
         volume: bool,
     },
-    /// Spawn over the surface of an uploaded mesh (Phase 22), area-weighted so
+    /// Spawn over the surface of an uploaded mesh, area-weighted so
     /// large triangles receive proportionally more particles. Positions are
     /// instance-relative (offset by the emitting instance's position). Sampled
     /// from a fixed pool baked at registration time from the mesh's triangles;
@@ -86,12 +86,12 @@ pub enum SpawnShape {
         /// The uploaded mesh (`ParticlePlugin::upload_mesh`) whose triangles are
         /// sampled. Must be uploaded before the effect is registered.
         mesh: ParticleMeshId,
-        /// Speed added along each sample's surface normal at spawn (Phase 22), so
-        /// particles lift off the surface. `0` spawns on the surface with only
+        /// Speed added along each sample's surface normal at spawn, so particles
+        /// lift off the surface. `0` spawns on the surface with only
         /// the emitter's own velocity distribution.
         normal_velocity: f32,
     },
-    /// Spawn from the vertices of an uploaded point set (Phase 22): the mesh's
+    /// Spawn from the vertices of an uploaded point set: the mesh's
     /// vertex positions are treated as points and its indices ignored. Positions
     /// are instance-relative. Fixed-function only.
     PointCloud {
@@ -165,7 +165,7 @@ pub enum Modifier {
         position: [f32; 3],
         /// Acceleration coefficient; negative repels.
         strength: f32,
-        /// Softening distance that tames the singularity at the center.
+        /// Softening distance that tames the singularity at the centre.
         falloff: f32,
     },
     /// Curl-noise turbulence: a divergence-free vector field sampled at the
@@ -181,9 +181,9 @@ pub enum Modifier {
         speed: f32,
     },
     /// Acceleration straight out from (or, with negative strength, in toward) a
-    /// center. A radial push / implosion.
+    /// centre. A radial push / implosion.
     Radial {
-        /// World-space center the acceleration points away from.
+        /// World-space centre the acceleration points away from.
         center: [f32; 3],
         /// Acceleration magnitude; negative pulls inward.
         strength: f32,
@@ -191,10 +191,10 @@ pub enum Modifier {
         /// `strength / (1 + dist / falloff)`; `0` keeps it constant.
         falloff: f32,
     },
-    /// Tangential swirl around an axis through a center: a deterministic vortex
+    /// Tangential swirl around an axis through a centre: a deterministic vortex
     /// (whirlwind, magic swirl), distinct from the fluid chaos of `CurlNoise`.
     Vortex {
-        /// World-space center the axis passes through.
+        /// World-space centre the axis passes through.
         center: [f32; 3],
         /// Axis the swirl rotates about.
         axis: [f32; 3],
@@ -207,7 +207,7 @@ pub enum Modifier {
     /// Pull particles onto a sphere shell: within `influence` of the shell, they
     /// accelerate toward it at `attraction`, forming a swarm on the surface.
     Conform {
-        /// Sphere center.
+        /// Sphere centre.
         center: [f32; 3],
         /// Sphere radius the particles conform to.
         radius: f32,
@@ -223,7 +223,7 @@ pub enum Modifier {
     /// `kill_inside`, otherwise outside it. Killed particles are recycled by the
     /// emit pass.
     KillSphere {
-        /// Sphere center.
+        /// Sphere centre.
         center: [f32; 3],
         /// Sphere radius.
         radius: f32,
@@ -242,9 +242,9 @@ pub enum Modifier {
     },
 }
 
-/// Former name of [`Modifier`], kept so existing `ForceModifier::…` code and
-/// `.force(…)` calls keep working. The modifier set now includes non-force kinds
-/// (kill regions), so `Modifier` is the current name.
+/// Alias of [`Modifier`] for code using the force-only name
+/// (`ForceModifier::...`, `.force(...)`). The modifier set also covers non-force
+/// kinds such as kill regions, so `Modifier` is the main name.
 pub type ForceModifier = Modifier;
 
 /// Fixed-function emitter configuration.

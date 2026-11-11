@@ -1,8 +1,8 @@
-//! Showcase 12: Per-instance simulation (Phase 24).
+//! Showcase 12: Per-instance simulation.
 //!
-//! One registered "brazier" effect drives an N×N grid of **independent**
+//! One registered "brazier" effect drives an NxN grid of **independent**
 //! instances, each keyed by `ParticleItem::with_key` and simulated at its own
-//! anchor — twenty braziers are twenty distinct fires, not one drawn twenty
+//! anchor. Twenty braziers are twenty distinct fires, not one drawn twenty
 //! times. Toggles hide one instance (it vanishes while the rest burn on) and
 //! wiggle one (it carries its own particles; its neighbours are undisturbed),
 //! demonstrating that per-instance state is truly independent.
@@ -54,11 +54,11 @@ pub struct State {
     pub hide_one: bool,
     /// Sweep the first instance back and forth (it carries its own particles).
     pub move_one: bool,
-    /// Phase 26: distance-cull instances beyond `cull_distance` from the camera.
+    /// Distance-cull instances beyond `cull_distance` from the camera.
     pub cull: bool,
     /// Cull radius in world units.
     pub cull_distance: f32,
-    /// Phase 26: cap the number of instances simulated per frame (nearest kept).
+    /// Cap the number of instances simulated per frame (nearest kept).
     pub budget: bool,
     /// The simulation budget when `budget` is on.
     pub max_instances: usize,
@@ -84,7 +84,7 @@ impl Default for State {
 
 /// Left-panel controls.
 pub fn controls(state: &mut State, ui: &mut egui::Ui) {
-    ui.add(egui::Slider::new(&mut state.grid, 1..=6).text("grid (N×N)"));
+    ui.add(egui::Slider::new(&mut state.grid, 1..=6).text("grid (NxN)"));
     ui.add(egui::Slider::new(&mut state.spacing, 0.8..=3.0).text("spacing"));
     ui.separator();
     ui.label(format!("{} independent instances", state.grid * state.grid));
@@ -92,7 +92,7 @@ pub fn controls(state: &mut State, ui: &mut egui::Ui) {
     ui.checkbox(&mut state.hide_one, "Hide one (others burn on)");
     ui.checkbox(&mut state.move_one, "Move one (neighbours undisturbed)");
     ui.separator();
-    ui.label("Phase 26 — culling / budget:");
+    ui.label("Culling / budget:");
     ui.checkbox(&mut state.cull, "Distance cull");
     if state.cull {
         ui.add(egui::Slider::new(&mut state.cull_distance, 2.0..=20.0).text("cull dist"));
@@ -103,7 +103,7 @@ pub fn controls(state: &mut State, ui: &mut egui::Ui) {
     }
 }
 
-/// Build this frame's grid submission — one keyed instance per anchor.
+/// Build this frame's grid submission: one keyed instance per anchor.
 pub fn items(effect_ids: &[EffectId], state: &State, dt: f32) -> ParticleItems {
     let mut items = ParticleItems::new().with_dt(dt);
     if state.cull {

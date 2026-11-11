@@ -1,4 +1,4 @@
-//! Phase 25 (transient bursts) and Phase 26 (culling + simulation budget).
+//! Transient bursts, culling, and the simulation budget.
 //!
 //! - `distance_cull_skips_emitter`: the same origin emitter draws with the cull
 //!   distance off, and is skipped (dark) with a cull distance shorter than its
@@ -217,7 +217,7 @@ fn remove_effect_stops_drawing() {
     );
     assert!(lit > 0, "control drew nothing");
 
-    // Phase 27: a queued remove on frame 2 tombstones the effect and reclaims its
+    // A queued remove on frame 2 tombstones the effect and reclaims its
     // particles, so nothing draws thereafter even though the item is still sent.
     let removed = render_and_count(
         &device,

@@ -91,7 +91,7 @@ pub fn register(plugin: &mut ParticlePlugin, device: &eframe::wgpu::Device) -> V
     ]
 }
 
-/// Unit cube centered at the origin.
+/// Unit cube centred at the origin.
 fn cube() -> (Vec<[f32; 3]>, Vec<u32>) {
     let p = vec![
         [-0.5, -0.5, -0.5],

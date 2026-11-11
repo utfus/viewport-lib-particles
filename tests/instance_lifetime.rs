@@ -1,14 +1,14 @@
-//! Instance time-scale (issue 014), prewarm (issue 015), and idle GC (issue 013).
+//! Instance time-scale, prewarm, and idle GC.
 //!
 //! All three are observed through the live particle-count stats handle (the same
 //! non-stalling readback `tests/stats.rs` uses), driving the plugin through the
 //! real renderer `prepare` path:
 //!
-//! - **Time scale (014):** a `time_scale = 0` instance never spawns (its `dt` is
+//! - **Time scale:** a `time_scale = 0` instance never spawns (its `dt` is
 //!   zeroed), while a `time_scale = 2` instance outpaces a `1.0` instance.
-//! - **Prewarm (015):** an instance given a warmup is already near steady state on
+//! - **Prewarm:** an instance given a warmup is already near steady state on
 //!   its first frame, where a cold instance has barely begun.
-//! - **Idle GC (013):** an instance the host stops submitting is reclaimed after
+//! - **Idle GC:** an instance the host stops submitting is reclaimed after
 //!   `IDLE_RETIRE_FRAMES`, and its stats entry disappears.
 //!
 //! Skips cleanly when no GPU adapter is available.
@@ -78,7 +78,7 @@ fn offscreen_target(device: &wgpu::Device) -> wgpu::Texture {
 
 /// A modest steady emitter: low enough rate and long enough lifetime that, over
 /// the few frames these tests run, live particles accumulate linearly and none
-/// die — so a live count is a faithful proxy for accumulated simulated time.
+/// die, so a live count is a faithful proxy for accumulated simulated time.
 fn steady_effect() -> EffectAsset {
     EffectAsset::new("steady")
         .with_capacity(20_000)
@@ -192,7 +192,7 @@ fn prewarm_starts_near_steady_state() {
     const WARM: u64 = 1;
     const COLD: u64 = 2;
     // A few frames so the readback lands, but with a tiny dt so the cold instance
-    // barely advances — the gap on frame one is what the warmup created.
+    // barely advances. The gap on frame one is what the warmup created.
     for f in 0..4 {
         let dt = if f == 0 { 1.0 / 60.0 } else { 1.0e-4 };
         let mut frame = frame_looking_at_origin();

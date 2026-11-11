@@ -1,4 +1,4 @@
-//! Showcase 18: Soft particles (Phase 9).
+//! Showcase 18: Soft particles.
 //!
 //! A low-lying smoke cloud sits on the ground plane. Without soft particles it
 //! shows a hard clip line where each billboard cuts into the floor; with soft

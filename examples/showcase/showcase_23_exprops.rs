@@ -1,7 +1,7 @@
-//! Showcase 23: Expression op set + built-ins (Phase 13).
+//! Showcase 23: Expression op set + built-ins.
 //!
 //! A swirling "galaxy" authored entirely from the expression graph, exercising
-//! the expanded op set and built-in inputs:
+//! the expression op set and built-in inputs:
 //!
 //! - **`time`** drives a rolling rainbow: each particle's spawn colour is
 //!   `0.5 + 0.5*sin(time + phase + offset)` per channel, so freshly spawned
@@ -52,12 +52,12 @@ fn expr_galaxy() -> EffectAsset {
     let sr = m.sin(br);
     let sr_h = m.mul(sr, half);
     let r = m.add(sr_h, half);
-    let off_g = m.lit(2.0944); // 2π/3
+    let off_g = m.lit(2.0944); // 2*pi/3
     let bg = m.add(base, off_g);
     let sg = m.sin(bg);
     let sg_h = m.mul(sg, half);
     let g = m.add(sg_h, half);
-    let off_b = m.lit(4.1888); // 4π/3
+    let off_b = m.lit(4.1888); // 4*pi/3
     let bb = m.add(base, off_b);
     let sb = m.sin(bb);
     let sb_h = m.mul(sb, half);
@@ -108,7 +108,7 @@ fn expr_galaxy() -> EffectAsset {
         .set(Attribute::Size, size)
         .update(UpdateOp::Accelerate(accel));
 
-    // Phase 13: type-check the graph up front. A mistake (e.g. a scalar where a
+    // Type-check the graph up front. A mistake (e.g. a scalar where a
     // vec3 is required) fails here with a node-level message, not in WGSL.
     debug_assert!(
         program.validate().is_ok(),
@@ -165,15 +165,15 @@ pub fn controls(state: &mut State, ui: &mut egui::Ui) {
     ui.add(egui::Slider::new(&mut state.position[1], -5.0..=5.0).text("y"));
     ui.add(egui::Slider::new(&mut state.position[2], -2.0..=5.0).text("z"));
     ui.separator();
-    ui.label("Swirl strength (property × time pulse):");
+    ui.label("Swirl strength (property x time pulse):");
     ui.add(egui::Slider::new(&mut state.swirl, 0.0..=15.0).text("swirl"));
     ui.label("Inward spring:");
     ui.add(egui::Slider::new(&mut state.pull, 0.0..=6.0).text("pull"));
     ui.separator();
-    ui.label("Authored from the expression graph (Phase 13):");
-    ui.label("• time drives a rolling rainbow at spawn");
-    ui.label("• vec3(-pos.y, pos.x, 0) builds the swirl (constructor + swizzle)");
-    ui.label("• swirl = property × (0.5 + 0.5·sin(time))");
+    ui.label("Authored from the expression graph:");
+    ui.label("- time drives a rolling rainbow at spawn");
+    ui.label("- vec3(-pos.y, pos.x, 0) builds the swirl (constructor + swizzle)");
+    ui.label("- swirl = property * (0.5 + 0.5*sin(time))");
     ui.label("The graph is type-checked before it compiles to WGSL.");
 }
 

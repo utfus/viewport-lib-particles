@@ -1,9 +1,9 @@
-//! Showcase 24: Iridescent bubbles (custom fragment hook, Phase 33 / issue 018).
+//! Showcase 24: Iridescent bubbles (custom fragment hook).
 //!
 //! The one thing no built-in colour mode can do: **view-dependent colour**. Each
 //! particle is a soft bubble whose thin-film sheen is computed in a custom WGSL
 //! `shade_particle` hook from the *view direction* (`camera.eye_pos - world`), a
-//! faked spherical normal from `uv`, and a noise texture — so the bubbles shift
+//! faked spherical normal from `uv`, and a noise texture, so the bubbles shift
 //! through the rainbow as you orbit the camera. Alpha-blended, so they draw
 //! through the hooked OIT pipeline.
 //!
@@ -65,7 +65,7 @@ fn shade_particle(f: ParticleFragment) -> vec4<f32> {
     let nz = sqrt(max(1.0 - r2, 0.0));
 
     // World-space view direction to the particle: orbiting the camera changes
-    // this, which rotates the film hue — the whole point of the demo.
+    // this, which rotates the film hue. That is the whole point of the demo.
     let view = normalize(camera.eye_pos - f.world);
     let azimuth = atan2(view.y, view.x);
 
@@ -163,10 +163,10 @@ pub fn controls(state: &mut State, ui: &mut egui::Ui) {
     ui.add(egui::Slider::new(&mut state.rate, 0.1..=50.0).text("spawn rate"));
     ui.add(egui::Slider::new(&mut state.size, 0.2..=1.5).text("bubble size"));
     ui.separator();
-    ui.label("Colour is computed per fragment by a custom WGSL hook (Phase 33):");
-    ui.label("• thin-film sheen from the view direction (camera.eye_pos)");
-    ui.label("• a faked spherical normal from uv makes each sprite a bubble");
-    ui.label("• orbit the camera — the hues shift with the view angle,");
+    ui.label("Colour is computed per fragment by a custom WGSL hook:");
+    ui.label("- thin-film sheen from the view direction (camera.eye_pos)");
+    ui.label("- a faked spherical normal from uv makes each sprite a bubble");
+    ui.label("- orbit the camera: the hues shift with the view angle,");
     ui.label("  which no built-in colour mode can express.");
 }
 

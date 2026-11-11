@@ -48,8 +48,8 @@ pub(crate) const SORT_STAGE_STRIDE: u64 = 256;
 /// Width of the lifetime-ramp LUT texture in texels.
 pub(crate) const RAMP_WIDTH: u32 = 64;
 
-/// Number of samples baked into a `MeshSurface` / `PointCloud` spawn pool
-/// (Phase 22). The emit kernel picks a random index into this pool per spawn.
+/// Number of samples baked into a `MeshSurface` / `PointCloud` spawn pool.
+/// The emit kernel picks a random index into this pool per spawn.
 pub(crate) const MESH_SAMPLE_POOL: u32 = 8192;
 
 /// Mappable readback buffers per instance for the live-count stats ring. Enough
@@ -57,7 +57,7 @@ pub(crate) const MESH_SAMPLE_POOL: u32 = 8192;
 /// aliasing an in-flight map.
 pub(crate) const STATS_RING: usize = 3;
 
-/// Idle-GC threshold (issue 013): a steady instance whose `(effect, key)` has
+/// Idle-GC threshold: a steady instance whose `(effect, key)` has
 /// not been submitted for this many frames is reclaimed from `self.instances`,
 /// so the instance map stays bounded to the live working set across long
 /// sessions with many scene reloads. Submission (not simulation) resets the
@@ -65,7 +65,7 @@ pub(crate) const STATS_RING: usize = 3;
 /// is never reaped. Transient (pooled) and sub-emitter instances are exempt.
 pub(crate) const IDLE_RETIRE_FRAMES: u64 = 120;
 
-/// Upper bound on the number of sub-steps a prewarm (issue 015) runs on an
+/// Upper bound on the number of sub-steps a prewarm runs on an
 /// instance's first activation. Warmup time is divided into at most this many
 /// steps (each its own tiny command buffer), so a large warmup stays a bounded
 /// one-time cost even when many instances activate on the same frame.

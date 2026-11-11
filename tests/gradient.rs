@@ -1,7 +1,7 @@
 //! A colour-over-lifetime gradient drives the draw.
 //!
 //! An effect with a white emitter colour and a green->red ramp is sampled by
-//! particle age. With fresh particles (age near 0) the center pixel reads green,
+//! particle age. With fresh particles (age near 0) the centre pixel reads green,
 //! proving the ramp LUT is sampled and multiplied in.
 //!
 //! Skips cleanly when no GPU adapter is available.
@@ -106,8 +106,8 @@ fn colour_gradient_tints_particles() {
     let i = (((SIZE / 2) * SIZE + (SIZE / 2)) * 4) as usize;
     let (r, g, b) = (pixels[i] as i32, pixels[i + 1] as i32, pixels[i + 2] as i32);
 
-    assert!(g > 60, "center not lit green: ({r}, {g}, {b})");
-    assert!(g > r + 30 && g > b + 30, "center not green-dominant: ({r}, {g}, {b})");
+    assert!(g > 60, "centre not lit green: ({r}, {g}, {b})");
+    assert!(g > r + 30 && g > b + 30, "centre not green-dominant: ({r}, {g}, {b})");
 }
 
 fn read_back(device: &wgpu::Device, queue: &wgpu::Queue, target: &wgpu::Texture) -> Vec<u8> {

@@ -5,10 +5,10 @@
 // Self-contained (a `GpuPlugin` gets no shared bindings): group 0 is the scene
 // colour texture + sampler + this effect's uniform. The vertex stage emits one
 // full-screen triangle; the fragment stage displaces the sample point by a
-// signed radial profile centered on the ring.
+// signed radial profile centred on the ring.
 
 struct Refract {
-    center: vec2<f32>,   // ring center in uv space (0..1)
+    center: vec2<f32>,   // ring centre in uv space (0..1)
     radius: f32,         // current ring radius in uv units
     width: f32,          // ring band half-width
     strength: f32,       // displacement scale
@@ -44,7 +44,7 @@ fn vs(@builtin(vertex_index) vi: u32) -> VsOut {
 @fragment
 fn fs(in: VsOut) -> @location(0) vec4<f32> {
     let uv = in.uv;
-    // Aspect-correct distance from the ring center so the ring stays circular.
+    // Aspect-correct distance from the ring centre so the ring stays circular.
     let d_vec = (uv - u.center) * vec2<f32>(u.aspect, 1.0);
     let d = length(d_vec);
 

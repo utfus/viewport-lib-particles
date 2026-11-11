@@ -166,9 +166,9 @@ pub fn controls(state: &mut State, ui: &mut egui::Ui) {
     ui.add(egui::Slider::new(&mut state.position[2], -2.0..=5.0).text("z"));
     ui.separator();
     ui.label("Live emitter tuning (per-frame override):");
-    ui.add(egui::Slider::new(&mut state.rate_mul, 0.0..=4.0).text("rate ×"));
-    ui.add(egui::Slider::new(&mut state.lifetime_mul, 0.1..=4.0).text("lifetime ×"));
-    ui.add(egui::Slider::new(&mut state.size_mul, 0.1..=5.0).text("size ×"));
+    ui.add(egui::Slider::new(&mut state.rate_mul, 0.0..=4.0).text("rate x"));
+    ui.add(egui::Slider::new(&mut state.lifetime_mul, 0.1..=4.0).text("lifetime x"));
+    ui.add(egui::Slider::new(&mut state.size_mul, 0.1..=5.0).text("size x"));
     if ui.button("Reset tuning").clicked() {
         state.rate_mul = 1.0;
         state.lifetime_mul = 1.0;

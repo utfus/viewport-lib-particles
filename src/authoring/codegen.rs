@@ -262,13 +262,13 @@ fn set_attribute_type(attr: Attribute) -> ValueType {
 }
 
 impl EffectProgram {
-    /// Type-check the program's expression graph (Phase 13): infer every node's
+    /// Type-check the program's expression graph: infer every node's
     /// [`ValueType`], verify each op's operand arity and types, and verify each
     /// init / update modifier's expression matches the attribute it writes
     /// (`vec3` for position/velocity/colour and acceleration, `f32` for
     /// lifetime/size). Returns all errors found, or `Ok(())`.
     ///
-    /// Call this before registering the effect to surface authoring errors with
+    /// Call this before registering the effect to catch authoring errors with
     /// node-level messages, instead of leaving them to the WGSL compiler on the
     /// generated kernel.
     pub fn validate(&self) -> Result<(), Vec<TypeError>> {
@@ -437,7 +437,7 @@ fn generate_sim(program: &EffectProgram) -> String {
     let lets = lower_block(module, &roots, ctx, "    ");
     let props_struct = properties_struct(&program.properties);
 
-    // Per-particle rand in the update kernel (Phase 13): seed an rng from the
+    // Per-particle rand in the update kernel: seed an rng from the
     // particle's stored seed, decorrelated per frame by the params seed. Only
     // pulled in when the update graph actually draws randoms.
     let (rng_helpers, rng_seed) = if uses_rng(module, &roots) {

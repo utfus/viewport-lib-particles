@@ -78,12 +78,12 @@ struct VsOut {
     @location(2) view_z: f32,
     @location(3) age: f32,
     @location(4) age_sec: f32,
-    // World position for the custom fragment hook (Phase 33); base `fs` ignores.
+    // World position for the custom fragment hook; base `fs` ignores.
     @location(5) world: vec3<f32>,
 };
 
 // Place billboard corner `c` (in [-1,1]) for particle `p`, honouring the
-// orientation mode, screen-space size, and velocity stretch (Phase 15). Mirrors
+// orientation mode, screen-space size, and velocity stretch. Mirrors
 // `billboard_world` in particle_draw.wgsl.
 fn billboard_world(p: Particle, c_in: vec2<f32>, size_scale: f32, roll: f32) -> vec3<f32> {
     let cr = cos(roll);
@@ -154,7 +154,7 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VsOut
     var p = particles[order[ii]];
     p.position = p.position - camera.world_origin;
 
-    // Row 0 (v = 0.25) colour + size; row 1 (v = 0.75) alpha ramp (Phase 15).
+    // Row 0 (v = 0.25) colour + size; row 1 (v = 0.75) alpha ramp.
     let age = clamp(1.0 - p.lifetime / max(p.max_lifetime, 1e-4), 0.0, 1.0);
     let ramp0 = textureSampleLevel(ramp_tex, ramp_samp, vec2<f32>(age, 0.25), 0.0);
     let ramp1 = textureSampleLevel(ramp_tex, ramp_samp, vec2<f32>(age, 0.75), 0.0);
@@ -197,5 +197,5 @@ fn fs(in: VsOut) -> OitOutput {
     return viewport_oit_pack(rgb, a, in.view_z);
 }
 
-// Custom fragment hook (Phase 33) is spliced in here for effects that carry one.
+// Custom fragment hook is spliced in here for effects that carry one.
 // __PARTICLE_HOOK_SLOT__

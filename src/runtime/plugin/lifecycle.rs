@@ -45,7 +45,7 @@ impl ParticlePlugin {
     /// GPU buffers are allocated lazily the first frame the effect is
     /// simulated.
     pub fn add_effect(&mut self, device: &vwgpu::Device, asset: EffectAsset) -> EffectId {
-        // Phase 22: bake a spawn-sample pool if the (fixed-function) emitter draws
+        // Bake a spawn-sample pool if the (fixed-function) emitter draws
         // its positions from an uploaded mesh's surface or vertices. Meshes must
         // be uploaded before the effect is registered.
         let (spawn_samples, spawn_sample_count) = match (&asset.program, asset.emitter.spawn) {
@@ -65,7 +65,7 @@ impl ParticlePlugin {
         };
         let idx = self.effects.len();
         let id = EffectId(idx as u32);
-        // Inline texture (issue 017) and custom-hook textures (Phase 33): if the
+        // Inline texture and custom-hook textures: if the
         // asset carries pixels not yet uploaded, queue it (no `queue` here).
         let needs_texture_upload = (asset.texture.is_none() && asset.texture_data.is_some())
             || asset
@@ -124,7 +124,7 @@ impl ParticlePlugin {
         self.stats_handle().effect_stats(effect)
     }
 
-    /// Replace a registered effect's asset in place (Phase 27), for hot-reload.
+    /// Replace a registered effect's asset in place, for hot-reload.
     /// The [`EffectId`] stays valid and its live particle set is **preserved**
     /// when the change is uniform-only (emitter / forces / lifetime / sim-space):
     /// those are re-read per frame, so nothing rebuilds. A structural change
@@ -144,7 +144,7 @@ impl ParticlePlugin {
         }
         let prev_upload = eff.texture_upload;
         let old_sig = structural_sig(&eff.asset);
-        // Inline texture (issue 017): if the incoming asset carries the same pixels
+        // Inline texture: if the incoming asset carries the same pixels
         // already resident for this slot, reuse the uploaded id so it neither
         // re-uploads nor counts as a structural change (a hot-reload that keeps the
         // texture but tweaks other params preserves the live particle set).
@@ -177,7 +177,7 @@ impl ParticlePlugin {
         }
     }
 
-    /// Remove a registered effect (Phase 27): tombstone its slot (the
+    /// Remove a registered effect: tombstone its slot (the
     /// [`EffectId`] index stays stable but is inert) and reclaim its per-effect
     /// GPU buffers, bind groups, transient slots, and sub-emitter state. A no-op
     /// for an unknown id. Slots are not reused, so existing ids keep pointing at
@@ -249,7 +249,7 @@ impl ParticlePlugin {
             vertex_buf,
             index_buf,
             index_count: indices.len() as u32,
-            // CPU copies for Phase 22 mesh-surface / point-cloud spawn sampling.
+            // CPU copies for mesh-surface / point-cloud spawn sampling.
             positions: positions.to_vec(),
             indices: indices.to_vec(),
         });
@@ -307,7 +307,7 @@ impl ParticlePlugin {
         id
     }
 
-    /// Upload any inline textures (issue 017) queued by `add_effect` /
+    /// Upload any inline textures queued by `add_effect` /
     /// `replace_effect`, now that a `queue` is available. Fills each effect's
     /// `texture` id, records the content signature (for later reuse), and drops
     /// the CPU pixel copy. Called at the top of `prepare`, before instances build
@@ -333,7 +333,7 @@ impl ParticlePlugin {
                     e.texture_upload = Some((sig, id));
                 }
             }
-            // Custom-hook textures (Phase 33): upload each once and record the ids.
+            // Custom-hook textures: upload each once and record the ids.
             // The hook body keeps its inline bytes (they are small and part of the
             // authored asset); we upload only when the id list is not yet filled.
             let hook_textures: Vec<crate::effect::InlineTexture> = match self.effects.get(idx) {
@@ -391,7 +391,7 @@ impl ParticlePlugin {
         let screen_space_size = self.effects[idx].asset.screen_space_size;
         let soft = self.effects[idx].asset.soft;
         let rotation_rate = self.effects[idx].asset.rotation_rate;
-        // Custom fragment hook (Phase 33): cloned out so the `self.effects` borrow
+        // Custom fragment hook: cloned out so the `self.effects` borrow
         // ends before the pipeline cache / bind-group construction below.
         let fragment_hook = self.effects[idx].asset.fragment_hook.clone();
         let hook_texture_ids = self.effects[idx].hook_texture_ids.clone();
@@ -449,7 +449,7 @@ impl ParticlePlugin {
                 (0.0, 0, width, segments.clamp(1, HISTORY_LEN - 1))
             }
         };
-        // Billboard orientation + screen-space size (Phase 15). Only the billboard
+        // Billboard orientation + screen-space size. Only the billboard
         // route reads these; the mesh and trail shaders ignore them.
         let is_billboard = matches!(render, ParticleRender::Billboard { .. });
         let (orient, orient_param) = if is_billboard {
@@ -506,7 +506,7 @@ impl ParticlePlugin {
 
         let gpu = match program {
             None => {
-                // Phase 22: bind this effect's baked spawn-sample pool, or the
+                // Bind this effect's baked spawn-sample pool, or the
                 // shared 1-entry default when it has none. Borrow is confined to
                 // this arm (the `Some` arm needs `&mut self` for the pipeline cache).
                 let default_samples = self.default_spawn_samples.as_ref().unwrap();
@@ -583,7 +583,7 @@ impl ParticlePlugin {
             None
         };
 
-        // Soft-particle (Phase 9) group-1 bind group: built when the effect is a
+        // Soft-particle group-1 bind group: built when the effect is a
         // soft billboard, folding particles + order + draw params + sprite so the
         // depth-read pipeline's group 3 carries the scene depth.
         let soft_draw_bg = if soft.is_some() && is_billboard {
@@ -624,7 +624,7 @@ impl ParticlePlugin {
             }],
         });
 
-        // Custom fragment-hook draw state (Phase 33): billboard effects carrying a
+        // Custom fragment-hook draw state: billboard effects carrying a
         // hook get per-hook pipelines (cached) plus a group-3 hook bind group and
         // a per-frame params buffer.
         let custom_draw = match (&fragment_hook, is_billboard) {
@@ -839,7 +839,7 @@ impl ParticlePlugin {
     }
 
     /// Compile (or reuse from `custom_draw_cache`) the additive + OIT billboard
-    /// pipelines for a fragment hook (Phase 33), composing the hook body into the
+    /// pipelines for a fragment hook, composing the hook body into the
     /// billboard templates. Keyed by the composed source so identical hooks share
     /// pipelines. Uses the stored scene layout + the fixed hook group-3 layout.
     pub(crate) fn custom_draw_pipelines(
@@ -935,7 +935,7 @@ impl ParticlePlugin {
             count: None,
         };
 
-        // Binding 3 (Phase 22): the read-only mesh spawn-sample pool. Every fixed
+        // Binding 3: the read-only mesh spawn-sample pool. Every fixed
         // emit bind group binds one (a shared 1-entry default when unused).
         let storage_ro = |binding| vwgpu::BindGroupLayoutEntry {
             binding,
@@ -1525,7 +1525,7 @@ impl ParticlePlugin {
         self.gen_sim_bgl = Some(gen_sim_bgl);
         self.draw_bgl = Some(draw_bgl);
         self.drawparams_bgl = Some(drawparams_bgl);
-        // Custom fragment-hook group-3 layout (Phase 33): the base draw-params +
+        // Custom fragment-hook group-3 layout: the base draw-params +
         // sprite + sampler, then the `hook_params` uniform (binding 3) and
         // HOOK_TEXTURES texture slots (4..). Fixed so every hooked pipeline shares
         // one layout. Stored with the scene layout so custom pipelines build lazily.

@@ -1,11 +1,11 @@
-//! Soft particles (Phase 9).
+//! Soft particles.
 //!
 //! A soft billboard effect fades its alpha as it nears the opaque scene surface,
 //! via the renderer's read-only-depth plugin pass (`paint_depth_read`). With an
 //! opaque quad sitting just behind the particles, a **soft** effect reads much
-//! dimmer at center than an otherwise-identical **non-soft** effect — the only
-//! difference being the soft fade against scene depth. This also exercises the
-//! whole seam end to end (our replicated `depth_read_bgl` binding the renderer's
+//! dimmer at centre than an otherwise-identical **non-soft** effect; the only
+//! difference is the soft fade against scene depth. This also exercises the
+//! read-only-depth pass end to end (our replicated `depth_read_bgl` binding the renderer's
 //! prebuilt `scene_depth_bind_group`, and the gated pass running).
 //!
 //! Skips cleanly when no GPU adapter is available.
@@ -87,7 +87,7 @@ fn smoke(soft: bool) -> EffectAsset {
     e
 }
 
-/// Center brightness of the effect drawn just in front of an opaque quad.
+/// Centre brightness of the effect drawn just in front of an opaque quad.
 fn center_over_occluder(soft: bool) -> i32 {
     let (device, queue) = match headless_device() {
         Some(dq) => dq,

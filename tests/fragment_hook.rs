@@ -1,4 +1,4 @@
-//! Custom fragment shading hook for particle colour (Phase 33 / issue 018).
+//! Custom fragment shading hook for particle colour.
 //!
 //! `validate_*` are pure CPU checks of `FragmentHook::validate`. The GPU tests
 //! render a billboard effect whose colour comes from a custom WGSL hook and
@@ -190,7 +190,7 @@ fn hook_drives_colour_oit() {
 
 /// A hook that defines a helper function and reads the group-0 `camera` uniform
 /// (view-dependent colour, the iridescent-bubbles showcase shape) must compose,
-/// compile, and draw — on the alpha/OIT route.
+/// compile, and draw on the alpha/OIT route.
 #[test]
 fn hook_reads_camera_and_helpers() {
     let Some((device, queue)) = headless_device() else {

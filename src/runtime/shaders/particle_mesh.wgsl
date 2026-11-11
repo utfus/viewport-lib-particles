@@ -74,7 +74,7 @@ fn vs(@location(0) v_pos: vec3<f32>, @builtin(instance_index) ii: u32) -> VsOut 
     p.position = p.position - camera.world_origin;
 
     let age = clamp(1.0 - p.lifetime / max(p.max_lifetime, 1e-4), 0.0, 1.0);
-    // Row 0 (v = 0.25) holds colour + size; the ramp LUT is 2 rows tall (Phase 15).
+    // Row 0 (v = 0.25) holds colour + size; the ramp LUT is 2 rows tall.
     let ramp = textureSampleLevel(ramp_tex, ramp_samp, vec2<f32>(age, 0.25), 0.0);
 
     var scale = p.size * ramp.a;

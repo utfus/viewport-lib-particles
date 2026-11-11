@@ -10,14 +10,14 @@ pub(crate) const HOOK_TEXTURES: usize = 4;
 /// reserved (`.w` carries `time`); lanes 1.. are the effect's own params.
 pub(crate) const HOOK_PARAM_LANES: usize = 8;
 
-/// An effect's texture carried as CPU pixels on the asset (issue 017), for hosts
-/// that cannot call [`ParticlePlugin::upload_texture`](crate::ParticlePlugin) —
-/// they hold no `device`/`queue` and no plugin handle after the renderer takes
+/// An effect's texture carried as CPU pixels on the asset, for hosts that cannot
+/// call [`ParticlePlugin::upload_texture`](crate::ParticlePlugin) because they
+/// hold no `device`/`queue` and no plugin handle after the renderer takes
 /// ownership. When [`EffectAsset::texture_data`] is set (via
 /// [`EffectAsset::with_texture_rgba`]) and [`EffectAsset::texture`] is not, the
 /// plugin uploads these bytes to a [`ParticleTextureId`] on its next frame, binds
-/// it, and drops the CPU copy — so a texture rides the normal
-/// `descriptor → asset → replace_effect` flow with no out-of-band upload.
+/// it, and drops the CPU copy, so a texture goes through the normal
+/// `descriptor -> asset -> replace_effect` flow with no out-of-band upload.
 #[derive(Clone, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct InlineTexture {
@@ -25,14 +25,13 @@ pub struct InlineTexture {
     pub width: u32,
     /// Texture height in texels.
     pub height: u32,
-    /// `width * height * 4` bytes, row-major RGBA8 (sRGB), no row padding — the
+    /// `width * height * 4` bytes, row-major RGBA8 (sRGB), no row padding: the
     /// same layout [`ParticlePlugin::upload_texture`](crate::ParticlePlugin) takes.
     pub rgba: Vec<u8>,
 }
 
-/// A custom WGSL fragment shading hook for a particle's colour (Phase 33 /
-/// issue 018). Lets an imported shader-graph material's real colour be recovered
-/// rather than approximated: the hook runs per fragment in the billboard draw,
+/// A custom WGSL fragment shading hook for a particle's colour. Lets an imported
+/// shader-graph material's real colour be recovered rather than approximated: the hook runs per fragment in the billboard draw,
 /// combining the sampled sprite, extra textures, and its own logic.
 ///
 /// The contract mirrors viewport-lib's `MaterialPlugin` shading hooks so a
@@ -46,7 +45,7 @@ pub struct InlineTexture {
 /// where `ParticleFragment` carries `uv`, the base `texel`, the per-particle
 /// `colour`, life `age` / `age_sec`, `world` position, and `time`. Additional
 /// textures (up to `HOOK_TEXTURES`) are bound as
-/// `htex0..` and delivered as CPU bytes on the hook (issue 017's path); params
+/// `htex0..` and delivered as CPU bytes on the hook (see [`InlineTexture`]); params
 /// (up to 7 `vec4` lanes) are read as `hook_params.lanes[1..]` (lane 0 is engine-
 /// reserved, `.w` = time). The wrapper premultiplies the returned colour.
 #[derive(Clone, Debug, Default)]
@@ -57,11 +56,10 @@ pub struct FragmentHook {
     pub name: String,
     /// WGSL body defining `fn shade_particle(f: ParticleFragment) -> vec4<f32>`
     /// plus any helpers. Must not redefine the template's symbols (`vs`, `fs`,
-    /// `flip_uv`, `billboard_world`, `camera`, `particles`, …).
+    /// `flip_uv`, `billboard_world`, `camera`, `particles`, ...).
     pub body: String,
     /// Extra textures the hook samples (`htex0..`), as inline RGBA8 bytes uploaded
-    /// by the plugin (issue 017's delivery). At most
-    /// `HOOK_TEXTURES`.
+    /// by the plugin. At most `HOOK_TEXTURES`.
     pub textures: Vec<InlineTexture>,
     /// Custom params, one `vec4` lane each, read as `hook_params.lanes[1 + i]`.
     /// Rewritten per frame; overridable per instance. At most 7.
@@ -79,7 +77,7 @@ impl FragmentHook {
         }
     }
 
-    /// Add a texture input (`htex0`, `htex1`, …), as inline RGBA8 bytes.
+    /// Add a texture input (`htex0`, `htex1`, ...), as inline RGBA8 bytes.
     pub fn texture(mut self, width: u32, height: u32, rgba: Vec<u8>) -> Self {
         self.textures.push(InlineTexture {
             width,
@@ -95,10 +93,10 @@ impl FragmentHook {
         self
     }
 
-    /// Structural check before compilation (Phase 33): the `name` is a valid WGSL
+    /// Structural check before compilation: the `name` is a valid WGSL
     /// identifier, the body defines `shade_particle`, and the texture / param
     /// counts are within the fixed caps. A WGSL *compile* error in the body still
-    /// surfaces at pipeline build, as with the codegen path.
+    /// shows up at pipeline build, as with the codegen path.
     pub fn validate(&self) -> Result<(), String> {
         let ident_ok = !self.name.is_empty()
             && self
@@ -203,7 +201,7 @@ impl SubEmitter {
 #[non_exhaustive]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
 pub struct EffectAsset {
-    /// Human-readable name, surfaced in debug labels.
+    /// Human-readable name, used in debug labels.
     pub name: String,
     /// Maximum simultaneously-live particles. Memory scales linearly.
     pub capacity: u32,
@@ -232,7 +230,7 @@ pub struct EffectAsset {
     /// procedural soft round dot. Uploaded via
     /// `ParticlePlugin::upload_texture`. Applies to the billboard routes.
     pub texture: Option<ParticleTextureId>,
-    /// Optional inline texture pixels (issue 017): an alternative to a
+    /// Optional inline texture pixels: an alternative to a
     /// pre-uploaded [`texture`](Self::texture) id for hosts that have no
     /// `device`/`queue` at asset-build time. When set and [`texture`](Self::texture)
     /// is `None`, the plugin uploads these bytes on its next frame, fills
@@ -241,8 +239,7 @@ pub struct EffectAsset {
     /// [`texture`](Self::texture) is set. See [`InlineTexture`].
     #[cfg_attr(feature = "serde", serde(default))]
     pub texture_data: Option<InlineTexture>,
-    /// Optional custom WGSL fragment hook (Phase 33 / issue 018) computing the
-    /// particle's colour, for recovering a shader-graph material's true look.
+    /// Optional custom WGSL fragment hook computing the particle's colour, for recovering a shader-graph material's true look.
     /// `None` uses the built-in fragment (`texture_mode` against the single
     /// texture). Billboard route only (additive / OIT). See [`FragmentHook`].
     #[cfg_attr(feature = "serde", serde(default))]
@@ -260,22 +257,22 @@ pub struct EffectAsset {
     /// is the default; [`SimulationSpace::Local`] makes live particles follow the
     /// emitting instance's translation.
     pub sim_space: SimulationSpace,
-    /// Billboard orientation mode (Phase 15). Applies to the
+    /// Billboard orientation mode. Applies to the
     /// [`ParticleRender::Billboard`] route; ignored by the mesh and trail routes.
     #[cfg_attr(feature = "serde", serde(default))]
     pub orient: Orient,
-    /// Size the billboard in screen space (Phase 15): when `true`, a particle
+    /// Size the billboard in screen space: when `true`, a particle
     /// keeps a constant apparent size regardless of distance (the `size` becomes
     /// its world size at unit camera distance). `false` is world-space size.
     /// Billboard route only.
     #[cfg_attr(feature = "serde", serde(default))]
     pub screen_space_size: bool,
-    /// Soft-particle fade distance in world units (Phase 9). `Some(d)` fades the
+    /// Soft-particle fade distance in world units. `Some(d)` fades the
     /// billboard's alpha to zero as it comes within `d` of the opaque scene
     /// surface, removing the hard clip line where a particle intersects geometry.
-    /// Soft effects draw in the renderer's read-only-depth pass (via the
-    /// `ItemTypePlugin::paint_depth_read` seam), composited over the scene with
-    /// alpha blending — so a soft effect is over-blended regardless of its
+    /// Soft effects draw in the renderer's read-only-depth pass (via
+    /// `ItemTypePlugin::paint_depth_read`), composited over the scene with
+    /// alpha blending, so a soft effect is over-blended regardless of its
     /// [`blend`](Self::blend). Billboard route only; `None` disables it.
     #[cfg_attr(feature = "serde", serde(default))]
     pub soft: Option<f32>,
@@ -308,16 +305,16 @@ pub struct EffectAsset {
     /// only.
     #[cfg_attr(feature = "serde", serde(default))]
     pub size_variance: f32,
-    /// Global simulation-time multiplier for every instance of this effect (issue
-    /// 014; maps Unity's `simulationSpeed`). `1.0` runs at real time; `2.0` runs
+    /// Global simulation-time multiplier for every instance of this effect (maps
+    /// Unity's `simulationSpeed`). `1.0` runs at real time; `2.0` runs
     /// twice as fast, `0.5` half. Applied as a `dt` multiplier, so it composes
     /// with the spawn rate, particle ageing, forces, burst-schedule times, and
-    /// flipbook fps — unlike pre-scaling `rate`/`lifetime`. A per-instance
+    /// flipbook fps, unlike pre-scaling `rate`/`lifetime`. A per-instance
     /// [`ParticleItem::time_scale`] multiplies on top of this.
     #[cfg_attr(feature = "serde", serde(default = "one"))]
     pub simulation_speed: f32,
-    /// Start a looping effect at steady state instead of empty (issue 015; maps
-    /// Unity's `prewarm`). When `true`, an instance's simulation is fast-forwarded
+    /// Start a looping effect at steady state instead of empty (maps Unity's
+    /// `prewarm`). When `true`, an instance's simulation is fast-forwarded
     /// by roughly one particle lifetime on its first activation (before its first
     /// draw), so ambient set dressing is full the instant it appears rather than
     /// visibly filling in. The warmup duration is derived from the effect's max
@@ -438,8 +435,8 @@ impl EffectAsset {
         self
     }
 
-    /// Sample a texture given as CPU pixels (issue 017), uploaded by the plugin
-    /// on its next frame — for hosts that cannot call
+    /// Sample a texture given as CPU pixels, uploaded by the plugin on its next
+    /// frame, for hosts that cannot call
     /// [`ParticlePlugin::upload_texture`](crate::ParticlePlugin) (no `device`/
     /// `queue`, no plugin handle). `rgba` is `width * height * 4` bytes, row-major
     /// RGBA8 (sRGB). Combine with [`with_texture_mode`](Self::with_texture_mode) /
@@ -455,8 +452,8 @@ impl EffectAsset {
         self
     }
 
-    /// Compute the particle's colour from a custom WGSL fragment hook (Phase 33 /
-    /// issue 018) instead of the built-in `texture_mode`. Billboard route only.
+    /// Compute the particle's colour from a custom WGSL fragment hook instead of
+    /// the built-in `texture_mode`. Billboard route only.
     /// See [`FragmentHook`].
     pub fn with_fragment_hook(mut self, hook: FragmentHook) -> Self {
         self.fragment_hook = Some(hook);
@@ -490,20 +487,20 @@ impl EffectAsset {
         self
     }
 
-    /// Set the billboard orientation mode (Phase 15). Billboard route only.
+    /// Set the billboard orientation mode. Billboard route only.
     pub fn with_orient(mut self, orient: Orient) -> Self {
         self.orient = orient;
         self
     }
 
     /// Size billboards in screen space so distant particles keep a constant
-    /// apparent size (Phase 15). Billboard route only.
+    /// apparent size. Billboard route only.
     pub fn with_screen_size(mut self, enable: bool) -> Self {
         self.screen_space_size = enable;
         self
     }
 
-    /// Make this a soft-particle effect (Phase 9): fade the billboard alpha to
+    /// Make this a soft-particle effect: fade the billboard alpha to
     /// zero within `distance` world units of the opaque scene surface, so it
     /// dissolves into geometry instead of showing a hard intersection edge.
     /// Draws through the read-only-depth pass with alpha blending. Billboard
@@ -552,7 +549,7 @@ impl EffectAsset {
     }
 
     /// Set the global simulation-time multiplier for every instance of this
-    /// effect (issue 014). `1.0` is real time; `2.0` runs twice as fast. A
+    /// effect. `1.0` is real time; `2.0` runs twice as fast. A
     /// per-instance [`ParticleItem::time_scale`] multiplies on top. Negative
     /// values are clamped to `0` at simulation time.
     pub fn with_simulation_speed(mut self, speed: f32) -> Self {
@@ -560,27 +557,27 @@ impl EffectAsset {
         self
     }
 
-    /// Start instances of this effect at steady state on first activation
-    /// (issue 015), fast-forwarding by one particle lifetime so the effect is
-    /// full when it first appears. See [`prewarm`](Self::prewarm).
+    /// Start instances of this effect at steady state on first activation by
+    /// fast-forwarding one particle lifetime, so the effect is full when it
+    /// first appears. See [`prewarm`](Self::prewarm).
     pub fn with_prewarm(mut self, prewarm: bool) -> Self {
         self.prewarm = prewarm;
         self
     }
 }
 
-/// RON `.effect` serialization, behind the `serde` feature. Round-trips the whole
+/// RON `.effect` serialisation, behind the `serde` feature. Round-trips the whole
 /// authored asset model (emitter, forces, expression [`Module`], gradient, render
 /// route, textures, sub-emitter, simulation space).
 ///
 /// Note the GPU-handle fields ([`EffectAsset::texture`],
-/// [`ParticleRender::Mesh`], [`SubEmitter::child`]) serialize as their raw ids.
+/// [`ParticleRender::Mesh`], [`SubEmitter::child`]) serialise as their raw ids.
 /// Those ids are session-scoped registration handles: a loaded asset only refers
 /// to the right resource if the host re-registers meshes/textures/child effects
 /// in the same order (or remaps the ids after loading).
 #[cfg(feature = "serde")]
 impl EffectAsset {
-    /// Serialize this asset to a pretty RON string.
+    /// Serialise this asset to a pretty RON string.
     pub fn to_ron(&self) -> Result<String, ron::Error> {
         ron::ser::to_string_pretty(self, ron::ser::PrettyConfig::default())
     }

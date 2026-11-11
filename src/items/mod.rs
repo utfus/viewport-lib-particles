@@ -8,16 +8,16 @@ use crate::effect::{
 
 /// One live instance of an effect in the scene this frame.
 ///
-/// Carries the emitter origin and per-item settings; the authored behavior
+/// Carries the emitter origin and per-item settings; the authored behaviour
 /// lives in the [`EffectAsset`] the [`EffectId`] points at.
 ///
 /// Each submitted item with a distinct [`key`](Self::key) simulates as its own
 /// independent particle set at its own position (many braziers from one brazier
 /// effect), so a host holding a stable key can move / hide / retire one instance
 /// across frames without disturbing the others. Items sharing an `(effect, key)`
-/// collapse to one instance driven by the first; the default key is `0`, so the
-/// common single-instance case is unchanged. (Sub-emitter parent/child effects
-/// stay single-instance — their key is forced to `0`.)
+/// collapse to one instance driven by the first; the default key is `0`, so a
+/// single instance needs no key. (Sub-emitter parent/child effects stay
+/// single-instance: their key is forced to `0`.)
 ///
 /// Per-frame overrides tune the driving instance without re-registering the
 /// effect: [`with_emitter`](Self::with_emitter) / [`with_forces`](Self::with_forces)
@@ -51,26 +51,26 @@ pub struct ParticleItem {
     pub properties: Vec<(&'static str, PropertyValue)>,
     /// When `true`, this is a fire-and-forget transient burst: submit it once at
     /// a world point and the plugin plays it in a pooled transient slot, then
-    /// self-retires it when its particles have aged out — no need to keep
-    /// submitting it. See [`burst`](Self::burst). Ignored for sub-emitter effects.
+    /// self-retires it when its particles have aged out, so there is no need to
+    /// keep submitting it. See [`burst`](Self::burst). Ignored for sub-emitter effects.
     pub one_shot: bool,
-    /// Optional host RNG seed for deterministic spawning (Phase 28). When set,
+    /// Optional host RNG seed for deterministic spawning. When set,
     /// this instance's per-frame emit seed is a fixed function of the seed, the
-    /// `(effect, key)`, and the instance's own simulation-frame counter — so a
+    /// `(effect, key)`, and the instance's own simulation-frame counter, so a
     /// fixed seed + `dt` sequence reproduces the same seed stream run to run
     /// (preview vs runtime, captures, golden tests). `None` derives the seed from
     /// the global frame counter (not reproducible across runs). See
     /// [`with_seed`](Self::with_seed). GPU atomic spawn order still limits exact
     /// particle-set reproducibility.
     pub seed: Option<u64>,
-    /// Per-instance simulation-time multiplier (issue 014), applied on top of the
+    /// Per-instance simulation-time multiplier, applied on top of the
     /// effect's [`EffectAsset::simulation_speed`]. `1.0` runs at real time; `2.0`
     /// runs this placement twice as fast, `0.0` freezes it (like
     /// [`ItemSettings::hidden`] pausing, but still drawn). Scales the `dt` every
     /// particle of this instance sees, so it composes with spawn rate, ageing,
     /// forces, and burst times. See [`with_time_scale`](Self::with_time_scale).
     pub time_scale: f32,
-    /// Per-instance prewarm override in seconds (issue 015). `Some(secs)`
+    /// Per-instance prewarm override in seconds. `Some(secs)`
     /// fast-forwards this instance by `secs` on its first activation so it
     /// presents at steady state; `None` uses the effect's
     /// [`EffectAsset::prewarm`] (one particle lifetime when set, no warmup
@@ -155,14 +155,14 @@ impl ParticleItem {
         self
     }
 
-    /// Set a deterministic host RNG seed for this instance (Phase 28). A fixed
+    /// Set a deterministic host RNG seed for this instance. A fixed
     /// seed + `dt` sequence reproduces the same spawn-seed stream run to run.
     pub fn with_seed(mut self, seed: u64) -> Self {
         self.seed = Some(seed);
         self
     }
 
-    /// Set this instance's simulation-time multiplier (issue 014). Multiplies the
+    /// Set this instance's simulation-time multiplier. Multiplies the
     /// effect's [`EffectAsset::simulation_speed`]. `2.0` runs it twice as fast,
     /// `0.0` freezes it. See [`time_scale`](Self::time_scale).
     pub fn with_time_scale(mut self, scale: f32) -> Self {
@@ -171,7 +171,7 @@ impl ParticleItem {
     }
 
     /// Fast-forward this instance by `seconds` on its first activation so it
-    /// presents at steady state (issue 015), overriding the effect's
+    /// presents at steady state, overriding the effect's
     /// [`EffectAsset::prewarm`]. See [`warmup`](Self::warmup).
     pub fn with_warmup(mut self, seconds: f32) -> Self {
         self.warmup = Some(seconds);
@@ -179,7 +179,7 @@ impl ParticleItem {
     }
 }
 
-/// A runtime effect-lifecycle command (Phase 27), queued on [`ParticleItems`] and
+/// A runtime effect-lifecycle command, queued on [`ParticleItems`] and
 /// applied by the plugin in `prepare` before it simulates. This is the delivery
 /// path for hot-reload since the renderer owns the plugin after installation, so
 /// the host cannot call [`ParticlePlugin::replace_effect`] / `remove_effect`
@@ -209,22 +209,22 @@ pub struct ParticleItems {
     /// never sorted. Defaults to `true`; set `false` to see the ordering
     /// artefact.
     pub sort_transparent: bool,
-    /// Distance cull (Phase 26): instances whose emitter origin is farther than
+    /// Distance cull: instances whose emitter origin is farther than
     /// this from the camera are not emitted, simulated, or drawn, and drop their
     /// live particles (resuming fresh when back in range). `None` disables the
     /// distance cull. Sub-emitter effects are never distance-culled.
     pub cull_distance: Option<f32>,
-    /// Frustum cull (Phase 26): when `true`, instances whose (approximate)
+    /// Frustum cull: when `true`, instances whose (approximate)
     /// bounding sphere is fully outside the camera frustum are culled like the
     /// distance cull. The bound is estimated from the effect (spawn extent +
     /// particle travel), so it is conservative. `false` disables it.
     pub frustum_cull: bool,
-    /// Simulation budget (Phase 26): cap on the number of instances simulated
+    /// Simulation budget: cap on the number of instances simulated
     /// this frame. When more are visible, the nearest are kept and the rest are
     /// frozen (not simulated or drawn; particles retained). Sub-emitter instances
     /// are always kept. `None` is unlimited.
     pub max_sim_instances: Option<usize>,
-    /// Per-effect cap on concurrent transient (burst) instances (Phase 25). When
+    /// Per-effect cap on concurrent transient (burst) instances. When
     /// a new burst would exceed it, the oldest transient of that effect is
     /// recycled. `None` uses the default (64).
     pub max_transients: Option<usize>,
@@ -273,26 +273,25 @@ impl ParticleItems {
     }
 
     /// Set the distance cull: instances farther than `distance` from the camera
-    /// are not simulated or drawn (Phase 26).
+    /// are not simulated or drawn.
     pub fn with_cull_distance(mut self, distance: f32) -> Self {
         self.cull_distance = Some(distance);
         self
     }
 
-    /// Enable frustum culling of off-screen instances this frame (Phase 26).
+    /// Enable frustum culling of off-screen instances this frame.
     pub fn with_frustum_cull(mut self, enable: bool) -> Self {
         self.frustum_cull = enable;
         self
     }
 
-    /// Cap the number of instances simulated this frame; the nearest are kept
-    /// (Phase 26).
+    /// Cap the number of instances simulated this frame; the nearest are kept.
     pub fn with_max_sim_instances(mut self, max: usize) -> Self {
         self.max_sim_instances = Some(max);
         self
     }
 
-    /// Cap concurrent transient (burst) instances per effect (Phase 25).
+    /// Cap concurrent transient (burst) instances per effect.
     pub fn with_max_transients(mut self, max: usize) -> Self {
         self.max_transients = Some(max);
         self
@@ -320,7 +319,7 @@ impl ParticleItems {
     }
 
     /// Queue a hot-reload: replace `id`'s asset when the plugin next runs
-    /// `prepare` (Phase 27). Preserves the live particle set for a uniform-only
+    /// `prepare`. Preserves the live particle set for a uniform-only
     /// change; a structural change rebuilds the effect. See
     /// [`ParticlePlugin::replace_effect`].
     pub fn replace_effect(&mut self, id: EffectId, asset: EffectAsset) {
@@ -329,7 +328,7 @@ impl ParticleItems {
     }
 
     /// Queue a removal: tombstone `id` and reclaim its GPU state when the plugin
-    /// next runs `prepare` (Phase 27). See [`ParticlePlugin::remove_effect`].
+    /// next runs `prepare`. See [`ParticlePlugin::remove_effect`].
     pub fn remove_effect(&mut self, id: EffectId) {
         self.commands.push(EffectCommand::Remove(id));
     }

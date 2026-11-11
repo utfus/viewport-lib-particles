@@ -77,13 +77,13 @@ struct VsOut {
     @location(1) uv: vec2<f32>,
     @location(2) age: f32,
     @location(3) age_sec: f32,
-    // World position, carried for the custom fragment hook (Phase 33). The
+    // World position, carried for the custom fragment hook. The
     // built-in `fs` ignores it.
     @location(4) world: vec3<f32>,
 };
 
 // Place billboard corner `c` (in [-1,1]) for particle `p`, honouring the
-// orientation mode, screen-space size, and velocity stretch (Phase 15).
+// orientation mode, screen-space size, and velocity stretch.
 fn billboard_world(p: Particle, c_in: vec2<f32>, size_scale: f32, roll: f32) -> vec3<f32> {
     // Per-particle roll: rotate the corner in the quad plane. The uv stays keyed
     // to the unrotated corner (set in `vs`), so the sprite rotates with the quad.
@@ -162,8 +162,8 @@ fn vs(@builtin(vertex_index) vi: u32, @builtin(instance_index) ii: u32) -> VsOut
     var p = particles[order[ii]];
     p.position = p.position - camera.world_origin;
 
-    // Normalized age (0 at spawn, 1 at death) drives the ramp lookup. Row 0
-    // (v = 0.25) is colour + size; row 1 (v = 0.75) is the alpha ramp (Phase 15).
+    // Normalised age (0 at spawn, 1 at death) drives the ramp lookup. Row 0
+    // (v = 0.25) is colour + size; row 1 (v = 0.75) is the alpha ramp.
     let age = clamp(1.0 - p.lifetime / max(p.max_lifetime, 1e-4), 0.0, 1.0);
     let ramp0 = textureSampleLevel(ramp_tex, ramp_samp, vec2<f32>(age, 0.25), 0.0);
     let ramp1 = textureSampleLevel(ramp_tex, ramp_samp, vec2<f32>(age, 0.75), 0.0);
@@ -205,6 +205,6 @@ fn fs(in: VsOut) -> @location(0) vec4<f32> {
     return vec4<f32>(rgb * a, a); // premultiplied
 }
 
-// Custom fragment hook (Phase 33) is spliced in here for effects that carry one;
+// Custom fragment hook is spliced in here for effects that carry one;
 // the base pipeline leaves this empty.
 // __PARTICLE_HOOK_SLOT__

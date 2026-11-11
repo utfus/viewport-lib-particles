@@ -1,14 +1,14 @@
 //! Showcase 15: Realistic fire.
 //!
-//! A layered campfire built entirely from parts the system already ships — no
+//! A layered campfire built entirely from parts the system already ships, with no
 //! bespoke shaders:
-//! - **flame** — a dense additive cone with a black-body colour ramp
-//!   (hot white-yellow core → orange → deep red → out) and a grow-then-shrink
+//! - **flame**: a dense additive cone with a black-body colour ramp
+//!   (hot white-yellow core -> orange -> deep red -> out) and a grow-then-shrink
 //!   size ramp, stirred by curl noise so it licks. HDR-bright (values > 1) so it
 //!   blooms on a bloom-enabled renderer.
-//! - **smoke** — sparse alpha-blended puffs that rise above the flame, grow, and
+//! - **smoke**: sparse alpha-blended puffs that rise above the flame, grow, and
 //!   fade, on coarser slower curl noise.
-//! - **embers** — tiny bright additive sparks flung up and swirled, fading out.
+//! - **embers**: tiny bright additive sparks flung up and swirled, fading out.
 //!
 //! Live controls scale the emission rate, the turbulence, and a horizontal wind.
 

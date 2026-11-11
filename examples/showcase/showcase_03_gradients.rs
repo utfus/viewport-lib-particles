@@ -151,7 +151,7 @@ pub fn controls(state: &mut State, ui: &mut egui::Ui) {
     });
     ui.separator();
     ui.label("Colour and size follow a ramp over each particle's life,");
-    ui.label("sampled from a lookup texture by normalized age.");
+    ui.label("sampled from a lookup texture by normalised age.");
 }
 
 /// The ramp built from the live sliders (birth -> death colour, swelling size).

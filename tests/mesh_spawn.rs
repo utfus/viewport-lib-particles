@@ -1,9 +1,9 @@
-//! Mesh-surface spawn (Phase 22).
+//! Mesh-surface spawn.
 //!
 //! `SpawnShape::MeshSurface` draws spawn positions from an uploaded mesh's
-//! triangles. An effect whose mesh quad is centered at the origin lights the
-//! center pixel; the same effect whose mesh quad is far off to the side leaves
-//! the center dark — proving the positions come from the mesh surface (not the
+//! triangles. An effect whose mesh quad is centred at the origin lights the
+//! centre pixel; the same effect whose mesh quad is far off to the side leaves
+//! the centre dark, proving the positions come from the mesh surface (not the
 //! emitter origin, which is the same in both cases).
 //!
 //! Skips cleanly when no GPU adapter is available.
@@ -47,7 +47,7 @@ fn frame_looking_at_origin() -> FrameData {
     frame
 }
 
-/// A small quad in the XY plane centered at `(cx, 0, 0)`.
+/// A small quad in the XY plane centred at `(cx, 0, 0)`.
 fn quad(cx: f32) -> (Vec<[f32; 3]>, Vec<u32>) {
     let s = 0.6;
     let positions = vec![
@@ -77,7 +77,7 @@ fn mesh_effect(mesh: ParticleMeshId) -> EffectAsset {
         })
 }
 
-/// Center brightness when the effect's mesh quad is centered at `cx`.
+/// Centre brightness when the effect's mesh quad is centred at `cx`.
 fn center_brightness(cx: f32) -> i32 {
     let (device, queue) = match headless_device() {
         Some(dq) => dq,
@@ -126,16 +126,16 @@ fn spawns_from_mesh_surface_not_origin() {
         eprintln!("skipping: no GPU adapter available");
         return;
     }
-    // When the mesh is at the origin the center pixel gets extra brightness from
+    // When the mesh is at the origin the centre pixel gets extra brightness from
     // the particles on top of the background; when the mesh is far off-screen
-    // only the background remains, so the center is markedly dimmer. This proves
+    // only the background remains, so the centre is markedly dimmer. This proves
     // the spawn positions come from the mesh surface, not the emitter origin
     // (identical in both cases).
     let centered = center_brightness(0.0);
     let offset = center_brightness(40.0);
     assert!(
         centered > offset + 100,
-        "mesh at origin should light the center well above the off-screen mesh (background only): centered={centered}, offset={offset}"
+        "mesh at origin should light the centre well above the off-screen mesh (background only): centered={centered}, offset={offset}"
     );
 }
 

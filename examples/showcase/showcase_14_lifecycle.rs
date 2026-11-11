@@ -1,10 +1,10 @@
-//! Showcase 14: Runtime lifecycle + deterministic seed (Phases 27 & 28).
+//! Showcase 14: Runtime lifecycle + deterministic seed.
 //!
-//! Phase 27: the effect's registered asset is hot-reloaded every frame from the
-//! panel sliders via `ParticleItems::replace_effect` — a *structural-preserving*
+//! The effect's registered asset is hot-reloaded every frame from the
+//! panel sliders via `ParticleItems::replace_effect`. This is a *structural-preserving*
 //! change (only colour / rate / size differ), so the live stream recolours and
 //! retimes without resetting. A "Remove" button reclaims the effect's GPU state
-//! (one-way until restart). Phase 28: a seed makes spawning reproducible for a
+//! (one-way until restart). A seed makes spawning reproducible for a
 //! fixed seed + `dt` sequence (`ParticleItem::with_seed`).
 
 use eframe::egui;
@@ -48,9 +48,9 @@ pub struct State {
     pub colour: [f32; 3],
     pub rate: f32,
     pub size: f32,
-    /// Phase 27: once true, the effect is removed (reclaimed) and stays gone.
+    /// Once true, the effect is removed (reclaimed) and stays gone.
     pub removed: bool,
-    /// Phase 28: use a deterministic spawn seed.
+    /// Use a deterministic spawn seed.
     pub deterministic: bool,
     pub seed: u32,
 }
@@ -70,7 +70,7 @@ impl Default for State {
 
 /// Left-panel controls.
 pub fn controls(state: &mut State, ui: &mut egui::Ui) {
-    ui.label("Phase 27 — hot-reload (replace_effect):");
+    ui.label("Hot-reload (replace_effect):");
     ui.color_edit_button_rgb(&mut state.colour);
     ui.add(egui::Slider::new(&mut state.rate, 0.0..=20_000.0).text("rate"));
     ui.add(egui::Slider::new(&mut state.size, 0.02..=0.3).text("size"));
@@ -82,7 +82,7 @@ pub fn controls(state: &mut State, ui: &mut egui::Ui) {
         state.removed = true;
     }
     ui.separator();
-    ui.label("Phase 28 — deterministic seed:");
+    ui.label("Deterministic seed:");
     ui.checkbox(&mut state.deterministic, "Seeded spawning");
     if state.deterministic {
         ui.add(egui::Slider::new(&mut state.seed, 1..=9999).text("seed"));

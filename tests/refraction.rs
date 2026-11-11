@@ -1,9 +1,9 @@
 //! The refraction GpuPlugin distorts the scene colour.
 //!
 //! Feeds the plugin a known horizontal gradient as the "scene colour", runs its
-//! `post_paint` with an expanding ring centered on the frame, and reads back the
+//! `post_paint` with an expanding ring centred on the frame, and reads back the
 //! distorted output. Where the ring wavefront crosses the gradient the sampled
-//! value is displaced; the untouched center passes straight through.
+//! value is displaced; the untouched centre passes straight through.
 //!
 //! Skips cleanly when no GPU adapter is available.
 
@@ -33,7 +33,7 @@ fn headless_device() -> Option<(wgpu::Device, wgpu::Queue)> {
     Some((device, queue))
 }
 
-/// A texture holding a horizontal 0..1 gray gradient (value depends on column).
+/// A texture holding a horizontal 0..1 grey gradient (value depends on column).
 fn gradient_scene(device: &wgpu::Device, queue: &wgpu::Queue) -> wgpu::Texture {
     let mut data = vec![0u8; (SIZE * SIZE * 4) as usize];
     for y in 0..SIZE {
@@ -112,7 +112,7 @@ fn refraction_distorts_scene() {
 
     let mut plugin = RefractionPlugin::new();
     plugin.set_aspect(1.0);
-    // A strong ring at radius 0.4 (uv) around the center.
+    // A strong ring at radius 0.4 (uv) around the centre.
     plugin.set_ring([0.5, 0.5], 0.4, 0.06, 0.15);
 
     let camera = Camera::default();
@@ -130,12 +130,12 @@ fn refraction_distorts_scene() {
     // Expected passthrough value in a column is the input gradient at that column.
     let input_r = |x: u32| (x as f32 / (SIZE - 1) as f32 * 255.0) as i32;
 
-    // Center column sits far inside the ring: the wavefront profile is ~0 there,
+    // Centre column sits far inside the ring: the wavefront profile is ~0 there,
     // so it passes straight through.
     let center_dev = (r(SIZE / 2, SIZE / 2) - input_r(SIZE / 2)).abs();
     assert!(
         center_dev <= 6,
-        "center should pass through, deviation {center_dev}"
+        "centre should pass through, deviation {center_dev}"
     );
 
     // The left arm of the ring (uv.x ~ 0.1) displaces along the gradient axis, so

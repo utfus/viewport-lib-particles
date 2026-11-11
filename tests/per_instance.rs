@@ -1,10 +1,10 @@
-//! Phase 24: per-instance simulation.
+//! Per-instance simulation.
 //!
 //! One registered effect drives several independent instances, each keyed by
 //! `ParticleItem::with_key` and simulated at its own position. `two_keys_two_
 //! clusters` submits two instances at separated x positions and asserts particles
-//! draw in *both* screen regions (before Phase 24 only the first — the single
-//! driver — simulated, so only one region lit). `same_key_collapses` submits two
+//! draw in *both* screen regions, so neither instance is just a second draw of
+//! the other's particles. `same_key_collapses` submits two
 //! items sharing a key and confirms they collapse to one instance (driven by the
 //! first), lighting only one region.
 //!

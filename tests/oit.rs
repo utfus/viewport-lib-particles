@@ -3,9 +3,9 @@
 //! the skybox instead of being overwritten by it.
 //!
 //! This renders an `Alpha` effect over a solid-red skybox and reads back the
-//! center. Before OIT routing, the skybox drew after the plugin's main paint
-//! and hid the particles; the center would read as pure skybox. With the
-//! particles in the OIT pass they show over the skybox, so the center carries
+//! centre. If the particles drew in the main paint, the skybox would draw over
+//! them and the centre would read as pure skybox. With the particles in the OIT
+//! pass they show over the skybox, so the centre carries
 //! their (blue) contribution that the red skybox lacks.
 //!
 //! Skips cleanly when no GPU adapter is available.
@@ -166,7 +166,7 @@ fn alpha_composites_over_skybox() {
     };
 
     // The blue cloud composites over the skybox in the OIT pass (drawn after the
-    // skybox), so the center is clearly bluer than the skybox-only corners.
+    // skybox), so the centre is clearly bluer than the skybox-only corners.
     assert!(
         r.center_blue > r.corner_blue + 40,
         "alpha particles did not composite over skybox: center_blue={}, corner_blue={}",
@@ -182,8 +182,8 @@ fn additive_composites_over_skybox() {
         return;
     };
 
-    // Additive particles draw in the main pass, which now runs after the skybox,
-    // so they add over the sky instead of being painted over by it. The center
+    // Additive particles draw in the main pass, which runs after the skybox,
+    // so they add over the sky instead of being painted over by it. The centre
     // is clearly bluer than the skybox-only corners.
     assert!(
         r.center_blue > r.corner_blue + 40,

@@ -1,10 +1,10 @@
-//! Phase 13: expanded expression op set, built-ins, and typed validation.
+//! Expression op set, built-ins, and typed validation.
 //!
 //! The `validate_*` tests are pure CPU (no GPU needed): they exercise
 //! `EffectProgram::validate` / `Module::infer_types` accepting a well-typed graph
 //! and rejecting arity/type errors with node-level messages.
 //!
-//! `time_driven_program_runs` compiles a program using the new ops (time, sin,
+//! `time_driven_program_runs` compiles a program using the time and maths ops (time, sin,
 //! saturate, mix, vec constructors, and a per-particle `rand` in the *update*
 //! kernel) to WGSL and renders it, proving the generated shaders compile and draw.
 //! It skips cleanly when no GPU adapter is available.
@@ -208,7 +208,7 @@ fn time_driven_program_runs() {
     let center = luma((((SIZE / 2) * SIZE + SIZE / 2) * 4) as usize);
     assert!(
         center > corner + 40,
-        "expected an additive glow at center (center {center}, corner {corner})"
+        "expected an additive glow at centre (centre {center}, corner {corner})"
     );
 }
 

@@ -1,4 +1,4 @@
-//! Showcase 11: Load / save (Phase 17).
+//! Showcase 11: Load / save.
 //!
 //! Renders one effect and, in the panel, serializes its `EffectAsset` to a RON
 //! `.effect` string and round-trips it back, proving the whole authored model

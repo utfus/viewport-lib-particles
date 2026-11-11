@@ -4,7 +4,7 @@
 //! Builds a program whose per-particle colour is a declared `vec3` property
 //! `tint`, then renders the same effect twice: once with the property left at its
 //! (black) default, once overridden to white per frame. The white run must read
-//! back a clearly brighter center, proving the property lowers to a uniform read
+//! back a clearly brighter centre, proving the property lowers to a uniform read
 //! and the host-set value drives the shader.
 //!
 //! Skips cleanly when no GPU adapter is available.
@@ -125,7 +125,7 @@ fn property_override_drives_colour() {
         return;
     };
 
-    // Default property (black tint): additive black adds nothing, center stays
+    // Default property (black tint): additive black adds nothing, centre stays
     // near the background.
     let (default_center, _) = run(&device, &queue, None);
     // Overridden to white: the property read now yields a bright colour.
@@ -133,11 +133,11 @@ fn property_override_drives_colour() {
 
     assert!(
         white_center > white_corner + 100,
-        "white run center {white_center} not clearly brighter than corner {white_corner}"
+        "white run centre {white_center} not clearly brighter than corner {white_corner}"
     );
     assert!(
         white_center > default_center + 100,
-        "property override had no effect: default center {default_center}, white center {white_center}"
+        "property override had no effect: default centre {default_center}, white centre {white_center}"
     );
 }
 

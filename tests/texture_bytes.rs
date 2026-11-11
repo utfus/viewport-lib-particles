@@ -1,4 +1,4 @@
-//! Inline-bytes texture authored on the asset (issue 017).
+//! Inline-bytes texture authored on the asset.
 //!
 //! Mirrors `tests/texture.rs`, but instead of `ParticlePlugin::upload_texture`
 //! (which needs a `device`/`queue` and a plugin handle the host lacks after
@@ -6,7 +6,7 @@
 //! `with_texture_rgba`. The plugin uploads it during its next `prepare`. Drawing
 //! the same white emitter through a solid-red vs solid-green inline texture and
 //! comparing the two runs isolates the sampled colour, proving the bytes were
-//! uploaded and bound — through both the `add_effect` and `replace_effect`
+//! uploaded and bound through both the `add_effect` and `replace_effect`
 //! delivery paths.
 //!
 //! Skips cleanly when no GPU adapter is available.

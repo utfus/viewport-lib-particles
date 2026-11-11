@@ -1,4 +1,4 @@
-//! Phase 17: effect serialization round-trip (RON, behind the `serde` feature).
+//! Effect serialization round-trip (RON, behind the `serde` feature).
 //!
 //! Pure-CPU tests: they exercise the serde derives on the whole asset model
 //! (emitter, forces, expression `Module`, gradient, render route, simulation

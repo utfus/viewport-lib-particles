@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use viewport_lib::Frustum;
 use viewport_lib::plugin_api::{
-    DepthReadContext, ItemFrameContext, ItemTypePlugin, OutlineMaskContext, PaintContext,
-    ItemCollections, PickPassContext, PluginResources, ShadowCastContext,
+    DepthReadContext, ItemCollections, ItemFrameContext, ItemTypePlugin, OutlineMaskContext,
+    PaintContext, PickPassContext, PluginResources, ShadowCastContext,
 };
 use viewport_lib::wgpu as vwgpu;
 
@@ -781,9 +781,9 @@ impl ItemTypePlugin for ParticlePlugin {
         }
     }
 
-    fn draws_depth_read(&self) -> bool {
+    fn draws_depth_read(&self, _viewport_index: usize) -> bool {
         // Open the read-only-depth pass only when a soft billboard effect is
-        // actually being drawn this frame (Phase 9).
+        // actually being drawn this frame.
         self.draw_list.iter().any(|e| {
             let eff = &self.effects[e.key.effect as usize];
             eff.asset.soft.is_some() && matches!(eff.asset.render, ParticleRender::Billboard { .. })

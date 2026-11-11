@@ -545,11 +545,26 @@ impl eframe::App for App {
                 // into one in world units; the events go to the input, which owns the
                 // scheme that reads them.
                 self.controller.set_viewport_size([w, h]);
-                self.input.begin_frame(ViewportContext {
-                    hovered: response.hovered(),
-                    focused: response.has_focus(),
-                    viewport_size: [w, h],
-                });
+                self.input.begin_frame(ViewportContext::new(
+                    // This host translates egui's events itself, so it routes them itself:
+                    // the pointer is the viewport's while hovered or dragged, the keyboard
+                    // while the widget has focus.
+                    viewport_lib::InputOwnership {
+                        pointer: if response.dragged() {
+                            viewport_lib::PointerOwnership::Grabbed
+                        } else if response.hovered() {
+                            viewport_lib::PointerOwnership::Owned
+                        } else {
+                            viewport_lib::PointerOwnership::Elsewhere
+                        },
+                        keyboard: if response.has_focus() {
+                            viewport_lib::KeyboardOwnership::Owned
+                        } else {
+                            viewport_lib::KeyboardOwnership::Elsewhere
+                        },
+                    },
+                    [w, h],
+                ));
                 self.feed_input(ui, rect);
 
                 let actions = self.input.resolve();

@@ -16,7 +16,7 @@
 //! soft fade), and a sun light for this mode.
 
 use eframe::egui;
-use viewport_lib::renderer::SceneRenderItem;
+use viewport_lib::renderer::MeshItem;
 use viewport_lib::resources::MeshData;
 use viewport_lib::scene::material::{Material, ShadingModel};
 use viewport_lib_particles::{
@@ -143,11 +143,8 @@ pub fn logs_mesh_data() -> MeshData {
 /// A dark-brown dirt ground for the campfire (uses the shared ground cuboid,
 /// top surface at z = 0). Its own item so the grey interaction/soft ground is
 /// untouched.
-pub fn ground_item(
-    mesh: viewport_lib::MeshId,
-    material: viewport_lib::MaterialId,
-) -> SceneRenderItem {
-    let mut item = SceneRenderItem::new(mesh, material);
+pub fn ground_item(mesh: viewport_lib::MeshId, material: viewport_lib::MaterialId) -> MeshItem {
+    let mut item = MeshItem::new(mesh, material);
     item.model = glam::Mat4::from_translation(glam::Vec3::new(0.0, 0.0, -0.25)).into();
     item
 }
@@ -162,11 +159,8 @@ pub fn ground_material(res: &mut viewport_lib::DeviceResources) -> viewport_lib:
 }
 
 /// A dark-wood scene item for the uploaded logs mesh.
-pub fn logs_item(
-    mesh: viewport_lib::MeshId,
-    material: viewport_lib::MaterialId,
-) -> SceneRenderItem {
-    let mut item = SceneRenderItem::new(mesh, material);
+pub fn logs_item(mesh: viewport_lib::MeshId, material: viewport_lib::MaterialId) -> MeshItem {
+    let mut item = MeshItem::new(mesh, material);
     item.model = glam::Mat4::IDENTITY.into();
     item
 }

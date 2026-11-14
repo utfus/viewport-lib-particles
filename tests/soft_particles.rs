@@ -13,7 +13,7 @@
 use viewport_lib::renderer::{FrameData, RenderCamera, SurfaceSubmission, ViewportRenderer};
 use viewport_lib::resources::MeshData;
 use viewport_lib::scene::material::ShadingModel;
-use viewport_lib::renderer::SceneRenderItem;
+use viewport_lib::renderer::MeshItem;
 use viewport_lib::wgpu;
 use viewport_lib::Camera;
 
@@ -128,7 +128,7 @@ fn center_over_occluder(soft: bool) -> i32 {
         .resources_mut()
         .upload_material(occluder_material)
         .expect("upload occluder material");
-    let mut occluder = SceneRenderItem::new(mesh_id, occluder_material);
+    let mut occluder = MeshItem::new(mesh_id, occluder_material);
     occluder.model = glam::Mat4::from_translation(glam::Vec3::new(0.0, 0.0, -0.05)).into();
 
     for _ in 0..2 {

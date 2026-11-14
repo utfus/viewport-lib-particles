@@ -8,7 +8,7 @@
 //!
 //! Skips cleanly when no GPU adapter is available.
 
-use viewport_lib::renderer::{FrameData, RenderCamera, SceneRenderItem, SurfaceSubmission, ViewportRenderer};
+use viewport_lib::renderer::{FrameData, RenderCamera, MeshItem, SurfaceSubmission, ViewportRenderer};
 use viewport_lib::resources::MeshData;
 use viewport_lib::scene::material::ShadingModel;
 use viewport_lib::wgpu;
@@ -79,7 +79,7 @@ fn centre(effect: Option<EffectAsset>) -> Option<[i32; 3]> {
         .resources_mut()
         .upload_material(material)
         .expect("upload backdrop material");
-    let mut backdrop = SceneRenderItem::new(mesh_id, material);
+    let mut backdrop = MeshItem::new(mesh_id, material);
     backdrop.model = glam::Mat4::from_translation(glam::Vec3::new(0.0, 0.0, -0.5)).into();
 
     let mut plugin = ParticlePlugin::new();

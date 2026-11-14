@@ -10,7 +10,7 @@ use eframe::egui;
 use viewport_lib::renderer::PickId;
 use viewport_lib::{
     BackfacePolicy, DeviceResources, LightKind, LightSource, LightingSettings, Material,
-    MaterialId, MeshId, SceneRenderItem,
+    MaterialId, MeshId, MeshItem,
 };
 use viewport_lib_particles::{
     EffectAsset, EffectId, Emitter, ForceModifier, Gradient, ParticleBlend, ParticleItem,
@@ -57,8 +57,8 @@ pub fn presets() -> Vec<(&'static str, EffectAsset)> {
 }
 
 /// A ground plane (a wide flat cuboid) with its top surface at z = 0.
-pub fn ground_item(mesh: MeshId, material: MaterialId) -> SceneRenderItem {
-    let mut ground = SceneRenderItem::new(mesh, material);
+pub fn ground_item(mesh: MeshId, material: MaterialId) -> MeshItem {
+    let mut ground = MeshItem::new(mesh, material);
     ground.model = glam::Mat4::from_translation(glam::Vec3::new(0.0, 0.0, -0.25)).into();
     ground
 }

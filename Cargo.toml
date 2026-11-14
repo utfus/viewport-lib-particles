@@ -1,6 +1,6 @@
 [package]
 name = "viewport-lib-particles"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.85"
 description = "GPU particle and VFX system for viewport-lib: modifier graph, WGSL codegen, lit and shadowed particle draw"
@@ -13,8 +13,8 @@ keywords = ["3d", "particles", "vfx", "viewport", "viewport-lib"]
 categories = ["graphics", "rendering"]
 
 [dependencies]
-viewport-lib-types = { path = "../../viewport-lib/crates/viewport-lib-types", version = "0.3" }
-viewport-lib = { path = "../../viewport-lib/crates/viewport-lib", version = "0.23", optional = true }
+viewport-lib-types = { path = "../../viewport-lib/crates/viewport-lib-types", version = "0.4" }
+viewport-lib = { path = "../../viewport-lib/crates/viewport-lib", version = "0.24", optional = true }
 glam = { version = "=0.30.10", features = ["bytemuck"] }
 bytemuck = { version = "1", features = ["derive"] }
 wgpu = { version = "27.0", optional = true }

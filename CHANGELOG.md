@@ -1,9 +1,10 @@
 # Changelog
 
-## [Unreleased]
+## [0.2.0]
 
 ### Breaking
 
+- **viewport-lib 0.24** - requires viewport-lib 0.24 and `viewport-lib-types` 0.4.
 - **Billboard textures put row 0 at the top** - a billboard's texture, and each flipbook cell, now maps texture row 0 (the first row of `upload_texture` / `with_texture_rgba` bytes, and the top row as images load) to the quad's top edge, as viewport-lib's sprites and tilemaps read them; it was mapped to the bottom. A flipbook's first row of cells is the top row of the sheet. Remove any vertical flip added to compensate.
 - **`EffectAsset`, `ParticleItem` and `FragmentHook` gain fields** - `EffectAsset::{plane_lock, painter, painter_depth_test, texture_filter, pixel_snap, texels_per_unit, collide}`, `ParticleItem::{painter, hook_params}` and `FragmentHook::param_names`. `EffectAsset` is `#[non_exhaustive]`; a `ParticleItem` or `FragmentHook` struct literal needs the new fields, or build it with `new`.
 

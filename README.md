@@ -48,10 +48,17 @@ frame.scene.submit_plugin_items(ParticlePlugin::TYPE_NAME, Box::new(items));
 The plugins sit behind the `gpu` feature, which is on by default. With `default-features = false` the crate builds only the effect authoring model and the item types, against viewport-lib-types, with neither viewport-lib nor wgpu in the tree. That is for an editor or an asset pipeline that builds and saves effects without drawing them:
 
 ```toml
-viewport-lib-particles = { version = "0.1", default-features = false, features = ["serde"] }
+viewport-lib-particles = { version = "0.2", default-features = false, features = ["serde"] }
 ```
 
 `scripts/check_types_only.sh` checks that build stays free of both.
+
+## Versions
+
+| viewport-lib-particles | viewport-lib |
+| --- | --- |
+| 0.2.0 | 0.24 |
+| 0.1.0 | 0.19 |
 
 ## License
 
